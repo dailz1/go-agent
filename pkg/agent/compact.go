@@ -245,6 +245,14 @@ func fallbackBlockSize(block llm.ContentBlock) int {
 	return 0
 }
 
+func compactionContextErr(ctx context.Context, result *CompactionResult) error {
+	if err := ctx.Err(); err != nil {
+		result.Errors = append(result.Errors, err)
+		return err
+	}
+	return nil
+}
+
 type dropOldestToolGroupsCompactor struct{}
 
 // NewDropOldestToolGroupsCompactor returns a compactor that collapses old tool exchanges first.
@@ -253,7 +261,7 @@ func NewDropOldestToolGroupsCompactor() Compactor {
 }
 
 func (dropOldestToolGroupsCompactor) Compact(
-	_ context.Context,
+	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
 ) (CompactionResult, error) {
@@ -262,17 +270,30 @@ func (dropOldestToolGroupsCompactor) Compact(
 		Strategies: []string{"drop_oldest_tool_groups"},
 		Errors:     []error{},
 	}
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
 	groups, err := partitionHistory(history)
 	if err != nil {
 		return result, err
 	}
-	if estimateRunes(result.History) <= budget.MaxRunes {
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	historyRunes := estimateRunes(result.History)
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	if historyRunes <= budget.MaxRunes {
 		return result, nil
 	}
 
 	protected := protectedGroups(groups)
 	considered := make([]bool, len(groups))
-	for estimateRunes(result.History) > budget.MaxRunes {
+	for historyRunes > budget.MaxRunes {
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
 		candidate := -1
 		for index, group := range groups {
 			if group.isTool && !protected[index] && !considered[index] {
@@ -286,16 +307,37 @@ func (dropOldestToolGroupsCompactor) Compact(
 
 		considered[candidate] = true
 		replacement := []llm.Message{collapseToolGroup(groups[candidate])}
-		if estimateRunes(replacement) >= estimateRunes(groups[candidate].messages) {
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		replacementRunes := estimateRunes(replacement)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		groupRunes := estimateRunes(groups[candidate].messages)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		if replacementRunes >= groupRunes {
 			continue
 		}
 		groups[candidate] = historyGroup{messages: replacement}
 		result.DroppedGroups++
 		result.Changed = true
 		result.History = flattenGroups(groups)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		historyRunes = estimateRunes(result.History)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
 	}
 
-	if estimateRunes(result.History) > budget.MaxRunes {
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	if historyRunes > budget.MaxRunes {
 		return result, fmt.Errorf("drop oldest tool groups: %w", ErrCompactionBudgetExceeded)
 	}
 	return result, nil
@@ -349,7 +391,7 @@ func NewSlidingWindowCompactor() Compactor {
 }
 
 func (slidingWindowCompactor) Compact(
-	_ context.Context,
+	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
 ) (CompactionResult, error) {
@@ -358,11 +400,21 @@ func (slidingWindowCompactor) Compact(
 		Strategies: []string{"sliding_window"},
 		Errors:     []error{},
 	}
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
 	groups, err := partitionHistory(history)
 	if err != nil {
 		return result, err
 	}
-	if estimateRunes(result.History) <= budget.MaxRunes {
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	historyRunes := estimateRunes(result.History)
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	if historyRunes <= budget.MaxRunes {
 		return result, nil
 	}
 
@@ -371,7 +423,10 @@ func (slidingWindowCompactor) Compact(
 	for index := range active {
 		active[index] = true
 	}
-	for estimateRunes(result.History) > budget.MaxRunes {
+	for historyRunes > budget.MaxRunes {
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
 		candidate := -1
 		for index := range groups {
 			if active[index] && !protected[index] {
@@ -386,9 +441,19 @@ func (slidingWindowCompactor) Compact(
 		result.DroppedGroups++
 		result.Changed = true
 		result.History = flattenActiveGroups(groups, active)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		historyRunes = estimateRunes(result.History)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
 	}
 
-	if estimateRunes(result.History) > budget.MaxRunes {
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	if historyRunes > budget.MaxRunes {
 		return result, fmt.Errorf("sliding window: %w", ErrCompactionBudgetExceeded)
 	}
 	return result, nil

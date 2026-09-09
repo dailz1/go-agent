@@ -66,6 +66,46 @@ func TestAccum_InterleavedMultiTool(t *testing.T) {
 	}
 }
 
+func TestAccum_DuplicateToolCallStart(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []llm.Chunk
+	}{
+		{
+			name: "replayed before args",
+			chunks: []llm.Chunk{
+				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+			},
+		},
+		{
+			name: "replayed after args",
+			chunks: []llm.Chunk{
+				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+				llm.ToolCallArgsChunk{Index: 0, Delta: `{"key":"val"}`},
+				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var a toolCallAccum
+			for _, chunk := range tt.chunks {
+				a.feed(chunk)
+			}
+
+			_, err := a.assemble()
+			if err == nil {
+				t.Fatal("assemble() error = nil, want duplicate index error")
+			}
+			if !strings.Contains(err.Error(), "duplicate tool call index 0") {
+				t.Errorf("assemble() error = %q, want duplicate index 0", err)
+			}
+		})
+	}
+}
+
 func TestAccum_EmptyFinish(t *testing.T) {
 	var a toolCallAccum
 	blocks, err := a.assemble()

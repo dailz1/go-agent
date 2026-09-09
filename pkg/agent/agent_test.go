@@ -2145,6 +2145,27 @@ func TestRunWithHistory(t *testing.T) {
 		}
 	})
 
+	t.Run("PointerTextBlockIsIsolatedFromCaller", func(t *testing.T) {
+		provider := NewMockProvider(MsgResponse(llm.AssistantMessage("continuing")))
+		agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
+		original := &llm.TextBlock{Type: "text", Text: "original"}
+		history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{original}}}
+
+		result, err := agent.RunWithHistory(context.Background(), history, "follow up")
+		if err != nil {
+			t.Fatalf("RunWithHistory returned error: %v", err)
+		}
+		original.Text = "mutated"
+
+		got, ok := result.History[0].Content[0].(*llm.TextBlock)
+		if !ok {
+			t.Fatalf("History[0].Content[0] = %T, want *llm.TextBlock", result.History[0].Content[0])
+		}
+		if got.Text != "original" {
+			t.Errorf("History pointer text = %q, want isolated original", got.Text)
+		}
+	})
+
 	t.Run("WithEmptyHistory", func(t *testing.T) {
 		provider := NewMockProvider(
 			MsgResponse(llm.AssistantMessage("hello")),
@@ -2309,6 +2330,36 @@ func TestRunStreamWithHistory(t *testing.T) {
 			if doneEvent.History[i].Role != want {
 				t.Errorf("History[%d].Role = %q, want %q", i, doneEvent.History[i].Role, want)
 			}
+		}
+	})
+
+	t.Run("ToolInputIsCopiedBeforeIteration", func(t *testing.T) {
+		provider := NewMockStreamingProvider([][]llm.Chunk{
+			{llm.TextDeltaChunk{Text: "continuing"}, llm.DoneChunk{FinishReason: "stop"}},
+		})
+		agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
+		input := json.RawMessage(`{"path":"safe"}`)
+		history := []llm.Message{
+			llm.UserMessage("original question"),
+			llm.AssistantToolCallMessage(llm.ToolUseBlock{
+				Type: "tool_use", ID: "c0", Name: "read", Input: input,
+			}),
+			llm.ToolResultMessage("c0", tool.NewTextResult("prior result")),
+		}
+
+		seq, err := agent.RunStreamWithHistory(context.Background(), history, "follow up")
+		input[2] = 'X'
+		_, errs := collectEvents(t, seq, err)
+		if len(errs) > 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+
+		got, ok := provider.LastMessages[1].Content[0].(llm.ToolUseBlock)
+		if !ok {
+			t.Fatalf("provider tool block = %T, want llm.ToolUseBlock", provider.LastMessages[1].Content[0])
+		}
+		if string(got.Input) != `{"path":"safe"}` {
+			t.Errorf("provider tool input = %q, want isolated original", got.Input)
 		}
 	})
 

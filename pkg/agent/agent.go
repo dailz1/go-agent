@@ -31,12 +31,27 @@ func copyMessages(src []llm.Message) []llm.Message {
 	return dst
 }
 
-// deepCopyMessages also isolates mutable byte slices held by content blocks.
+// deepCopyMessages also isolates pointer-form blocks and their mutable byte slices.
 func deepCopyMessages(src []llm.Message) []llm.Message {
 	dst := copyMessages(src)
 	for messageIndex := range dst {
 		for blockIndex, block := range dst[messageIndex].Content {
 			switch typed := block.(type) {
+			case *llm.TextBlock:
+				if typed != nil {
+					cloned := *typed
+					dst[messageIndex].Content[blockIndex] = &cloned
+				}
+			case *llm.ReasoningBlock:
+				if typed != nil {
+					cloned := *typed
+					dst[messageIndex].Content[blockIndex] = &cloned
+				}
+			case *llm.ToolResultBlock:
+				if typed != nil {
+					cloned := *typed
+					dst[messageIndex].Content[blockIndex] = &cloned
+				}
 			case llm.ToolUseBlock:
 				typed.Input = bytes.Clone(typed.Input)
 				dst[messageIndex].Content[blockIndex] = typed
@@ -650,7 +665,7 @@ func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
 // slice is not modified. The caller is responsible for including any desired system
 // prompt in the history — this method does not inject one.
 func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input string) (*RunResult, error) {
-	copied := copyMessages(history)
+	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
 	seq, err := a.runStreamInternal(ctx, copied)
 	if err != nil {
@@ -665,7 +680,7 @@ func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input
 // responsible for including any desired system prompt in the history — this
 // method does not inject one.
 func (a *Agent) RunStreamWithHistory(ctx context.Context, history []llm.Message, input string) (iter.Seq2[AgentEvent, error], error) {
-	copied := copyMessages(history)
+	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
 	return a.runStreamInternal(ctx, copied)
 }

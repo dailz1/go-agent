@@ -19,11 +19,12 @@ type callAccum struct {
 // toolCallAccum assembles streaming Chunk fragments into complete
 // ToolUseBlock and TextBlock values.
 type toolCallAccum struct {
-	calls            map[int]*callAccum
-	textBuilder      strings.Builder
-	reasoningBuilder strings.Builder
-	orphanArgs       map[int]bool
-	lastUsage        *llm.Usage
+	calls                  map[int]*callAccum
+	textBuilder            strings.Builder
+	reasoningBuilder       strings.Builder
+	orphanArgs             map[int]bool
+	duplicateToolCallIndex *int
+	lastUsage              *llm.Usage
 }
 
 // feed processes a single streaming chunk, routing it by type.
@@ -34,6 +35,13 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 	case llm.ToolCallStartChunk:
 		if a.calls == nil {
 			a.calls = make(map[int]*callAccum)
+		}
+		if _, exists := a.calls[c.Index]; exists {
+			if a.duplicateToolCallIndex == nil {
+				index := c.Index
+				a.duplicateToolCallIndex = &index
+			}
+			return
 		}
 		a.calls[c.Index] = &callAccum{id: c.ID, name: c.Name}
 	case llm.ToolCallArgsChunk:
@@ -61,11 +69,15 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 // accumulated.
 //
 // Returns an error if the stream was corrupted:
-//   - a tool call is missing id or name (StartChunk was lost or overwritten)
+//   - a tool call is missing id or name (StartChunk was lost)
+//   - a ToolCallStartChunk repeats an index already seen in this stream
 //   - ToolCallArgsChunk arrived for an index with no matching ToolCallStartChunk
 func (a *toolCallAccum) assemble() ([]llm.ToolUseBlock, error) {
 	if len(a.calls) == 0 && len(a.orphanArgs) == 0 {
 		return nil, nil
+	}
+	if a.duplicateToolCallIndex != nil {
+		return nil, fmt.Errorf("accumulator: duplicate tool call index %d", *a.duplicateToolCallIndex)
 	}
 
 	for idx, acc := range a.calls {
@@ -162,6 +174,7 @@ func (a *toolCallAccum) reasoningBlocks() []llm.ContentBlock {
 func (a *toolCallAccum) reset() {
 	a.calls = nil
 	a.orphanArgs = nil
+	a.duplicateToolCallIndex = nil
 	a.lastUsage = nil
 	a.textBuilder.Reset()
 	a.reasoningBuilder.Reset()

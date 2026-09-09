@@ -16,6 +16,73 @@ import (
 	"github.com/dailz1/go-agent/pkg/tool"
 )
 
+func TestCompactorStrategiesObserveCancellation(t *testing.T) {
+	huge := strings.Repeat("x", 1<<20)
+	history := []llm.Message{
+		llm.UserMessage("first"),
+		llm.AssistantToolCallMessage(llm.ToolUseBlock{
+			Type: "tool_use", ID: "old", Name: "lookup", Input: json.RawMessage(`{"query":"old"}`),
+		}),
+		llm.ToolResultMessage("old", tool.NewTextResult(huge)),
+		llm.AssistantMessage(huge),
+		llm.UserMessage("latest"),
+		llm.AssistantMessage("final"),
+	}
+
+	strategies := []struct {
+		name      string
+		compactor Compactor
+	}{
+		{name: "drop oldest tool groups", compactor: NewDropOldestToolGroupsCompactor()},
+		{name: "sliding window", compactor: NewSlidingWindowCompactor()},
+	}
+
+	for _, tt := range strategies {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("canceled", func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+
+				result, err := tt.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: 0})
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Compact() error = %v, want context.Canceled", err)
+				}
+				foundCancellation := false
+				for _, resultErr := range result.Errors {
+					if errors.Is(resultErr, context.Canceled) {
+						foundCancellation = true
+						break
+					}
+				}
+				if !foundCancellation {
+					t.Errorf("Compact() Errors = %v, want context.Canceled", result.Errors)
+				}
+				if len(result.History) == 0 || len(result.History) > len(history) {
+					t.Fatalf("Compact() returned invalid partial history length %d", len(result.History))
+				}
+				if _, partitionErr := partitionHistory(result.History); partitionErr != nil {
+					t.Errorf("Compact() returned invalid partial history: %v", partitionErr)
+				}
+			})
+
+			t.Run("uncanceled", func(t *testing.T) {
+				small := []llm.Message{llm.UserMessage("question"), llm.AssistantMessage("answer")}
+				result, err := tt.compactor.Compact(
+					context.Background(),
+					small,
+					CompactionBudget{MaxRunes: estimateRunes(small)},
+				)
+				if err != nil {
+					t.Fatalf("Compact() unexpected error: %v", err)
+				}
+				if !reflect.DeepEqual(result.History, small) || result.Changed || len(result.Errors) != 0 {
+					t.Errorf("Compact() result = %#v, want unchanged history", result)
+				}
+			})
+		})
+	}
+}
+
 func TestAgentCompaction(t *testing.T) {
 	t.Run("below and equal threshold do not compact", func(t *testing.T) {
 		base := []llm.Message{llm.UserMessage("kept history")}
