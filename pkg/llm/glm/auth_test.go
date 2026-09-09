@@ -261,6 +261,13 @@ func TestTokenCache_Expiry(t *testing.T) {
 
 // TestTokenCache_Concurrent verifies goroutines calling getToken don't race.
 func TestTokenCache_Concurrent(t *testing.T) {
+	// Freeze the clock so every concurrent generateToken call produces an
+	// identical JWT (exp/timestamp are millisecond-precision; a wall-clock
+	// ms boundary between goroutines would otherwise make tokens differ).
+	origTimeNow := timeNow
+	timeNow = func() time.Time { return time.Unix(1700000000, 0).UTC() }
+	defer func() { timeNow = origTimeNow }()
+
 	cache := &tokenCache{}
 	var wg sync.WaitGroup
 	const goroutines = 50

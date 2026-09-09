@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// timeNow is a seam for tests to stub the clock.
+var timeNow = time.Now
+
 type cacheEntry struct {
 	token     string
 	expiresAt time.Time
@@ -26,7 +29,7 @@ func generateToken(apiKey string, expSeconds int) (string, error) {
 	}
 	id, secret := parts[0], parts[1]
 
-	now := time.Now()
+	now := timeNow()
 	nowMs := now.UnixMilli()
 	expMs := now.Add(time.Duration(expSeconds) * time.Second).UnixMilli()
 
@@ -81,7 +84,7 @@ func splitAPIKey(key string) []string {
 func (tc *tokenCache) getToken(apiKey string, expSeconds int) (string, error) {
 	if cached, ok := tc.entries.Load(apiKey); ok {
 		entry := cached.(cacheEntry)
-		if time.Now().Before(entry.expiresAt.Add(-5 * time.Minute)) {
+		if timeNow().Before(entry.expiresAt.Add(-5 * time.Minute)) {
 			return entry.token, nil
 		}
 	}
@@ -93,7 +96,7 @@ func (tc *tokenCache) getToken(apiKey string, expSeconds int) (string, error) {
 
 	tc.entries.Store(apiKey, cacheEntry{
 		token:     token,
-		expiresAt: time.Now().Add(time.Duration(expSeconds) * time.Second),
+		expiresAt: timeNow().Add(time.Duration(expSeconds) * time.Second),
 	})
 
 	return token, nil
