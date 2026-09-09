@@ -1,11 +1,15 @@
 package llm
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // APIError represents an error returned by an LLM provider's HTTP API.
 type APIError struct {
 	StatusCode int
 	Body       string
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {

@@ -48,18 +48,21 @@ func TestDoJSONRequest(t *testing.T) {
 	t.Run("non-2xx returns APIError", func(t *testing.T) {
 		t.Parallel()
 		tests := []struct {
-			name       string
-			statusCode int
-			body       string
+			name           string
+			statusCode     int
+			body           string
+			retryAfter     string
+			wantRetryAfter time.Duration
 		}{
-			{"429 rate limit", 429, `{"error":"rate limited"}`},
-			{"500 internal server error", 500, `{"error":"internal"}`},
-			{"403 forbidden", 403, `forbidden`},
+			{"429 rate limit", 429, `{"error":"rate limited"}`, "2", 2 * time.Second},
+			{"500 internal server error", 500, `{"error":"internal"}`, "", 0},
+			{"403 forbidden", 403, `forbidden`, "invalid", 0},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Retry-After", tt.retryAfter)
 					w.WriteHeader(tt.statusCode)
 					w.Write([]byte(tt.body))
 				}))
@@ -81,7 +84,37 @@ func TestDoJSONRequest(t *testing.T) {
 				if apiErr.Body != tt.body {
 					t.Errorf("Body = %q, want %q", apiErr.Body, tt.body)
 				}
+				if apiErr.RetryAfter != tt.wantRetryAfter {
+					t.Errorf("RetryAfter = %v, want %v", apiErr.RetryAfter, tt.wantRetryAfter)
+				}
 			})
+		}
+	})
+
+	t.Run("HTTP-date Retry-After is parsed", func(t *testing.T) {
+		t.Parallel()
+		retryAt := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", retryAt.Format(http.TimeFormat))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"unavailable"}`))
+		}))
+		defer srv.Close()
+
+		beforeRequest := time.Until(retryAt)
+		var resp testResponse
+		err := DoJSONRequest(context.Background(), srv.Client(), RequestConfig{
+			Method: http.MethodPost,
+			URL:    srv.URL,
+		}, map[string]string{}, &resp)
+		afterRequest := time.Until(retryAt)
+
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *APIError, got %T: %v", err, err)
+		}
+		if apiErr.RetryAfter < afterRequest || apiErr.RetryAfter > beforeRequest {
+			t.Errorf("RetryAfter = %v, want between %v and %v", apiErr.RetryAfter, afterRequest, beforeRequest)
 		}
 	})
 
@@ -295,18 +328,21 @@ func TestDoStreamRequest(t *testing.T) {
 	t.Run("non-2xx returns APIError and closes body", func(t *testing.T) {
 		t.Parallel()
 		tests := []struct {
-			name       string
-			statusCode int
-			body       string
+			name           string
+			statusCode     int
+			body           string
+			retryAfter     string
+			wantRetryAfter time.Duration
 		}{
-			{"429 rate limit", 429, `{"error":"slow down"}`},
-			{"500 server error", 500, `internal server error`},
-			{"401 unauthorized", 401, `unauthorized`},
+			{"429 rate limit", 429, `{"error":"slow down"}`, "2", 2 * time.Second},
+			{"500 server error", 500, `internal server error`, "", 0},
+			{"401 unauthorized", 401, `unauthorized`, "invalid", 0},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Retry-After", tt.retryAfter)
 					w.WriteHeader(tt.statusCode)
 					w.Write([]byte(tt.body))
 				}))
@@ -329,7 +365,69 @@ func TestDoStreamRequest(t *testing.T) {
 				if apiErr.Body != tt.body {
 					t.Errorf("Body = %q, want %q", apiErr.Body, tt.body)
 				}
+				if apiErr.RetryAfter != tt.wantRetryAfter {
+					t.Errorf("RetryAfter = %v, want %v", apiErr.RetryAfter, tt.wantRetryAfter)
+				}
 			})
+		}
+	})
+
+	t.Run("non-2xx body cancellation preserves API and context errors", func(t *testing.T) {
+		t.Parallel()
+
+		bodyReadStarted := make(chan struct{}, 1)
+		handlerDone := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(handlerDone)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"partial`))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		defer srv.Close()
+
+		client := &http.Client{Transport: &readSignalTransport{
+			base:    srv.Client().Transport,
+			started: bodyReadStarted,
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		requestDone := make(chan error, 1)
+		go func() {
+			_, err := DoStreamRequest(ctx, client, RequestConfig{
+				Method: http.MethodPost,
+				URL:    srv.URL,
+			}, map[string]string{})
+			requestDone <- err
+		}()
+
+		select {
+		case <-bodyReadStarted:
+			cancel()
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for the response body read to start")
+		}
+
+		var err error
+		select {
+		case err = <-requestDone:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for DoStreamRequest to return")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("error = %v, want context.Canceled in error chain", err)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("error = %T %v, want *APIError in error chain", err, err)
+		}
+		if apiErr.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusTooManyRequests)
+		}
+
+		select {
+		case <-handlerDone:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for handler shutdown")
 		}
 	})
 
@@ -458,4 +556,30 @@ func TestDoStreamRequest(t *testing.T) {
 // unmarshalable is a type that causes json.Marshal to fail.
 type unmarshalable struct {
 	Ch chan struct{}
+}
+
+type readSignalTransport struct {
+	base    http.RoundTripper
+	started chan<- struct{}
+}
+
+func (t *readSignalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err == nil {
+		resp.Body = &readSignalBody{ReadCloser: resp.Body, started: t.started}
+	}
+	return resp, err
+}
+
+type readSignalBody struct {
+	io.ReadCloser
+	started chan<- struct{}
+}
+
+func (b *readSignalBody) Read(p []byte) (int, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	return b.ReadCloser.Read(p)
 }

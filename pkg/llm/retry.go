@@ -15,6 +15,18 @@ const (
 	DefaultMaxDelay   = 120 * time.Second
 )
 
+var sleepFor = func(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // Backoff computes an exponential backoff duration with full jitter.
 // The returned duration is capped at maxDelay.
 func Backoff(base, maxDelay time.Duration, attempt int) time.Duration {
@@ -25,6 +37,24 @@ func Backoff(base, maxDelay time.Duration, attempt int) time.Duration {
 		return maxDelay
 	}
 	return d
+}
+
+func waitForRetry(ctx context.Context, err error, base, maxDelay time.Duration, attempt int) error {
+	delay := Backoff(base, maxDelay, attempt)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
+		delay = apiErr.RetryAfter
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ctx.Err()
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+	}
+	return sleepFor(ctx, delay)
 }
 
 // IsRetryableError reports whether the error is an API error that can be retried

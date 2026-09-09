@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -57,6 +60,7 @@ func DoJSONRequest(ctx context.Context, client *http.Client, cfg RequestConfig, 
 		return &APIError{
 			StatusCode: resp.StatusCode,
 			Body:       string(respBytes),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
 
@@ -109,12 +113,17 @@ func DoStreamRequest(ctx context.Context, client *http.Client, cfg RequestConfig
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody))
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody))
 		resp.Body.Close()
-		return nil, &APIError{
+		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
 		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read error response: %w", errors.Join(readErr, apiErr))
+		}
+		return nil, apiErr
 	}
 
 	done := make(chan struct{})
@@ -133,4 +142,23 @@ func DoStreamRequest(ctx context.Context, client *http.Client, cfg RequestConfig
 			close(done)
 		}),
 	}, nil
+}
+
+func parseRetryAfter(value string) time.Duration {
+	if seconds, err := strconv.ParseUint(value, 10, 63); err == nil {
+		const maxDurationSeconds = uint64(1<<63-1) / uint64(time.Second)
+		if seconds > 0 && seconds <= maxDurationSeconds {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	if delay := time.Until(retryAt); delay > 0 {
+		return delay
+	}
+	return 0
 }

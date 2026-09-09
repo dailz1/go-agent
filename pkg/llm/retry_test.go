@@ -109,6 +109,71 @@ func TestBackoff(t *testing.T) {
 	})
 }
 
+func TestWaitForRetry(t *testing.T) {
+	originalSleepFor := sleepFor
+	t.Cleanup(func() { sleepFor = originalSleepFor })
+
+	var recordedDelay time.Duration
+	sleepFor = func(_ context.Context, delay time.Duration) error {
+		recordedDelay = delay
+		return nil
+	}
+
+	t.Run("Retry-After skips jittered backoff", func(t *testing.T) {
+		recordedDelay = 0
+		err := waitForRetry(
+			context.Background(),
+			fmt.Errorf("wrapped: %w", &APIError{StatusCode: 429, RetryAfter: 2 * time.Second}),
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if err != nil {
+			t.Fatalf("waitForRetry() error = %v", err)
+		}
+		if recordedDelay != 2*time.Second {
+			t.Errorf("delay = %v, want 2s", recordedDelay)
+		}
+	})
+
+	t.Run("missing Retry-After uses jittered backoff", func(t *testing.T) {
+		recordedDelay = 0
+		err := waitForRetry(
+			context.Background(),
+			&APIError{StatusCode: 429},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if err != nil {
+			t.Fatalf("waitForRetry() error = %v", err)
+		}
+		if recordedDelay < 250*time.Millisecond || recordedDelay > 500*time.Millisecond {
+			t.Errorf("delay = %v, want jittered backoff in [250ms, 500ms]", recordedDelay)
+		}
+	})
+
+	t.Run("Retry-After is capped by context deadline", func(t *testing.T) {
+		recordedDelay = 0
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		err := waitForRetry(
+			ctx,
+			&APIError{StatusCode: 429, RetryAfter: 2 * time.Second},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if err != nil {
+			t.Fatalf("waitForRetry() error = %v", err)
+		}
+		if recordedDelay <= 0 || recordedDelay > 50*time.Millisecond {
+			t.Errorf("delay = %v, want context-capped delay in (0, 50ms]", recordedDelay)
+		}
+	})
+}
+
 func TestSanitizeRetryReason(t *testing.T) {
 	tests := []struct {
 		name string
