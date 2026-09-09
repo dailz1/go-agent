@@ -47,7 +47,7 @@
 | `AgentEvent` 事件流 | 观测 / UI / 审计 / 回放的唯一入口 |
 | `Store`（建设中） | 会话持久化、崩溃恢复、跨会话积累 |
 
-现有事件类型：`text_delta` / `thinking_delta` / `tool_call` / `tool_result` / `retry` / `done`（与 OpenAI Agents SDK 等业界分类一致）。
+现有事件类型：`text_delta` / `thinking_delta` / `tool_call` / `tool_result` / `retry` / `done` / `compaction`（与 OpenAI Agents SDK 等业界分类一致）。
 
 ## 4. 设计原则
 
@@ -67,7 +67,7 @@
 
 ### P1 运行时安全
 - 工具结果截断：按上下文占比设上限（约 30% 规则），掐头留尾，入库前执行（已落地，见 §7）
-- 历史预算管理：`Compactor` 策略接口 + 最简实现；压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）
+- 历史预算管理：`Compactor` 策略接口 + 最简实现；压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）（已落地，见 §7）
 - 会话持久化 `Store`：**事件日志优先**（追加式事件日志，状态由日志推导，参照 LangGraph 检查点模型与 Temporal 回放原则）；支持"线程 + 检查点"
 
 ### P2 扩展面
@@ -102,5 +102,6 @@
 - 模块 `github.com/dailz1/go-agent`，Go 1.26，stdlib-only，git 已建（main，基线 `d5281c9`）。
 - 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm 适配、token 用量统计、完整测试（5 包全绿）。
 - 工具结果截断（单结果 ≤ max(128, WithContextWindowTokens×30%) rune，50/50 掐头留尾，默认窗口 8192）。
+- 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
 - 近期变更：已删除 provider factory 死代码；已修复 `runStreamInternal` 缩进残留；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
-- 已落地工具结果截断；已知限制：多结果合计/历史+新结果超窗为不受管理的聚合溢出，行为取决于 Provider 错误分类（openai/glm 适配器：HTTP 400 及 429 以外的 4xx 不可重试即终止；自定义 Provider 普通错误会被重试至上限后失败），Compactor 落地后关闭。
+- 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
