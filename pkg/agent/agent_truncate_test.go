@@ -184,6 +184,7 @@ func TestAgentToolResultLimit(t *testing.T) {
 			registry,
 			WithLogger(discardLogger()),
 			WithContextWindowTokens(1_000),
+			WithCompactor(nil),
 		)
 
 		result, err := agent.Run(context.Background(), "use both tools")

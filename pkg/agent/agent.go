@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
+	"reflect"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -28,6 +31,51 @@ func copyMessages(src []llm.Message) []llm.Message {
 	return dst
 }
 
+// deepCopyMessages also isolates mutable byte slices held by content blocks.
+func deepCopyMessages(src []llm.Message) []llm.Message {
+	dst := copyMessages(src)
+	for messageIndex := range dst {
+		for blockIndex, block := range dst[messageIndex].Content {
+			switch typed := block.(type) {
+			case llm.ToolUseBlock:
+				typed.Input = bytes.Clone(typed.Input)
+				dst[messageIndex].Content[blockIndex] = typed
+			case *llm.ToolUseBlock:
+				if typed != nil {
+					cloned := *typed
+					cloned.Input = bytes.Clone(typed.Input)
+					dst[messageIndex].Content[blockIndex] = &cloned
+				}
+			case llm.ImageBlock:
+				typed.Data = bytes.Clone(typed.Data)
+				dst[messageIndex].Content[blockIndex] = typed
+			case *llm.ImageBlock:
+				if typed != nil {
+					cloned := *typed
+					cloned.Data = bytes.Clone(typed.Data)
+					dst[messageIndex].Content[blockIndex] = &cloned
+				}
+			}
+		}
+	}
+	return dst
+}
+
+func validateCompacted(original []llm.Message, compacted []llm.Message) error {
+	originalGroups, err := partitionHistory(original)
+	if err != nil {
+		return err
+	}
+	compactedGroups, err := partitionHistory(compacted)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(systemPrefix(originalGroups), systemPrefix(compactedGroups)) {
+		return fmt.Errorf("system prefix changed: %w", ErrInvalidHistory)
+	}
+	return nil
+}
+
 // ApprovalFunc is called before executing a tool that requires approval.
 // Return true to proceed, false to reject and report back to the LLM.
 type ApprovalFunc func(info tool.ToolInfo, args json.RawMessage) bool
@@ -35,16 +83,18 @@ type ApprovalFunc func(info tool.ToolInfo, args json.RawMessage) bool
 // Agent runs an autonomous LLM loop: chat → tool call → result → chat, until
 // the LLM produces a final text response or the iteration limit is reached.
 type Agent struct {
-	provider            llm.Provider
-	registry            *tool.Registry
-	system              llm.Message
-	maxIter             int
-	contextWindowTokens int
-	approvalFn          ApprovalFunc
-	logger              *slog.Logger
-	llmOpts             []llm.Option
-	retryCfg            AgentRetryConfig
-	retryCfgSet         bool
+	provider                   llm.Provider
+	registry                   *tool.Registry
+	system                     llm.Message
+	maxIter                    int
+	contextWindowTokens        int
+	compactor                  Compactor
+	compactionThresholdPercent int
+	approvalFn                 ApprovalFunc
+	logger                     *slog.Logger
+	llmOpts                    []llm.Option
+	retryCfg                   AgentRetryConfig
+	retryCfgSet                bool
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -64,6 +114,10 @@ type AgentRetryConfig struct {
 // truncation.
 const DefaultContextWindowTokens = 8_192
 
+// DefaultCompactionThresholdPercent is the percent of the configured context
+// window where compaction triggers. Values outside [1, 100] normalize to this default.
+const DefaultCompactionThresholdPercent = 80
+
 // Option configures an Agent via functional options.
 type Option func(*Agent)
 
@@ -82,6 +136,18 @@ func WithMaxIter(n int) Option {
 // or equal to zero use [DefaultContextWindowTokens].
 func WithContextWindowTokens(tokens int) Option {
 	return func(a *Agent) { a.contextWindowTokens = tokens }
+}
+
+// WithCompactor sets the history compactor. A nil compactor disables compaction.
+func WithCompactor(c Compactor) Option {
+	return func(a *Agent) { a.compactor = c }
+}
+
+// WithCompactionThresholdPercent sets the context-window percentage where
+// compaction triggers. Values outside [1, 100] normalize to
+// [DefaultCompactionThresholdPercent].
+func WithCompactionThresholdPercent(percent int) Option {
+	return func(a *Agent) { a.compactionThresholdPercent = percent }
 }
 
 // WithApprovalFn registers a callback invoked before executing any tool whose
@@ -129,11 +195,13 @@ type RunResult struct {
 // New creates an Agent with the given LLM provider and tool registry.
 func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent {
 	a := &Agent{
-		provider:            provider,
-		registry:            registry,
-		maxIter:             10,
-		contextWindowTokens: DefaultContextWindowTokens,
-		logger:              slog.Default(),
+		provider:                   provider,
+		registry:                   registry,
+		maxIter:                    10,
+		contextWindowTokens:        DefaultContextWindowTokens,
+		compactor:                  NewStandardCompactor(),
+		compactionThresholdPercent: DefaultCompactionThresholdPercent,
+		logger:                     slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -143,6 +211,9 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	}
 	if a.contextWindowTokens <= 0 {
 		a.contextWindowTokens = DefaultContextWindowTokens
+	}
+	if a.compactionThresholdPercent < 1 || a.compactionThresholdPercent > 100 {
+		a.compactionThresholdPercent = DefaultCompactionThresholdPercent
 	}
 	return a
 }
@@ -193,7 +264,7 @@ func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, err
 				Usage:      e.Usage,
 				TotalUsage: e.TotalUsage,
 			}, nil
-		case TextDeltaEvent, ThinkingDeltaEvent, ToolCallEvent, ToolResultEvent:
+		case TextDeltaEvent, ThinkingDeltaEvent, ToolCallEvent, ToolResultEvent, CompactionEvent:
 			// Run returns only the completed result.
 		default:
 			return nil, fmt.Errorf("agent stream emitted unknown event %T", event)
@@ -239,6 +310,52 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				yield(nil, ctx.Err())
 				return
 			default:
+			}
+
+			targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
+				(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
+			beforeRunes := estimateRunes(history)
+			if a.compactor != nil && beforeRunes > targetRunes {
+				result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes})
+				for _, strategyErr := range result.Errors {
+					a.logger.Warn("history compaction strategy failed", "error", strategyErr)
+				}
+				if err != nil {
+					a.logger.Warn("history compaction failed", "error", err)
+				} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
+					a.logger.Warn("history compaction produced invalid history", "error", validationErr)
+				} else {
+					if result.Changed {
+						history = result.History
+						afterRunes := estimateRunes(history)
+						a.logger.Warn("history compacted",
+							"strategies", strings.Join(result.Strategies, ","),
+							"dropped_groups", result.DroppedGroups,
+							"before_runes", beforeRunes,
+							"after_runes", afterRunes,
+						)
+						if !yield(CompactionEvent{
+							Strategies:    append([]string{}, result.Strategies...),
+							DroppedGroups: result.DroppedGroups,
+							BeforeRunes:   beforeRunes,
+							AfterRunes:    afterRunes,
+							History:       deepCopyMessages(history),
+						}, nil) {
+							return
+						}
+					}
+
+					select {
+					case <-ctx.Done():
+						yield(nil, ctx.Err())
+						return
+					default:
+					}
+					if estimateRunes(history) > targetRunes {
+						yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
+						return
+					}
+				}
 			}
 
 			a.logger.Debug("agent stream iteration",
