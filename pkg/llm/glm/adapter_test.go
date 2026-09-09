@@ -436,9 +436,18 @@ func TestConvertResponseMessage_NilContentWithToolCalls(t *testing.T) {
 
 // --- parseStreamPayload ---
 
+func mustParseStreamPayload(t *testing.T, payload string) []llm.Chunk {
+	t.Helper()
+	chunks, err := parseStreamPayload(payload)
+	if err != nil {
+		t.Fatalf("parseStreamPayload() error = %v", err)
+	}
+	return chunks
+}
+
 func TestParseStreamPayload_ContentDelta(t *testing.T) {
 	payload := `{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -453,7 +462,7 @@ func TestParseStreamPayload_ContentDelta(t *testing.T) {
 
 func TestParseStreamPayload_ReasoningDelta(t *testing.T) {
 	payload := `{"choices":[{"delta":{"reasoning_content":"thinking..."}}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -468,7 +477,7 @@ func TestParseStreamPayload_ReasoningDelta(t *testing.T) {
 
 func TestParseStreamPayload_ToolCallStart(t *testing.T) {
 	payload := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search"}}]}}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -489,7 +498,7 @@ func TestParseStreamPayload_ToolCallStart(t *testing.T) {
 
 func TestParseStreamPayload_ToolCallArgs(t *testing.T) {
 	payload := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"q\":"}}]}}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
@@ -508,7 +517,7 @@ func TestParseStreamPayload_ToolCallArgs(t *testing.T) {
 
 func TestParseStreamPayload_ToolCallArgsOnly(t *testing.T) {
 	payload := `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go\"}"}}]}}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -523,7 +532,7 @@ func TestParseStreamPayload_ToolCallArgsOnly(t *testing.T) {
 
 func TestParseStreamPayload_FinishReason(t *testing.T) {
 	payload := `{"choices":[{"delta":{},"finish_reason":"stop"}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -541,7 +550,7 @@ func TestParseStreamPayload_FinishReason(t *testing.T) {
 
 func TestParseStreamPayload_WithUsage(t *testing.T) {
 	payload := `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":262,"total_tokens":270}}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -563,16 +572,50 @@ func TestParseStreamPayload_WithUsage(t *testing.T) {
 	}
 }
 
+func TestParseStreamPayload_UsageOnlyFrame(t *testing.T) {
+	payload := `{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+	chunks := mustParseStreamPayload(t, payload)
+	if len(chunks) != 1 {
+		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
+	}
+	done, ok := chunks[0].(llm.DoneChunk)
+	if !ok {
+		t.Fatalf("expected DoneChunk, got %T", chunks[0])
+	}
+	if done.FinishReason != "" {
+		t.Errorf("FinishReason = %q, want empty", done.FinishReason)
+	}
+	if done.Usage == nil {
+		t.Fatal("expected non-nil Usage in DoneChunk")
+	}
+	if done.Usage.InputTokens != 7 || done.Usage.OutputTokens != 3 {
+		t.Errorf("Usage = %+v, want input=7 output=3", done.Usage)
+	}
+}
+
 func TestParseStreamPayload_InvalidJSON(t *testing.T) {
-	chunks := parseStreamPayload("not json")
+	chunks, err := parseStreamPayload("not json")
+	if err == nil {
+		t.Fatal("parseStreamPayload() error = nil, want malformed payload error")
+	}
 	if chunks != nil {
-		t.Errorf("expected nil for invalid JSON, got %v", chunks)
+		t.Errorf("parseStreamPayload() chunks = %v, want nil", chunks)
+	}
+}
+
+func TestParseStreamPayload_EmptyPayload(t *testing.T) {
+	chunks, err := parseStreamPayload(" \n\t")
+	if err != nil {
+		t.Fatalf("parseStreamPayload() error = %v", err)
+	}
+	if chunks != nil {
+		t.Errorf("parseStreamPayload() chunks = %v, want nil", chunks)
 	}
 }
 
 func TestParseStreamPayload_EmptyContent(t *testing.T) {
 	payload := `{"choices":[{"delta":{"content":""}}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 0 {
 		t.Errorf("expected 0 chunks for empty content, got %d", len(chunks))
 	}
@@ -580,7 +623,7 @@ func TestParseStreamPayload_EmptyContent(t *testing.T) {
 
 func TestParseStreamPayload_MultipleChunks(t *testing.T) {
 	payload := `{"choices":[{"delta":{"content":"hi","reasoning_content":"think"},"finish_reason":"stop"}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 3 {
 		t.Fatalf("expected 3 chunks, got %d", len(chunks))
 	}
@@ -770,9 +813,24 @@ func TestWithToolStream(t *testing.T) {
 }
 
 func TestWithTopP(t *testing.T) {
-	p := NewProvider("key", "model", WithTopP(0.9))
-	if p.topP == nil || *p.topP != 0.9 {
-		t.Errorf("topP = %v, want 0.9", p.topP)
+	tests := []struct {
+		name  string
+		value float64
+		want  float64
+	}{
+		{name: "within range", value: 0.9, want: 0.9},
+		{name: "zero clamps to minimum", value: 0, want: 0.01},
+		{name: "below minimum clamps to minimum", value: -1, want: 0.01},
+		{name: "above maximum clamps to maximum", value: 2, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewProvider("key", "model", WithTopP(tt.value))
+			if p.topP == nil || *p.topP != tt.want {
+				t.Errorf("topP = %v, want %v", p.topP, tt.want)
+			}
+		})
 	}
 }
 
@@ -989,6 +1047,34 @@ func TestChatStreamRequest_ToolStreamWithoutStreamGuard(t *testing.T) {
 	}
 }
 
+func TestChatStream_MalformedPayloadReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {not-json}\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewProvider("key", "model",
+		WithBaseURL(srv.URL),
+		WithLogger(newTestLogger()),
+	)
+
+	stream, err := p.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream() setup error = %v", err)
+	}
+
+	var streamErr error
+	for _, err := range stream {
+		if err != nil {
+			streamErr = err
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("ChatStream() error = nil, want malformed payload error")
+	}
+}
+
 // --- convertResponseMessage — ReasoningBlock ---
 
 func TestConvertResponseMessage_ReasoningBlock(t *testing.T) {
@@ -1160,32 +1246,88 @@ func TestConvertResponseMessage_SensitiveFinish(t *testing.T) {
 }
 
 func TestConvertResponseMessage_ContextExceeded(t *testing.T) {
-	// Simulate GLM returning no choices — should return error
-	_, err := convertResponseMessage(respMessage{
-		Role: "assistant",
-	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"partial response"},"finish_reason":"model_context_window_exceeded"}]}`)
+	}))
+	defer srv.Close()
+
+	p := NewProvider("key", "model", WithBaseURL(srv.URL), WithLogger(newTestLogger()))
+	_, _, err := p.Chat(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
 	if err == nil {
-		t.Fatal("expected error for empty message")
+		t.Fatal("Chat() error = nil, want context window error")
+	}
+	if !strings.Contains(err.Error(), "model_context_window_exceeded") {
+		t.Errorf("Chat() error = %q, want finish reason", err)
+	}
+	if llm.IsRetryableError(err) {
+		t.Errorf("Chat() error = %v, want non-retryable", err)
 	}
 }
 
 func TestConvertResponseMessage_NetworkError(t *testing.T) {
-	// This tests that Chat() propagates network errors from DoJSONRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return non-2xx to simulate error
-		w.WriteHeader(http.StatusBadGateway)
-		fmt.Fprintf(w, "bad gateway")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"partial response"},"finish_reason":"network_error"}]}`)
 	}))
 	defer srv.Close()
 
-	p := NewProvider("key", "model",
-		WithBaseURL(srv.URL),
-		WithLogger(newTestLogger()),
-	)
-
+	p := NewProvider("key", "model", WithBaseURL(srv.URL), WithLogger(newTestLogger()))
 	_, _, err := p.Chat(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
 	if err == nil {
-		t.Fatal("expected error for network failure")
+		t.Fatal("Chat() error = nil, want network finish error")
+	}
+	if !strings.Contains(err.Error(), "network_error") {
+		t.Errorf("Chat() error = %q, want finish reason", err)
+	}
+	if !llm.IsRetryableError(err) {
+		t.Errorf("Chat() error = %v, want retryable", err)
+	}
+}
+
+func TestChatStream_FailureFinishReasonReturnsError(t *testing.T) {
+	tests := []struct {
+		name      string
+		reason    string
+		retryable bool
+	}{
+		{name: "network error", reason: "network_error", retryable: true},
+		{name: "context exceeded", reason: "model_context_window_exceeded", retryable: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":%q}]}\n\n", tt.reason)
+			}))
+			defer srv.Close()
+
+			p := NewProvider("key", "model", WithBaseURL(srv.URL), WithLogger(newTestLogger()))
+			stream, err := p.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+			if err != nil {
+				t.Fatalf("ChatStream() setup error = %v", err)
+			}
+
+			var streamErr error
+			for chunk, err := range stream {
+				if _, ok := chunk.(llm.DoneChunk); ok {
+					t.Error("ChatStream() yielded DoneChunk for failure finish reason")
+				}
+				if err != nil {
+					streamErr = err
+				}
+			}
+			if streamErr == nil {
+				t.Fatal("ChatStream() error = nil, want finish reason error")
+			}
+			if !strings.Contains(streamErr.Error(), tt.reason) {
+				t.Errorf("ChatStream() error = %q, want finish reason", streamErr)
+			}
+			if got := llm.IsRetryableError(streamErr); got != tt.retryable {
+				t.Errorf("IsRetryableError() = %v, want %v", got, tt.retryable)
+			}
+		})
 	}
 }
 

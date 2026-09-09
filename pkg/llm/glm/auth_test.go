@@ -36,6 +36,32 @@ func TestGenerateJWT_InvalidKey(t *testing.T) {
 	}
 }
 
+func TestGenerateJWT_EmptyKeyComponents(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiKey string
+	}{
+		{name: "empty secret", apiKey: "id."},
+		{name: "empty id", apiKey: ".secret"},
+		{name: "both empty", apiKey: "."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token, err := generateToken(tt.apiKey, 3600)
+			if err == nil {
+				t.Fatal("generateToken() error = nil, want invalid API key error")
+			}
+			if err.Error() != "glm: invalid api key" {
+				t.Errorf("generateToken() error = %q, want %q", err, "glm: invalid api key")
+			}
+			if token != "" {
+				t.Errorf("generateToken() token = %q, want empty", token)
+			}
+		})
+	}
+}
+
 // TestGenerateJWT_TokenStructure verifies 3 parts and header contains sign_type: SIGN.
 func TestGenerateJWT_TokenStructure(t *testing.T) {
 	token, err := generateToken("myid.mysecret", 3600)

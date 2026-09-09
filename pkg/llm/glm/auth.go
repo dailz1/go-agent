@@ -24,8 +24,8 @@ type tokenCache struct {
 
 func generateToken(apiKey string, expSeconds int) (string, error) {
 	parts := splitAPIKey(apiKey)
-	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid API key format: expected 'id.secret'")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("glm: invalid api key")
 	}
 	id, secret := parts[0], parts[1]
 

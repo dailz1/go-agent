@@ -74,8 +74,14 @@ func WithToolStream() ProviderOption {
 	return func(p *Provider) { p.toolStream = true }
 }
 
-// WithTopP sets the top_p sampling parameter.
+// WithTopP sets the top_p sampling parameter. Values outside GLM's accepted
+// range are normalized to the nearest boundary in [0.01, 1.0].
 func WithTopP(p float64) ProviderOption {
+	if p < 0.01 {
+		p = 0.01
+	} else if p > 1.0 {
+		p = 1.0
+	}
 	return func(provider *Provider) { provider.topP = &p }
 }
 
@@ -199,6 +205,9 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 	}
 
 	choice := chatResp.Choices[0]
+	if err := finishReasonError(choice.FinishReason); err != nil {
+		return nil, nil, err
+	}
 	hasToolCalls := len(choice.Message.ToolCalls) > 0
 
 	p.logger.Debug("glm response received",
@@ -307,7 +316,12 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 				yield(nil, err)
 				return
 			}
-			for _, c := range parseStreamPayload(payload) {
+			chunks, err := parseStreamPayload(payload)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for _, c := range chunks {
 				if !yield(c, nil) {
 					return
 				}
@@ -318,10 +332,14 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 
 // parseStreamPayload converts a raw SSE JSON payload from GLM's streaming
 // API into a slice of [llm.Chunk] values.
-func parseStreamPayload(payload string) []llm.Chunk {
+func parseStreamPayload(payload string) ([]llm.Chunk, error) {
+	if strings.TrimSpace(payload) == "" {
+		return nil, nil
+	}
+
 	var resp streamResponse
 	if err := json.Unmarshal([]byte(payload), &resp); err != nil {
-		return nil
+		return nil, fmt.Errorf("glm: parse stream payload: %w", err)
 	}
 
 	var chunks []llm.Chunk
@@ -354,6 +372,9 @@ func parseStreamPayload(payload string) []llm.Chunk {
 		}
 
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			if err := finishReasonError(*choice.FinishReason); err != nil {
+				return nil, err
+			}
 			dc := llm.DoneChunk{
 				FinishReason: *choice.FinishReason,
 			}
@@ -363,7 +384,27 @@ func parseStreamPayload(payload string) []llm.Chunk {
 			chunks = append(chunks, dc)
 		}
 	}
-	return chunks
+	if len(resp.Choices) == 0 && resp.Usage != nil {
+		chunks = append(chunks, llm.DoneChunk{Usage: convertUsage(*resp.Usage)})
+	}
+	return chunks, nil
+}
+
+func finishReasonError(reason string) error {
+	switch reason {
+	case "network_error":
+		return &llm.APIError{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       "glm finish_reason: " + reason,
+		}
+	case "model_context_window_exceeded":
+		return &llm.APIError{
+			StatusCode: http.StatusBadRequest,
+			Body:       "glm finish_reason: " + reason,
+		}
+	default:
+		return nil
+	}
 }
 
 func convertMessages(messages []llm.Message) ([]chatMessage, error) {
