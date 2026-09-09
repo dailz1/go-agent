@@ -312,6 +312,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			default:
 			}
 
+			// Same overflow-safe idiom as toolResultRunes: floor(windowTokens*percent/100).
 			targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
 				(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
 			beforeRunes := estimateRunes(history)
