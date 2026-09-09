@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"net"
+	"net/url"
+	"syscall"
 	"time"
 )
 
@@ -70,7 +73,10 @@ func waitForRetry(ctx context.Context, err error, base, maxDelay time.Duration, 
 // (429 rate limit or 5xx server error).
 func IsRetryableError(err error) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.Retryable()
+	if !errors.As(err, &apiErr) || apiErr == nil {
+		return false
+	}
+	return apiErr.Retryable()
 }
 
 // IsNetworkError reports whether the error is a transient network error
@@ -88,7 +94,23 @@ func IsNetworkError(err error) bool {
 		return false
 	}
 	var apiErr *APIError
-	return !errors.As(err, &apiErr)
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr != nil && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr != nil {
+		var unwrappedNetErr net.Error
+		if errors.As(urlErr.Unwrap(), &unwrappedNetErr) && unwrappedNetErr != nil {
+			return true
+		}
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
 }
 
 // SanitizeRetryReason returns a user-friendly error description for RetryEvent.Reason.

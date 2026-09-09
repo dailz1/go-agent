@@ -8,8 +8,10 @@ import (
 	"iter"
 	"log/slog"
 	"math"
+	"net"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/dailz1/go-agent/pkg/llm"
@@ -311,7 +313,7 @@ func TestAgentCompaction(t *testing.T) {
 		})
 		attempts := [][]llm.Message{}
 		provider := &messageCapturingMock{
-			inner: NewRetryableMockProvider(errors.New("connection refused"), 1, llm.AssistantMessage("done")),
+			inner: NewRetryableMockProvider(&net.OpError{Op: "dial", Err: syscall.ECONNRESET}, 1, llm.AssistantMessage("done")),
 			onChat: func(messages []llm.Message) {
 				attempts = append(attempts, copyMessages(messages))
 			},

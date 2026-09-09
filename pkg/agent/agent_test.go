@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,6 +20,19 @@ import (
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+type countingTool struct {
+	info       tool.ToolInfo
+	result     *tool.ToolResult
+	executions atomic.Int32
+}
+
+func (t *countingTool) Info() tool.ToolInfo { return t.info }
+
+func (t *countingTool) Execute(context.Context, json.RawMessage) (*tool.ToolResult, error) {
+	t.executions.Add(1)
+	return t.result, nil
 }
 
 func collectEvents(t *testing.T, seq iter.Seq2[AgentEvent, error], outerErr error) (events []AgentEvent, errs []error) {
@@ -157,6 +171,44 @@ func TestAgentRun_ToolNotFound(t *testing.T) {
 	}
 	if !trBlock.IsError {
 		t.Error("ToolResultBlock.IsError = false, want true")
+	}
+}
+
+func TestAgentRun_ApprovalFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	sensitiveTool := &countingTool{
+		info:   tool.ToolInfo{Name: "sensitive", Description: "needs approval", RequiresApproval: true},
+		result: tool.NewTextResult("should not execute"),
+	}
+	reg := tool.NewRegistry()
+	reg.MustRegister(sensitiveTool)
+
+	provider := NewMockProvider(
+		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantMessage("understood rejection")),
+	)
+
+	agent := New(provider, reg, WithLogger(discardLogger()))
+	result, err := agent.Run(context.Background(), "run sensitive op")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := sensitiveTool.executions.Load(); got != 0 {
+		t.Errorf("tool executions = %d, want 0", got)
+	}
+
+	toolResultMsg := result.History[2]
+	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	if !ok {
+		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
+	}
+	if !trBlock.IsError {
+		t.Error("ToolResultBlock.IsError = false, want true")
+	}
+	want := `tool "sensitive" requires approval but no approval callback is configured`
+	if trBlock.Content != want {
+		t.Errorf("ToolResultBlock.Content = %q, want %q", trBlock.Content, want)
 	}
 }
 
@@ -611,13 +663,13 @@ func TestAgentRun_DefaultMaxIter(t *testing.T) {
 	}
 }
 
-func TestAgentRun_ApprovalWithNoApprovalFn(t *testing.T) {
+func TestAgentRun_ToolRequiresApproval_WithCallback(t *testing.T) {
 	t.Parallel()
 
 	reg := tool.NewRegistry()
 	reg.MustRegister(&mockTool{
 		info:   tool.ToolInfo{Name: "sensitive", Description: "needs approval", RequiresApproval: true},
-		result: tool.NewTextResult("executed anyway"),
+		result: tool.NewTextResult("executed after approval"),
 	})
 
 	provider := NewMockProvider(
@@ -627,13 +679,22 @@ func TestAgentRun_ApprovalWithNoApprovalFn(t *testing.T) {
 		MsgResponse(llm.AssistantMessage("done")),
 	)
 
-	agent := New(provider, reg, WithLogger(discardLogger()))
+	var approvalCalled atomic.Bool
+	agent := New(provider, reg,
+		WithApprovalFn(func(tool.ToolInfo, json.RawMessage) bool {
+			approvalCalled.Store(true)
+			return true
+		}),
+		WithLogger(discardLogger()),
+	)
 
 	result, err := agent.Run(context.Background(), "run sensitive")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-
+	if !approvalCalled.Load() {
+		t.Error("approval callback was not called")
+	}
 	if result.ToolCalls != 1 {
 		t.Errorf("ToolCalls = %d, want 1", result.ToolCalls)
 	}
@@ -646,8 +707,8 @@ func TestAgentRun_ApprovalWithNoApprovalFn(t *testing.T) {
 	if trBlock.IsError {
 		t.Error("ToolResultBlock.IsError = true, want false")
 	}
-	if trBlock.Content != "executed anyway" {
-		t.Errorf("ToolResultBlock.Content = %q, want %q", trBlock.Content, "executed anyway")
+	if trBlock.Content != "executed after approval" {
+		t.Errorf("ToolResultBlock.Content = %q, want %q", trBlock.Content, "executed after approval")
 	}
 }
 
@@ -1485,7 +1546,7 @@ func TestAgentRun_RetryOnServerError(t *testing.T) {
 
 func TestAgentRun_RetryOnNetworkError(t *testing.T) {
 	provider := NewRetryableMockProvider(
-		fmt.Errorf("connection refused"),
+		fmt.Errorf("dial: %w", syscall.ECONNREFUSED),
 		1,
 		llm.AssistantMessage("recovered!"),
 	)
@@ -1569,10 +1630,15 @@ func TestAgentRun_NoRetryOnAuthError(t *testing.T) {
 }
 
 func TestAgentRun_RetryExhausted(t *testing.T) {
-	provider := NewMockProvider(
-		ErrResponse(&llm.APIError{StatusCode: 429}),
+	provider := NewRetryableMockProvider(
+		&llm.APIError{StatusCode: 429},
+		4,
+		llm.Message{},
 	)
-	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
+	agent := New(provider, tool.NewRegistry(),
+		WithRetryConfig(AgentRetryConfig{BaseDelay: time.Nanosecond}),
+		WithLogger(discardLogger()),
+	)
 
 	_, err := agent.Run(context.Background(), "hello")
 	if err == nil {
@@ -1817,7 +1883,7 @@ func TestAgentRunStream_RetryOnNetworkError(t *testing.T) {
 		{llm.TextDeltaChunk{Text: "recovered!"}, llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
-		fmt.Errorf("connection refused"),
+		fmt.Errorf("dial: %w", syscall.ECONNREFUSED),
 		1,
 		chunks,
 	)
@@ -2086,8 +2152,44 @@ func TestAgentRunStream_RetryReasonSanitized(t *testing.T) {
 	})
 }
 
-func TestAgentRunStream_OnRetryNotCalled(t *testing.T) {
-	var called atomic.Bool
+func TestRunStream_OnRetryFires(t *testing.T) {
+	const retries = 2
+	var callbackCount atomic.Int32
+
+	provider := NewRetryableMockProvider(
+		&llm.APIError{StatusCode: 429},
+		retries,
+		llm.AssistantMessage("recovered!"),
+	)
+	agent := New(provider, tool.NewRegistry(),
+		WithRetryConfig(AgentRetryConfig{
+			MaxRetries: retries,
+			BaseDelay:  time.Nanosecond,
+			OnRetry:    func(RetryInfo) { callbackCount.Add(1) },
+		}),
+		WithLogger(discardLogger()),
+	)
+
+	events, errs := collectAllEvents(agent, context.Background(), "hello")
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	var retryEvents int
+	for _, evt := range events {
+		if _, ok := evt.(RetryEvent); ok {
+			retryEvents++
+		}
+	}
+	if retryEvents != retries {
+		t.Errorf("RetryEvent count = %d, want %d", retryEvents, retries)
+	}
+	if got := callbackCount.Load(); got != retries {
+		t.Errorf("OnRetry callback count = %d, want %d", got, retries)
+	}
+}
+
+func TestAgentRunStream_OnRetryCalled(t *testing.T) {
+	var callbackCount atomic.Int32
 
 	chunks := [][]llm.Chunk{
 		{llm.TextDeltaChunk{Text: "recovered!"}, llm.DoneChunk{FinishReason: "stop"}},
@@ -2099,7 +2201,8 @@ func TestAgentRunStream_OnRetryNotCalled(t *testing.T) {
 	)
 	agent := New(provider, tool.NewRegistry(),
 		WithRetryConfig(AgentRetryConfig{
-			OnRetry: func(RetryInfo) { called.Store(true) },
+			BaseDelay: time.Nanosecond,
+			OnRetry:   func(RetryInfo) { callbackCount.Add(1) },
 		}),
 		WithLogger(discardLogger()),
 	)
@@ -2118,8 +2221,9 @@ func TestAgentRunStream_OnRetryNotCalled(t *testing.T) {
 	if !hasRetry {
 		t.Error("expected RetryEvent in events")
 	}
-	if called.Load() {
-		t.Error("OnRetry should NOT be called from RunStream (only from Run)")
+	// OnRetry has the same exactly-once semantics for RunStream and Run.
+	if got := callbackCount.Load(); got != 1 {
+		t.Errorf("OnRetry callback count = %d, want 1", got)
 	}
 }
 

@@ -2,7 +2,11 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -41,8 +45,13 @@ func TestIsNetworkError(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"network error", fmt.Errorf("http request: connection refused"), true},
-		{"DNS failure", fmt.Errorf("dns resolution failed"), true},
+		{"plain connection message", errors.New("http request: connection refused"), false},
+		{"plain DNS message", errors.New("dns resolution failed"), false},
+		{"timeout", &net.DNSError{Err: "request timed out", IsTimeout: true}, true},
+		{"URL-wrapped network error", &url.Error{Op: "Get", URL: "https://example.com", Err: &net.DNSError{Err: "no such host"}}, true},
+		{"wrapped connection refused", fmt.Errorf("dial: %w", syscall.ECONNREFUSED), true},
+		{"wrapped connection reset", fmt.Errorf("read: %w", syscall.ECONNRESET), true},
+		{"wrapped broken pipe", fmt.Errorf("write: %w", syscall.EPIPE), true},
 		{"APIError 429", &APIError{StatusCode: 429}, false},
 		{"APIError 500", &APIError{StatusCode: 500}, false},
 		{"context.Canceled", context.Canceled, false},
@@ -56,6 +65,33 @@ func TestIsNetworkError(t *testing.T) {
 				t.Errorf("IsNetworkError() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsNetworkError_DeterministicError(t *testing.T) {
+	if IsNetworkError(errors.New("deterministic")) {
+		t.Error("IsNetworkError() = true, want false")
+	}
+}
+
+func TestIsNetworkError_TypedNilAPIError(t *testing.T) {
+	var apiErr *APIError
+	if IsNetworkError(apiErr) {
+		t.Error("IsNetworkError() = true, want false")
+	}
+}
+
+func TestIsNetworkError_Timeout(t *testing.T) {
+	err := &net.DNSError{Err: "request timed out", IsTimeout: true}
+	if !IsNetworkError(err) {
+		t.Error("IsNetworkError() = false, want true")
+	}
+}
+
+func TestIsRetryableError_TypedNilAPIError(t *testing.T) {
+	var apiErr *APIError
+	if IsRetryableError(apiErr) {
+		t.Error("IsRetryableError() = true, want false")
 	}
 }
 

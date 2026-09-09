@@ -266,9 +266,6 @@ func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, err
 		switch e := event.(type) {
 		case RetryEvent:
 			retries = append(retries, e.RetryInfo)
-			if a.retryCfg.OnRetry != nil {
-				a.retryCfg.OnRetry(e.RetryInfo)
-			}
 		case DoneEvent:
 			return &RunResult{
 				Message:    e.Message,
@@ -617,6 +614,9 @@ func (a *Agent) chatWithRetryAndFallback(
 			if !yield(RetryEvent{RetryInfo: info}, nil) {
 				return nil, false
 			}
+			if a.retryCfg.OnRetry != nil {
+				a.retryCfg.OnRetry(info)
+			}
 			if werr := llm.WaitForRetry(ctx, lastRetryErr, baseDelay, maxDelay, attempt); werr != nil {
 				yield(nil, werr)
 				return nil, false
@@ -731,7 +731,10 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result 
 		return tool.NewErrorResult("tool %q not found", call.Name), nil
 	}
 
-	if t.Info().RequiresApproval && a.approvalFn != nil {
+	if t.Info().RequiresApproval {
+		if a.approvalFn == nil {
+			return tool.NewErrorResult("tool %q requires approval but no approval callback is configured", call.Name), nil
+		}
 		a.logger.Warn("tool requires approval",
 			"tool_name", call.Name,
 			"tool_call_id", call.ID,
