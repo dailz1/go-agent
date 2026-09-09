@@ -29,9 +29,9 @@ func TestChatRequest_TopP(t *testing.T) {
 
 func TestChatRequest_ToolStream(t *testing.T) {
 	req := chatRequest{
-		Model:       "glm-4",
-		Messages:    []chatMessage{{Role: "user", Content: "hi"}},
-		ToolStream:  true,
+		Model:      "glm-4",
+		Messages:   []chatMessage{{Role: "user", Content: "hi"}},
+		ToolStream: true,
 	}
 
 	data, err := json.Marshal(req)

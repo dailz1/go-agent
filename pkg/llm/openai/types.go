@@ -117,11 +117,11 @@ type streamFunctionCall struct {
 }
 
 type chatUsage struct {
-	PromptTokens            int                       `json:"prompt_tokens"`
-	CompletionTokens        int                       `json:"completion_tokens"`
-	TotalTokens             int                       `json:"total_tokens"`
-	PromptTokensDetails     *promptTokensDetails      `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails *completionTokensDetails   `json:"completion_tokens_details,omitempty"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *promptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *completionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type promptTokensDetails struct {

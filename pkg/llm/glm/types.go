@@ -3,12 +3,12 @@ package glm
 import "encoding/json"
 
 type chatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []chatMessage  `json:"messages"`
-	Tools       []toolDef      `json:"tools,omitempty"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	DoSample    *bool          `json:"do_sample,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []chatMessage   `json:"messages"`
+	Tools       []toolDef       `json:"tools,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	DoSample    *bool           `json:"do_sample,omitempty"`
 	Thinking    *thinkingConfig `json:"thinking,omitempty"`
 	// Stream enables SSE streaming when set to true. The response is then
 	// consumed via [scanSSEEvents] instead of being parsed as a single JSON
@@ -62,13 +62,13 @@ type functionDef struct {
 }
 
 type chatResponse struct {
-	ID            string               `json:"id"`
-	Model         string               `json:"model"`
-	Choices       []choice             `json:"choices"`
-	Usage         usageInfo            `json:"usage,omitempty"`
-	RequestID     string               `json:"request_id"`
-	Created       int64                `json:"created"`
-	WebSearch     []webSearchResult    `json:"web_search,omitempty"`
+	ID            string                `json:"id"`
+	Model         string                `json:"model"`
+	Choices       []choice              `json:"choices"`
+	Usage         usageInfo             `json:"usage,omitempty"`
+	RequestID     string                `json:"request_id"`
+	Created       int64                 `json:"created"`
+	WebSearch     []webSearchResult     `json:"web_search,omitempty"`
 	ContentFilter []contentFilterResult `json:"content_filter,omitempty"`
 }
 
@@ -162,8 +162,8 @@ type promptTokensDetails struct {
 }
 
 type usageInfo struct {
-	PromptTokens       int                  `json:"prompt_tokens"`
-	CompletionTokens   int                  `json:"completion_tokens"`
-	TotalTokens        int                  `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
 	PromptTokensDetails *promptTokensDetails `json:"prompt_tokens_details,omitempty"`
 }
