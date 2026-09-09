@@ -546,6 +546,7 @@ func TestCompactorSummarization(t *testing.T) {
 		}
 		prompt := compactorText(request[2])
 		for _, required := range []string{
+			"Summarize the following conversation:",
 			defaultSummarizationPrompt,
 			"assistant: old answer",
 			"assistant: read:",

@@ -19,7 +19,7 @@ var (
 )
 
 const (
-	defaultSummarizationPrompt = "请总结以下对话，保留目标、关键决策、约束与偏好、当前进度、下一步、关键数据（文件路径、函数名、错误信息原文），省略客套与冗余往来。"
+	defaultSummarizationPrompt = "You are summarizing part of an agent conversation so this summary can replace it: the original messages will be dropped, and future turns will rely on this summary alone. Preserve: the goal, key decisions, constraints and preferences, current progress, next steps, tool-call outcomes and their significance, and critical data verbatim (file paths, function names, commands, error messages). Omit pleasantries and redundant exchanges. Be factual and brief. Write the summary in the same language as the conversation. Summarize the following conversation:"
 	maxToolCollapseRunes       = 4096
 	toolCollapsePrefix         = "[Tool Calls]\n"
 	toolCollapseSuffix         = "... [truncated]"
