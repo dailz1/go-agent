@@ -284,97 +284,15 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				"history_length", len(history),
 			)
 
-			// Request a streaming response from the provider with retry.
-			// Pre-stream errors (429, 5xx, network) are retried with backoff;
-			// non-retryable errors and mid-stream errors are yielded immediately.
-			maxRetries, baseDelay, maxDelay := a.resolveRetryConfig()
-			maxAttempts := maxRetries + 1
-			if maxRetries < 0 {
-				maxAttempts = 1
-			}
-
-			var stream iter.Seq2[llm.Chunk, error]
-			var lastRetryErr error
-			for attempt := 1; attempt <= maxAttempts; attempt++ {
-				stream, lastRetryErr = a.provider.ChatStream(ctx, history, tools, a.llmOpts...)
-				if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
-					response, usage, err := a.provider.Chat(ctx, history, tools, a.llmOpts...)
-					lastRetryErr = err
-					if err == nil {
-						stream = func(yield func(llm.Chunk, error) bool) {
-							toolIndex := 0
-							hasToolUse := false
-							for _, block := range response.Content {
-								switch b := block.(type) {
-								case llm.ReasoningBlock:
-									if !yield(llm.ReasoningDeltaChunk{Text: b.Content}, nil) {
-										return
-									}
-								case llm.TextBlock:
-									if !yield(llm.TextDeltaChunk{Text: b.Text}, nil) {
-										return
-									}
-								case llm.ToolUseBlock:
-									hasToolUse = true
-									if !yield(llm.ToolCallStartChunk{Index: toolIndex, ID: b.ID, Name: b.Name}, nil) {
-										return
-									}
-									if !yield(llm.ToolCallArgsChunk{Index: toolIndex, Delta: string(b.Input)}, nil) {
-										return
-									}
-									toolIndex++
-								case llm.ImageBlock, llm.ToolResultBlock:
-									// These blocks have no streaming representation.
-								}
-							}
-							finishReason := "stop"
-							if hasToolUse {
-								finishReason = "tool_calls"
-							}
-							yield(llm.DoneChunk{FinishReason: finishReason, Usage: usage}, nil)
-						}
-						break
-					}
-				}
-				if lastRetryErr == nil {
-					break
-				}
-				if ctx.Err() != nil {
-					yield(nil, ctx.Err())
-					return
-				}
-				if !llm.IsRetryableError(lastRetryErr) && !llm.IsNetworkError(lastRetryErr) {
-					yield(nil, fmt.Errorf("iteration %d: provider chat stream (attempt %d/%d): %w", i, attempt, maxAttempts, lastRetryErr))
-					return
-				}
-				a.logger.Warn("agent retrying stream",
-					"attempt", attempt+1,
-					"max_attempts", maxAttempts,
-					"error", lastRetryErr,
-				)
-				if attempt < maxAttempts {
-					delay := llm.Backoff(baseDelay, maxDelay, attempt)
-					info := RetryInfo{
-						Attempt:     attempt + 1,
-						MaxAttempts: maxAttempts,
-						Delay:       delay,
-						Reason:      llm.SanitizeRetryReason(lastRetryErr),
-						Err:         lastRetryErr,
-					}
-					streamRetries = append(streamRetries, info)
-					if !yield(RetryEvent{RetryInfo: info}, nil) {
-						return
-					}
-					select {
-					case <-ctx.Done():
-						yield(nil, ctx.Err())
-						return
-					case <-time.After(delay):
-					}
-				}
-			}
-			if lastRetryErr != nil {
-				yield(nil, fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w", i, maxAttempts, lastRetryErr))
+			stream, ok := a.chatWithRetryAndFallback(
+				ctx,
+				history,
+				tools,
+				i,
+				yield,
+				&streamRetries,
+			)
+			if !ok {
 				return
 			}
 
@@ -417,28 +335,10 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				totalUsage = totalUsage.Add(*u)
 			}
 
-			// Reconstruct the assistant message from accumulated content.
-			// We build it manually (combining textBlocks + toolUseBlocks) rather
-			// than using llm.AssistantToolCallMessage(), which discards text blocks
-			// when tool calls are present. The model may emit "thinking" text
-			// alongside tool calls, and that text must be preserved in history.
-			var contentBlocks []llm.ContentBlock
-			contentBlocks = append(contentBlocks, accum.reasoningBlocks()...)
-			contentBlocks = append(contentBlocks, accum.textBlocks()...)
-			toolBlocks, assembleErr := accum.assemble()
-			if assembleErr != nil {
-				a.logger.Warn("stream response corrupted, aborting iteration",
-					"iteration", i,
-					"error", assembleErr,
-				)
-				yield(nil, fmt.Errorf("iteration %d: %w", i, assembleErr))
+			assistantMsg, toolBlocks, ok := a.assembleAssistantMessage(&accum, i, yield)
+			if !ok {
 				return
 			}
-			for _, b := range toolBlocks {
-				contentBlocks = append(contentBlocks, b)
-			}
-
-			assistantMsg := llm.Message{Role: llm.RoleAssistant, Content: contentBlocks}
 			history = append(history, assistantMsg)
 
 			// Terminal condition: no tool calls were accumulated from the stream.
@@ -528,6 +428,143 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			accum.reset()
 		}
 	}, nil
+}
+
+func (a *Agent) assembleAssistantMessage(
+	accum *toolCallAccum,
+	iteration int,
+	yield func(AgentEvent, error) bool,
+) (llm.Message, []llm.ToolUseBlock, bool) {
+	// Reconstruct the assistant message from accumulated content.
+	// We build it manually (combining textBlocks + toolUseBlocks) rather
+	// than using llm.AssistantToolCallMessage(), which discards text blocks
+	// when tool calls are present. The model may emit "thinking" text
+	// alongside tool calls, and that text must be preserved in history.
+	var contentBlocks []llm.ContentBlock
+	contentBlocks = append(contentBlocks, accum.reasoningBlocks()...)
+	contentBlocks = append(contentBlocks, accum.textBlocks()...)
+	toolBlocks, assembleErr := accum.assemble()
+	if assembleErr != nil {
+		a.logger.Warn("stream response corrupted, aborting iteration",
+			"iteration", iteration,
+			"error", assembleErr,
+		)
+		yield(nil, fmt.Errorf("iteration %d: %w", iteration, assembleErr))
+		return llm.Message{}, nil, false
+	}
+	for _, b := range toolBlocks {
+		contentBlocks = append(contentBlocks, b)
+	}
+
+	assistantMsg := llm.Message{Role: llm.RoleAssistant, Content: contentBlocks}
+	return assistantMsg, toolBlocks, true
+}
+
+func (a *Agent) chatWithRetryAndFallback(
+	ctx context.Context,
+	history []llm.Message,
+	tools []tool.ToolInfo,
+	iteration int,
+	yield func(AgentEvent, error) bool,
+	streamRetries *[]RetryInfo,
+) (iter.Seq2[llm.Chunk, error], bool) {
+	// Request a streaming response from the provider with retry.
+	// Pre-stream errors (429, 5xx, network) are retried with backoff;
+	// non-retryable errors and mid-stream errors are yielded immediately.
+	maxRetries, baseDelay, maxDelay := a.resolveRetryConfig()
+	maxAttempts := maxRetries + 1
+	if maxRetries < 0 {
+		maxAttempts = 1
+	}
+
+	var stream iter.Seq2[llm.Chunk, error]
+	var lastRetryErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		stream, lastRetryErr = a.provider.ChatStream(ctx, history, tools, a.llmOpts...)
+		if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
+			response, usage, err := a.provider.Chat(ctx, history, tools, a.llmOpts...)
+			lastRetryErr = err
+			if err == nil {
+				stream = func(yield func(llm.Chunk, error) bool) {
+					for _, chunk := range synthesizeChunks(response.Content, usage) {
+						if !yield(chunk, nil) {
+							return
+						}
+					}
+				}
+				break
+			}
+		}
+		if lastRetryErr == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			yield(nil, ctx.Err())
+			return nil, false
+		}
+		if !llm.IsRetryableError(lastRetryErr) && !llm.IsNetworkError(lastRetryErr) {
+			yield(nil, fmt.Errorf("iteration %d: provider chat stream (attempt %d/%d): %w", iteration, attempt, maxAttempts, lastRetryErr))
+			return nil, false
+		}
+		a.logger.Warn("agent retrying stream",
+			"attempt", attempt+1,
+			"max_attempts", maxAttempts,
+			"error", lastRetryErr,
+		)
+		if attempt < maxAttempts {
+			delay := llm.Backoff(baseDelay, maxDelay, attempt)
+			info := RetryInfo{
+				Attempt:     attempt + 1,
+				MaxAttempts: maxAttempts,
+				Delay:       delay,
+				Reason:      llm.SanitizeRetryReason(lastRetryErr),
+				Err:         lastRetryErr,
+			}
+			*streamRetries = append(*streamRetries, info)
+			if !yield(RetryEvent{RetryInfo: info}, nil) {
+				return nil, false
+			}
+			select {
+			case <-ctx.Done():
+				yield(nil, ctx.Err())
+				return nil, false
+			case <-time.After(delay):
+			}
+		}
+	}
+	if lastRetryErr != nil {
+		yield(nil, fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w", iteration, maxAttempts, lastRetryErr))
+		return nil, false
+	}
+	return stream, true
+}
+
+func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
+	chunks := make([]llm.Chunk, 0, len(blocks)+1)
+	toolIndex := 0
+	hasToolUse := false
+	for _, block := range blocks {
+		switch b := block.(type) {
+		case llm.ReasoningBlock:
+			chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
+		case llm.TextBlock:
+			chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text})
+		case llm.ToolUseBlock:
+			hasToolUse = true
+			chunks = append(chunks,
+				llm.ToolCallStartChunk{Index: toolIndex, ID: b.ID, Name: b.Name},
+				llm.ToolCallArgsChunk{Index: toolIndex, Delta: string(b.Input)},
+			)
+			toolIndex++
+		case llm.ImageBlock, llm.ToolResultBlock:
+			// These blocks have no streaming representation.
+		}
+	}
+	finishReason := "stop"
+	if hasToolUse {
+		finishReason = "tool_calls"
+	}
+	return append(chunks, llm.DoneChunk{FinishReason: finishReason, Usage: usage})
 }
 
 // RunWithHistory executes the agent loop with a pre-existing conversation history
