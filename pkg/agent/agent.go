@@ -8,6 +8,7 @@ import (
 	"iter"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dailz1/go-agent/pkg/llm"
 	"github.com/dailz1/go-agent/pkg/tool"
@@ -34,15 +35,16 @@ type ApprovalFunc func(info tool.ToolInfo, args json.RawMessage) bool
 // Agent runs an autonomous LLM loop: chat → tool call → result → chat, until
 // the LLM produces a final text response or the iteration limit is reached.
 type Agent struct {
-	provider    llm.Provider
-	registry    *tool.Registry
-	system      llm.Message
-	maxIter     int
-	approvalFn  ApprovalFunc
-	logger      *slog.Logger
-	llmOpts     []llm.Option
-	retryCfg    AgentRetryConfig
-	retryCfgSet bool
+	provider            llm.Provider
+	registry            *tool.Registry
+	system              llm.Message
+	maxIter             int
+	contextWindowTokens int
+	approvalFn          ApprovalFunc
+	logger              *slog.Logger
+	llmOpts             []llm.Option
+	retryCfg            AgentRetryConfig
+	retryCfgSet         bool
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -57,6 +59,11 @@ type AgentRetryConfig struct {
 	OnRetry    func(info RetryInfo) // optional callback invoked on each retry
 }
 
+// DefaultContextWindowTokens is the assumed context window. Callers should set
+// the model's real value; math.MaxInt effectively disables tool result
+// truncation.
+const DefaultContextWindowTokens = 8_192
+
 // Option configures an Agent via functional options.
 type Option func(*Agent)
 
@@ -68,6 +75,13 @@ func WithSystemPrompt(prompt string) Option {
 // WithMaxIter sets the maximum number of LLM round-trips. Default is 10.
 func WithMaxIter(n int) Option {
 	return func(a *Agent) { a.maxIter = n }
+}
+
+// WithContextWindowTokens sets the model's context window size. Tool results
+// are limited to a rune approximation of 30% of the window. Values less than
+// or equal to zero use [DefaultContextWindowTokens].
+func WithContextWindowTokens(tokens int) Option {
+	return func(a *Agent) { a.contextWindowTokens = tokens }
 }
 
 // WithApprovalFn registers a callback invoked before executing any tool whose
@@ -115,16 +129,20 @@ type RunResult struct {
 // New creates an Agent with the given LLM provider and tool registry.
 func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent {
 	a := &Agent{
-		provider: provider,
-		registry: registry,
-		maxIter:  10,
-		logger:   slog.Default(),
+		provider:            provider,
+		registry:            registry,
+		maxIter:             10,
+		contextWindowTokens: DefaultContextWindowTokens,
+		logger:              slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(a)
 	}
 	if a.maxIter < 1 {
 		a.maxIter = 10
+	}
+	if a.contextWindowTokens <= 0 {
+		a.contextWindowTokens = DefaultContextWindowTokens
 	}
 	return a
 }
@@ -359,11 +377,12 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					return
 				}
 
+				result = a.applyToolResultLimit(call, result)
+				history = append(history, llm.ToolResultMessage(call.ID, result))
+
 				if !yield(ToolResultEvent{ID: call.ID, Name: call.Name, Result: result}, nil) {
 					return
 				}
-
-				history = append(history, llm.ToolResultMessage(call.ID, result))
 			}
 
 			accum.reset()
@@ -547,6 +566,30 @@ func (a *Agent) resolveRetryConfig() (maxRetries int, baseDelay, maxDelay time.D
 		maxDelay = llm.DefaultMaxDelay
 	}
 	return
+}
+
+func (a *Agent) toolResultRunes() int {
+	runes := (a.contextWindowTokens/10)*3 + (a.contextWindowTokens%10)*3/10
+	if runes < minToolResultRunes {
+		runes = minToolResultRunes
+	}
+	return runes
+}
+
+func (a *Agent) applyToolResultLimit(call llm.ToolUseBlock, result *tool.ToolResult) *tool.ToolResult {
+	totalRunes := utf8.RuneCountInString(result.Content)
+	capRunes := a.toolResultRunes()
+	limitedResult, omittedRunes := truncateToolResult(result, capRunes)
+	if omittedRunes > 0 {
+		a.logger.Warn("tool result truncated",
+			"tool_name", call.Name,
+			"tool_call_id", call.ID,
+			"omitted_runes", omittedRunes,
+			"total_runes", totalRunes,
+			"cap_runes", capRunes,
+		)
+	}
+	return limitedResult
 }
 
 func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result *tool.ToolResult, err error) {
