@@ -101,4 +101,4 @@
 
 - 模块 `github.com/dailz1/go-agent`，Go 1.26，stdlib-only，git 已建（main，基线 `d5281c9`）。
 - 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm 适配、token 用量统计、完整测试（5 包全绿）。
-- 已知问题：factory 死代码（拟删除）、`runStreamInternal` 缩进残留（P0 一并处理）。
+- 近期变更：已删除 provider factory 死代码；已修复 `runStreamInternal` 缩进残留；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
