@@ -153,6 +153,23 @@ func TestWaitForRetry(t *testing.T) {
 		}
 	})
 
+	t.Run("exported wrapper honors Retry-After over base backoff", func(t *testing.T) {
+		recordedDelay = 0
+		err := WaitForRetry(
+			context.Background(),
+			&APIError{StatusCode: 429, RetryAfter: 2 * time.Second},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			3,
+		)
+		if err != nil {
+			t.Fatalf("WaitForRetry() error = %v", err)
+		}
+		if recordedDelay != 2*time.Second {
+			t.Errorf("delay = %v, want 2s (Retry-After, not attempt-3 backoff)", recordedDelay)
+		}
+	})
+
 	t.Run("Retry-After is capped by context deadline", func(t *testing.T) {
 		recordedDelay = 0
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

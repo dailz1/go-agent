@@ -617,11 +617,9 @@ func (a *Agent) chatWithRetryAndFallback(
 			if !yield(RetryEvent{RetryInfo: info}, nil) {
 				return nil, false
 			}
-			select {
-			case <-ctx.Done():
-				yield(nil, ctx.Err())
+			if werr := llm.WaitForRetry(ctx, lastRetryErr, baseDelay, maxDelay, attempt); werr != nil {
+				yield(nil, werr)
 				return nil, false
-			case <-time.After(delay):
 			}
 		}
 	}

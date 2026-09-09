@@ -1500,6 +1500,34 @@ func TestAgentRun_RetryOnNetworkError(t *testing.T) {
 	}
 }
 
+func TestAgentRun_HonorsRetryAfter(t *testing.T) {
+	// llm.sleepFor is an unexported llm-package seam, not reachable from this
+	// package, so we assert via a real-time elapsed lower bound (generous
+	// tolerance) instead of stubbing the clock.
+	provider := NewRetryableMockProvider(
+		&llm.APIError{StatusCode: 429, RetryAfter: time.Second},
+		1,
+		llm.AssistantMessage("recovered!"),
+	)
+	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
+
+	start := time.Now()
+	msg, err := agent.Run(context.Background(), "hello")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if msgText := messageText(&msg.Message); msgText != "recovered!" {
+		t.Errorf("Message text = %q, want %q", msgText, "recovered!")
+	}
+	// Retry-After is 1s; the retry wait must honor it rather than the (possibly
+	// much shorter) jittered backoff. Lower bound only: upper bounds on wall
+	// time are flaky under loaded CI.
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("elapsed = %v, want >= 900ms (Retry-After of 1s must be honored before attempt 2)", elapsed)
+	}
+}
+
 func TestAgentRun_NoRetryOnClientError(t *testing.T) {
 	provider := NewMockProvider(
 		ErrResponse(&llm.APIError{StatusCode: 400}),

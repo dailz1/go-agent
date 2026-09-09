@@ -39,6 +39,15 @@ func Backoff(base, maxDelay time.Duration, attempt int) time.Duration {
 	return d
 }
 
+// WaitForRetry waits before the next retry attempt for err.
+// If err carries an APIError with a positive RetryAfter, that duration is used
+// instead of the jittered exponential backoff; otherwise Backoff(base,
+// maxDelay, attempt) applies. The wait is capped by the context deadline and
+// returns ctx.Err() on cancellation or deadline exhaustion.
+func WaitForRetry(ctx context.Context, err error, base, maxDelay time.Duration, attempt int) error {
+	return waitForRetry(ctx, err, base, maxDelay, attempt)
+}
+
 func waitForRetry(ctx context.Context, err error, base, maxDelay time.Duration, attempt int) error {
 	delay := Backoff(base, maxDelay, attempt)
 	var apiErr *APIError
