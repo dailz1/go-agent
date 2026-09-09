@@ -9,6 +9,11 @@ import (
 
 const minToolResultRunes = 128
 
+// truncateToolResult shortens Content to at most maxRunes runes, keeping the
+// head and tail halves around a marker that states the omitted count. It
+// panics only on caller bugs: maxRunes must be at least minToolResultRunes
+// so the marker always fits. The returned *ToolResult is a shallow copy when
+// truncated; pass-through returns the original pointer.
 func truncateToolResult(result *tool.ToolResult, maxRunes int) (*tool.ToolResult, int) {
 	totalRunes := utf8.RuneCountInString(result.Content)
 	if totalRunes <= maxRunes {
@@ -19,6 +24,8 @@ func truncateToolResult(result *tool.ToolResult, maxRunes int) (*tool.ToolResult
 	omittedDigits := 1
 	var keptRunes int
 	var omittedRunes int
+	// The marker's rune count depends on the decimal width of O, so iterate
+	// until the width stabilizes (digits only grow, hence convergence).
 	for {
 		markerRunes := 51 + omittedDigits + totalDigits
 		keptRunes = maxRunes - markerRunes

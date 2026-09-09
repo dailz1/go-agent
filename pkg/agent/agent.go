@@ -569,6 +569,8 @@ func (a *Agent) resolveRetryConfig() (maxRetries int, baseDelay, maxDelay time.D
 }
 
 func (a *Agent) toolResultRunes() int {
+	// (t/10)*3 + (t%10)*3/10 is floor(t*3/10) without the overflow that
+	// tokens*3/10 hits at large windows.
 	runes := (a.contextWindowTokens/10)*3 + (a.contextWindowTokens%10)*3/10
 	if runes < minToolResultRunes {
 		runes = minToolResultRunes
