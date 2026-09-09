@@ -232,6 +232,7 @@ func parseStreamPayload(payload string) []llm.Chunk {
 	}
 
 	var chunks []llm.Chunk
+	emittedDone := false
 	for _, choice := range resp.Choices {
 		delta := choice.Delta
 
@@ -263,11 +264,13 @@ func parseStreamPayload(payload string) []llm.Chunk {
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			chunks = append(chunks, llm.DoneChunk{
 				FinishReason: *choice.FinishReason,
+				Usage:        convertUsage(resp.Usage),
 			})
+			emittedDone = true
 		}
 	}
 
-	if resp.Usage != nil {
+	if resp.Usage != nil && !emittedDone {
 		chunks = append(chunks, llm.DoneChunk{
 			Usage: convertUsage(resp.Usage),
 		})

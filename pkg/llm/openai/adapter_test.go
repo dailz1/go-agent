@@ -1065,6 +1065,47 @@ func TestParseStreamPayload_ContentAndDone(t *testing.T) {
 	}
 }
 
+func TestParseStreamPayload_FinishReasonWithUsage_YieldsOneDoneChunk(t *testing.T) {
+	t.Parallel()
+	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
+	chunks := parseStreamPayload(payload)
+
+	var done []llm.DoneChunk
+	for _, c := range chunks {
+		if d, ok := c.(llm.DoneChunk); ok {
+			done = append(done, d)
+		}
+	}
+	if len(done) != 1 {
+		t.Fatalf("expected exactly 1 DoneChunk, got %d (total chunks: %d)", len(done), len(chunks))
+	}
+	if done[0].FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want %q", done[0].FinishReason, "stop")
+	}
+	if done[0].Usage == nil || done[0].Usage.InputTokens != 10 || done[0].Usage.OutputTokens != 5 {
+		t.Errorf("Usage = %+v, want input=10 output=5", done[0].Usage)
+	}
+}
+
+func TestParseStreamPayload_UsageOnlyFrame_YieldsUsageOnlyDoneChunk(t *testing.T) {
+	t.Parallel()
+	payload := `{"id":"1","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+	chunks := parseStreamPayload(payload)
+	if len(chunks) != 1 {
+		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
+	}
+	done, ok := chunks[0].(llm.DoneChunk)
+	if !ok {
+		t.Fatalf("expected DoneChunk, got %T", chunks[0])
+	}
+	if done.FinishReason != "" {
+		t.Errorf("FinishReason = %q, want empty", done.FinishReason)
+	}
+	if done.Usage == nil || done.Usage.InputTokens != 7 || done.Usage.OutputTokens != 3 {
+		t.Errorf("Usage = %+v, want input=7 output=3", done.Usage)
+	}
+}
+
 func TestParseStreamPayload_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	chunks := parseStreamPayload("not json")
