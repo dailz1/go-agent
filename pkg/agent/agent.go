@@ -184,70 +184,14 @@ func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, err
 	return nil, fmt.Errorf("agent stream ended without a done event")
 }
 
-// RunStream executes the agent loop in streaming mode, yielding events to the
-// caller in real-time as they occur during LLM response generation, tool
-// invocation, and result processing.
+// RunStream executes the agent loop in streaming mode. It returns a lazy
+// [iter.Seq2] of [AgentEvent] values; errors (provider, tool, cancellation)
+// flow through the iterator's second value and stop iteration. Breaking out
+// of the range early is safe. The loop runs up to the configured maxIter
+// rounds; the final [DoneEvent] carries the same fields as [RunResult].
 //
-// Unlike [Agent.Run], which blocks until the entire loop completes and returns
-// a single [RunResult], RunStream returns an [iter.Seq2] that the caller ranges
-// over to receive [AgentEvent] values incrementally. This enables use cases such
-// as progressive UI rendering, server-sent event proxying, and real-time logging.
-//
-// # Event types yielded during execution
-//
-// The iterator may yield the following events, in this general order:
-//
-//   - [TextDeltaEvent]: incremental text fragment from the LLM (1:1 passthrough
-//     from the provider's TextDeltaChunk; not batched).
-//   - [ToolCallEvent]: a tool is about to be invoked, carrying the complete call
-//     ID, function name, and JSON arguments.
-//   - [ToolResultEvent]: a tool execution finished, carrying the [tool.ToolResult]
-//     (check Result.IsError() for tool-level errors).
-//   - [DoneEvent]: the loop terminated, carrying the same fields as [RunResult]
-//     (Message, History, ToolCalls, Truncated). History is a defensive copy.
-//
-// # Error handling
-//
-// Errors are yielded through the iterator's error channel (the second value in
-// the Seq2 pair), not as the outer return error. The outer error is always nil
-// in the current implementation because all provider interactions happen inside
-// the iterator closure. Errors are wrapped with iteration context using the same
-// style as [Agent.Run]:
-//
-//	fmt.Errorf("iteration %d: provider chat stream: %w", i, err)
-//
-// If a provider returns [llm.ErrStreamingNotSupported], the agent falls back to
-// Chat and synthesizes equivalent chunk events. Other provider-level, mid-stream,
-// context cancellation, and tool execution errors propagate through the iterator.
-// The caller should check the error value on each iteration.
-//
-// # Context cancellation
-//
-// ctx.Done() is checked at two points per iteration: before calling ChatStream
-// and before each tool execution. On cancellation, ctx.Err() is yielded as an
-// error and the iterator returns immediately.
-//
-// # Early exit
-//
-// If the caller breaks out of the range loop, the yield function returns false
-// and the iterator stops immediately. This is safe — no goroutines or resources
-// are leaked.
-//
-// # Multi-round tool loop
-//
-// When the LLM responds with tool calls (finishReason == "tool_calls"), the
-// iterator executes each tool, yields ToolCallEvent + ToolResultEvent pairs,
-// appends results to the conversation history, and continues to the next LLM
-// round — up to the configured maxIter. If maxIter is exhausted, a final
-// DoneEvent with Truncated=true is yielded.
-//
-// # Relationship to Run
-//
-// Run folds the events from runStreamInternal into a [RunResult]. RunStream shares
-// runStreamInternal with [Agent.RunStreamWithHistory].
+// See docs/DESIGN.md for design detail.
 func (a *Agent) RunStream(ctx context.Context, input string) (iter.Seq2[AgentEvent, error], error) {
-	// Build initial conversation history: optional system prompt + user message.
-	// Mirrors the initialization in [Agent.Run].
 	history := make([]llm.Message, 0, 16)
 	if a.system.Content != nil {
 		history = append(history, a.system)
@@ -422,9 +366,6 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				history = append(history, llm.ToolResultMessage(call.ID, result))
 			}
 
-			// Reset accumulator for the next iteration. (It's local to this
-			// scope so this is technically unnecessary, but explicit reset makes
-			// the intent clear and would matter if the accumulator were reused.)
 			accum.reset()
 		}
 	}, nil
