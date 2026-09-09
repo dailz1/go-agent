@@ -9,8 +9,8 @@ import (
 )
 
 // AgentEvent is a sealed interface for events emitted during agent execution.
-// Only the six types defined in this package (TextDeltaEvent, ThinkingDeltaEvent,
-// ToolCallEvent, ToolResultEvent, RetryEvent, DoneEvent) can implement it. Consumers should
+// Only the seven types defined in this package (TextDeltaEvent, ThinkingDeltaEvent,
+// ToolCallEvent, ToolResultEvent, RetryEvent, DoneEvent, CompactionEvent) can implement it. Consumers should
 // use a type switch to handle each variant.
 type AgentEvent interface {
 	eventType() string
@@ -105,3 +105,16 @@ type DoneEvent struct {
 }
 
 func (DoneEvent) eventType() string { return "done" }
+
+// CompactionEvent is emitted once after the agent compacts conversation
+// history to fit the context budget. History is a defensive snapshot of the
+// post-compaction conversation.
+type CompactionEvent struct {
+	Strategies    []string
+	DroppedGroups int
+	BeforeRunes   int
+	AfterRunes    int
+	History       []llm.Message
+}
+
+func (CompactionEvent) eventType() string { return "compaction" }
