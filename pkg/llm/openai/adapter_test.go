@@ -1,16 +1,234 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/dailz1/go-agent/pkg/llm"
 	"github.com/dailz1/go-agent/pkg/tool"
 )
 
 func strPtr(s string) *string { return &s }
+
+func TestProvider_StopRequestField(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream bool
+		stop   string
+	}{
+		{name: "chat with stop", stop: "STOP"},
+		{name: "chat without stop"},
+		{name: "stream with stop", stream: true, stop: "STOP"},
+		{name: "stream without stop", stream: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodyCh := make(chan []byte, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				bodyCh <- body
+
+				if tt.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+					fmt.Fprint(w, "data: [DONE]\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+			}))
+			defer srv.Close()
+
+			provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+			var opts []llm.Option
+			if tt.stop != "" {
+				opts = append(opts, llm.WithStop(tt.stop))
+			}
+
+			if tt.stream {
+				seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil, opts...)
+				if err != nil {
+					t.Fatalf("ChatStream: %v", err)
+				}
+				for _, err := range seq {
+					if err != nil {
+						t.Fatalf("consume stream: %v", err)
+					}
+				}
+			} else {
+				if _, _, err := provider.Chat(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil, opts...); err != nil {
+					t.Fatalf("Chat: %v", err)
+				}
+			}
+
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(<-bodyCh, &body); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			stop, present := body["stop"]
+			if tt.stop == "" {
+				if present {
+					t.Fatalf("stop field present without WithStop: %s", stop)
+				}
+				return
+			}
+			if !present {
+				t.Fatal("stop field absent with WithStop")
+			}
+			if got, want := string(stop), `["STOP"]`; got != want {
+				t.Fatalf("stop = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestProvider_ChatStreamIsLazy(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if seq == nil {
+		t.Fatal("ChatStream returned a nil iterator")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests before ranging = %d, want 0", got)
+	}
+}
+
+func TestProvider_ChatStreamEarlyBreakClosesBody(t *testing.T) {
+	requestCancelled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(requestCancelled)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"first\"},\"finish_reason\":null}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	for _, streamErr := range seq {
+		if streamErr != nil {
+			t.Fatalf("consume stream: %v", streamErr)
+		}
+		break
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	select {
+	case <-requestCancelled:
+	case <-ctx.Done():
+		t.Fatal("response body remained open after breaking stream iteration")
+	}
+}
+
+func TestProvider_ChatStreamSetupErrorIsLazy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rejected", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream returned eager error: %v", err)
+	}
+
+	var yields int
+	for chunk, streamErr := range seq {
+		yields++
+		if chunk != nil {
+			t.Errorf("chunk = %T, want nil", chunk)
+		}
+		if streamErr == nil {
+			t.Error("stream error = nil, want setup error")
+		}
+	}
+	if yields != 1 {
+		t.Fatalf("yield count = %d, want 1", yields)
+	}
+}
+
+func TestProvider_ChatStreamMalformedPayloadYieldsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: not-json\n\n")
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+
+	var gotErr error
+	for chunk, streamErr := range seq {
+		if chunk != nil {
+			t.Errorf("chunk = %T, want nil", chunk)
+		}
+		gotErr = streamErr
+	}
+	if gotErr == nil {
+		t.Fatal("stream error = nil, want malformed-payload error")
+	}
+	if !strings.Contains(gotErr.Error(), "openai: decode stream payload") {
+		t.Fatalf("stream error = %q, want wrapped decode error", gotErr)
+	}
+}
+
+func TestProvider_ChatStreamWithoutCompletionYieldsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+
+	var gotErr error
+	for _, streamErr := range seq {
+		if streamErr != nil {
+			gotErr = streamErr
+		}
+	}
+	if gotErr == nil || gotErr.Error() != "openai: stream ended without completion" {
+		t.Fatalf("stream error = %v, want openai: stream ended without completion", gotErr)
+	}
+}
 
 // --- convertStandardMessage ---
 
@@ -971,10 +1189,19 @@ func TestConvertMessage_RoutesByRole(t *testing.T) {
 
 // --- parseStreamPayload ---
 
+func mustParseStreamPayload(t *testing.T, payload string) []llm.Chunk {
+	t.Helper()
+	chunks, err := parseStreamPayload(payload)
+	if err != nil {
+		t.Fatalf("parseStreamPayload: %v", err)
+	}
+	return chunks
+}
+
 func TestParseStreamPayload_TextDelta(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -990,7 +1217,7 @@ func TestParseStreamPayload_TextDelta(t *testing.T) {
 func TestParseStreamPayload_ToolCallStart(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) < 1 {
 		t.Fatal("expected at least 1 chunk")
 	}
@@ -1012,7 +1239,7 @@ func TestParseStreamPayload_ToolCallStart(t *testing.T) {
 func TestParseStreamPayload_ToolCallArgs(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"ci"}}]},"finish_reason":null}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) < 1 {
 		t.Fatal("expected at least 1 chunk")
 	}
@@ -1028,7 +1255,7 @@ func TestParseStreamPayload_ToolCallArgs(t *testing.T) {
 func TestParseStreamPayload_Done(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -1044,7 +1271,7 @@ func TestParseStreamPayload_Done(t *testing.T) {
 func TestParseStreamPayload_SkipsRoleOnly(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 0 {
 		t.Errorf("expected 0 chunks for role-only delta, got %d", len(chunks))
 	}
@@ -1053,7 +1280,7 @@ func TestParseStreamPayload_SkipsRoleOnly(t *testing.T) {
 func TestParseStreamPayload_ContentAndDone(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"bye"},"finish_reason":"stop"}]}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
@@ -1068,7 +1295,7 @@ func TestParseStreamPayload_ContentAndDone(t *testing.T) {
 func TestParseStreamPayload_FinishReasonWithUsage_YieldsOneDoneChunk(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 
 	var done []llm.DoneChunk
 	for _, c := range chunks {
@@ -1090,7 +1317,7 @@ func TestParseStreamPayload_FinishReasonWithUsage_YieldsOneDoneChunk(t *testing.
 func TestParseStreamPayload_UsageOnlyFrame_YieldsUsageOnlyDoneChunk(t *testing.T) {
 	t.Parallel()
 	payload := `{"id":"1","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
-	chunks := parseStreamPayload(payload)
+	chunks := mustParseStreamPayload(t, payload)
 	if len(chunks) != 1 {
 		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
 	}
@@ -1108,7 +1335,13 @@ func TestParseStreamPayload_UsageOnlyFrame_YieldsUsageOnlyDoneChunk(t *testing.T
 
 func TestParseStreamPayload_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	chunks := parseStreamPayload("not json")
+	chunks, err := parseStreamPayload("not json")
+	if err == nil {
+		t.Fatal("error = nil, want malformed-payload error")
+	}
+	if !strings.Contains(err.Error(), "decode stream payload") {
+		t.Fatalf("error = %q, want wrapped decode error", err)
+	}
 	if len(chunks) != 0 {
 		t.Errorf("expected 0 chunks for invalid JSON, got %d", len(chunks))
 	}

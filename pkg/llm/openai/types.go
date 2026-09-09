@@ -8,6 +8,7 @@ type chatRequest struct {
 	Tools       []toolDef     `json:"tools,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
+	Stop        []string      `json:"stop,omitempty"`
 	// Stream enables SSE streaming when set to true. The response is then
 	// consumed via [llm.ScanSSEEvents] instead of being parsed as a single JSON
 	// object.

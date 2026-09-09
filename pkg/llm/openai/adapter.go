@@ -89,6 +89,7 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		Model:       firstNonEmpty(o.Model, p.model),
 		MaxTokens:   o.MaxTokens,
 		Temperature: o.Temperature,
+		Stop:        o.Stop,
 	}
 
 	reqMessages, err := convertMessages(messages)
@@ -160,9 +161,8 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 // The caller ranges over the returned iterator to consume chunks. Breaking
 // out of the range early is safe — the response body is closed via defer.
 //
-// On non-2xx HTTP responses, an [*llm.APIError] is returned immediately
-// (before the iterator is created). Network-level errors during iteration
-// are yielded as errors inside the iterator.
+// Request setup and network errors are yielded from the iterator when ranging
+// begins, preserving the provider's lazy-streaming contract.
 func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	o := llm.ApplyOptions(opts)
 
@@ -170,6 +170,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		Model:         firstNonEmpty(o.Model, p.model),
 		MaxTokens:     o.MaxTokens,
 		Temperature:   o.Temperature,
+		Stop:          o.Stop,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
@@ -194,28 +195,41 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		"tools_count", len(reqBody.Tools),
 	)
 
-	result, err := llm.DoStreamRequest(ctx, p.httpClient, llm.RequestConfig{
-		Method:  http.MethodPost,
-		URL:     p.baseURL + "/chat/completions",
-		Headers: p.apiHeaders(),
-	}, reqBody)
-	if err != nil {
-		p.logger.Error("openai stream request failed", "error", err)
-		return nil, err
-	}
-
 	return func(yield func(llm.Chunk, error) bool) {
+		result, err := llm.DoStreamRequest(ctx, p.httpClient, llm.RequestConfig{
+			Method:  http.MethodPost,
+			URL:     p.baseURL + "/chat/completions",
+			Headers: p.apiHeaders(),
+		}, reqBody)
+		if err != nil {
+			p.logger.Error("openai stream request failed", "error", err)
+			yield(nil, err)
+			return
+		}
 		defer result.Cleanup()
+
+		yieldedDone := false
 		for payload, err := range llm.ScanSSEEvents(ctx, result.Body) {
 			if err != nil {
 				yield(nil, err)
 				return
 			}
-			for _, c := range parseStreamPayload(payload) {
+			chunks, err := parseStreamPayload(payload)
+			if err != nil {
+				yield(nil, fmt.Errorf("openai: %w", err))
+				return
+			}
+			for _, c := range chunks {
+				if _, ok := c.(llm.DoneChunk); ok {
+					yieldedDone = true
+				}
 				if !yield(c, nil) {
 					return
 				}
 			}
+		}
+		if !yieldedDone {
+			yield(nil, fmt.Errorf("openai: stream ended without completion"))
 		}
 	}, nil
 }
@@ -223,12 +237,11 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 // parseStreamPayload converts a raw SSE JSON payload from OpenAI's streaming
 // API into a slice of [llm.Chunk] values. A single SSE event may produce
 // multiple chunks (e.g. both a TextDeltaChunk and a DoneChunk when the model
-// sends text content alongside a finish_reason). Returns nil on unparseable
-// JSON, which the caller should silently skip.
-func parseStreamPayload(payload string) []llm.Chunk {
+// sends text content alongside a finish_reason).
+func parseStreamPayload(payload string) ([]llm.Chunk, error) {
 	var resp streamResponse
 	if err := json.Unmarshal([]byte(payload), &resp); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode stream payload: %w", err)
 	}
 
 	var chunks []llm.Chunk
@@ -276,7 +289,7 @@ func parseStreamPayload(payload string) []llm.Chunk {
 		})
 	}
 
-	return chunks
+	return chunks, nil
 }
 
 func convertMessages(messages []llm.Message) ([]chatMessage, error) {
