@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -33,14 +34,14 @@ type ApprovalFunc func(info tool.ToolInfo, args json.RawMessage) bool
 // Agent runs an autonomous LLM loop: chat → tool call → result → chat, until
 // the LLM produces a final text response or the iteration limit is reached.
 type Agent struct {
-	provider   llm.Provider
-	registry   *tool.Registry
-	system     llm.Message
-	maxIter    int
-	approvalFn ApprovalFunc
-	logger     *slog.Logger
-	llmOpts    []llm.Option
-	retryCfg   AgentRetryConfig
+	provider    llm.Provider
+	registry    *tool.Registry
+	system      llm.Message
+	maxIter     int
+	approvalFn  ApprovalFunc
+	logger      *slog.Logger
+	llmOpts     []llm.Option
+	retryCfg    AgentRetryConfig
 	retryCfgSet bool
 }
 
@@ -50,9 +51,9 @@ type Agent struct {
 // Zero-value semantics: if MaxRetries is 0 and the config was not explicitly set via WithRetryConfig,
 // defaults are applied (MaxRetries=3, BaseDelay=500ms). To disable retry entirely, set MaxRetries to -1.
 type AgentRetryConfig struct {
-	MaxRetries int                                           // number of retries after first attempt. Default: 3. Set to -1 to disable retry.
-	BaseDelay  time.Duration                                 // base delay for exponential backoff. Default: 500ms.
-	MaxDelay   time.Duration                                 // upper bound for a single backoff delay. Default: 120s.
+	MaxRetries int                  // number of retries after first attempt. Default: 3. Set to -1 to disable retry.
+	BaseDelay  time.Duration        // base delay for exponential backoff. Default: 500ms.
+	MaxDelay   time.Duration        // upper bound for a single backoff delay. Default: 120s.
 	OnRetry    func(info RetryInfo) // optional callback invoked on each retry
 }
 
@@ -144,100 +145,43 @@ func (a *Agent) Run(ctx context.Context, input string) (*RunResult, error) {
 		history = append(history, a.system)
 	}
 	history = append(history, llm.UserMessage(input))
-	return a.runInternal(ctx, history)
+	seq, err := a.runStreamInternal(ctx, history)
+	if err != nil {
+		return nil, err
+	}
+	return a.foldRunStream(seq)
 }
 
-func (a *Agent) runInternal(ctx context.Context, history []llm.Message) (*RunResult, error) {
-	tools := a.registry.List()
-
-	a.logger.Info("agent run started",
-		"tools_count", len(tools),
-	)
-
-	var totalToolCalls int
-	var allRetries []RetryInfo
-	var totalUsage llm.Usage
-	var lastUsage llm.Usage
-
-	for i := 0; i < a.maxIter; i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		a.logger.Debug("agent iteration",
-			"iteration", i,
-			"history_length", len(history),
-		)
-
-		resp, usage, retries, err := a.retryProviderCall(ctx, func() (*llm.Message, *llm.Usage, error) {
-			return a.provider.Chat(ctx, history, tools, a.llmOpts...)
-		})
-		allRetries = append(allRetries, retries...)
+func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, error) {
+	var retries []RetryInfo
+	for event, err := range seq {
 		if err != nil {
-			return nil, fmt.Errorf("iteration %d: provider chat: %w", i, err)
-		}
-		if usage != nil {
-			lastUsage = *usage
-			totalUsage = totalUsage.Add(lastUsage)
+			return nil, err
 		}
 
-		a.logger.Debug("llm response",
-			"iteration", i,
-			"response", llm.Truncate(messageText(resp), 500),
-		)
-
-		toolUseCalls := extractToolUse(resp)
-		if len(toolUseCalls) == 0 {
-			history = append(history, *resp)
-			a.logger.Debug("agent final response",
-				"response", llm.Truncate(messageText(resp), 500),
-			)
-			a.logger.Info("agent run completed",
-				"iterations", i+1,
-				"tool_calls", totalToolCalls,
-				"truncated", false,
-			)
-			return &RunResult{
-				Message:    *resp,
-				History:    copyMessages(history),
-				ToolCalls:  totalToolCalls,
-				Retries:    allRetries,
-				Usage:      lastUsage,
-				TotalUsage: totalUsage,
-			}, nil
-		}
-
-		history = append(history, *resp)
-
-		if i == a.maxIter-1 {
-			a.logger.Warn("agent run truncated",
-				"iterations", a.maxIter,
-				"tool_calls", totalToolCalls,
-			)
-			return &RunResult{
-				Message:    *resp,
-				History:    copyMessages(history),
-				ToolCalls:  totalToolCalls,
-				Truncated:  true,
-				Retries:    allRetries,
-				Usage:      lastUsage,
-				TotalUsage: totalUsage,
-			}, nil
-		}
-
-		totalToolCalls += len(toolUseCalls)
-
-		for _, call := range toolUseCalls {
-			result, err := a.executeTool(ctx, call)
-			if err != nil {
-				return nil, fmt.Errorf("iteration %d: tool %q: %w", i, call.Name, err)
+		switch e := event.(type) {
+		case RetryEvent:
+			retries = append(retries, e.RetryInfo)
+			if a.retryCfg.OnRetry != nil {
+				a.retryCfg.OnRetry(e.RetryInfo)
 			}
-			history = append(history, llm.ToolResultMessage(call.ID, result))
+		case DoneEvent:
+			return &RunResult{
+				Message:    e.Message,
+				History:    e.History,
+				ToolCalls:  e.ToolCalls,
+				Truncated:  e.Truncated,
+				Retries:    retries,
+				Usage:      e.Usage,
+				TotalUsage: e.TotalUsage,
+			}, nil
+		case TextDeltaEvent, ThinkingDeltaEvent, ToolCallEvent, ToolResultEvent:
+			// Run returns only the completed result.
+		default:
+			return nil, fmt.Errorf("agent stream emitted unknown event %T", event)
 		}
 	}
-	return nil, fmt.Errorf("unreachable: agent loop exited without returning (maxIter=%d)", a.maxIter)
+	return nil, fmt.Errorf("agent stream ended without a done event")
 }
 
 // RunStream executes the agent loop in streaming mode, yielding events to the
@@ -272,9 +216,10 @@ func (a *Agent) runInternal(ctx context.Context, history []llm.Message) (*RunRes
 //
 //	fmt.Errorf("iteration %d: provider chat stream: %w", i, err)
 //
-// Provider-level errors (e.g. [llm.ErrStreamingNotSupported]), mid-stream errors,
-// context cancellation, and tool execution errors all propagate through the
-// iterator. The caller should check the error value on each iteration.
+// If a provider returns [llm.ErrStreamingNotSupported], the agent falls back to
+// Chat and synthesizes equivalent chunk events. Other provider-level, mid-stream,
+// context cancellation, and tool execution errors propagate through the iterator.
+// The caller should check the error value on each iteration.
 //
 // # Context cancellation
 //
@@ -298,10 +243,7 @@ func (a *Agent) runInternal(ctx context.Context, history []llm.Message) (*RunRes
 //
 // # Relationship to Run
 //
-// RunStream and [Agent.Run] use separate internal implementations (runStreamInternal
-// vs runInternal) because they interact with the provider differently (ChatStream vs
-// Chat) and return different types (iterator vs struct). Both produce equivalent
-// side effects (history structure, tool execution behavior). RunStream shares
+// Run folds the events from runStreamInternal into a [RunResult]. RunStream shares
 // runStreamInternal with [Agent.RunStreamWithHistory].
 func (a *Agent) RunStream(ctx context.Context, input string) (iter.Seq2[AgentEvent, error], error) {
 	// Build initial conversation history: optional system prompt + user message.
@@ -321,9 +263,9 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 		"tools_count", len(tools),
 	)
 
-		var totalToolCalls int
-		var streamRetries []RetryInfo
-		var totalUsage llm.Usage
+	var totalToolCalls int
+	var streamRetries []RetryInfo
+	var totalUsage llm.Usage
 
 	// Return an iterator closure. The body executes lazily — nothing happens
 	// until the caller starts ranging over the returned Seq2.
@@ -355,6 +297,45 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			var lastRetryErr error
 			for attempt := 1; attempt <= maxAttempts; attempt++ {
 				stream, lastRetryErr = a.provider.ChatStream(ctx, history, tools, a.llmOpts...)
+				if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
+					response, usage, err := a.provider.Chat(ctx, history, tools, a.llmOpts...)
+					lastRetryErr = err
+					if err == nil {
+						stream = func(yield func(llm.Chunk, error) bool) {
+							toolIndex := 0
+							hasToolUse := false
+							for _, block := range response.Content {
+								switch b := block.(type) {
+								case llm.ReasoningBlock:
+									if !yield(llm.ReasoningDeltaChunk{Text: b.Content}, nil) {
+										return
+									}
+								case llm.TextBlock:
+									if !yield(llm.TextDeltaChunk{Text: b.Text}, nil) {
+										return
+									}
+								case llm.ToolUseBlock:
+									hasToolUse = true
+									if !yield(llm.ToolCallStartChunk{Index: toolIndex, ID: b.ID, Name: b.Name}, nil) {
+										return
+									}
+									if !yield(llm.ToolCallArgsChunk{Index: toolIndex, Delta: string(b.Input)}, nil) {
+										return
+									}
+									toolIndex++
+								case llm.ImageBlock, llm.ToolResultBlock:
+									// These blocks have no streaming representation.
+								}
+							}
+							finishReason := "stop"
+							if hasToolUse {
+								finishReason = "tool_calls"
+							}
+							yield(llm.DoneChunk{FinishReason: finishReason, Usage: usage}, nil)
+						}
+						break
+					}
+				}
 				if lastRetryErr == nil {
 					break
 				}
@@ -408,13 +389,13 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					return
 				}
 
-			switch c := chunk.(type) {
-			case llm.ReasoningDeltaChunk:
-				accum.feed(chunk)
-				if !yield(ThinkingDeltaEvent{Text: c.Text}, nil) {
-					return
-				}
-			case llm.TextDeltaChunk:
+				switch c := chunk.(type) {
+				case llm.ReasoningDeltaChunk:
+					accum.feed(chunk)
+					if !yield(ThinkingDeltaEvent{Text: c.Text}, nil) {
+						return
+					}
+				case llm.TextDeltaChunk:
 					accum.feed(chunk)
 					if !yield(TextDeltaEvent{Text: c.Text}, nil) {
 						return
@@ -426,7 +407,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					//   - ToolCallArgsChunk → append Delta to args strings.Builder
 					accum.feed(chunk)
 				case llm.DoneChunk:
-				accum.feed(chunk)
+					accum.feed(chunk)
 				default:
 					// Silently ignore unknown chunk types for forward compatibility.
 				}
@@ -556,7 +537,11 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input string) (*RunResult, error) {
 	copied := copyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
-	return a.runInternal(ctx, copied)
+	seq, err := a.runStreamInternal(ctx, copied)
+	if err != nil {
+		return nil, err
+	}
+	return a.foldRunStream(seq)
 }
 
 // RunStreamWithHistory executes the streaming agent loop with a pre-existing
@@ -584,57 +569,6 @@ func (a *Agent) resolveRetryConfig() (maxRetries int, baseDelay, maxDelay time.D
 		maxDelay = llm.DefaultMaxDelay
 	}
 	return
-}
-
-func (a *Agent) retryProviderCall(ctx context.Context, fn func() (*llm.Message, *llm.Usage, error)) (*llm.Message, *llm.Usage, []RetryInfo, error) {
-	maxRetries, baseDelay, maxDelay := a.resolveRetryConfig()
-	if maxRetries < 0 {
-		resp, usage, err := fn()
-		return resp, usage, nil, err
-	}
-	maxAttempts := maxRetries + 1
-
-	var lastErr error
-	var retries []RetryInfo
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resp, usage, err := fn()
-		if err == nil {
-			return resp, usage, retries, nil
-		}
-		if ctx.Err() != nil {
-			return nil, nil, retries, ctx.Err()
-		}
-		if !llm.IsRetryableError(err) && !llm.IsNetworkError(err) {
-			return nil, nil, retries, err
-		}
-		lastErr = err
-		if attempt < maxAttempts {
-			delay := llm.Backoff(baseDelay, maxDelay, attempt)
-			a.logger.Warn("agent retrying provider call",
-				"attempt", attempt+1,
-				"max_attempts", maxAttempts,
-				"delay", delay,
-				"error", err,
-			)
-			info := RetryInfo{
-				Attempt:     attempt + 1,
-				MaxAttempts: maxAttempts,
-				Delay:       delay,
-				Reason:      llm.SanitizeRetryReason(err),
-				Err:         err,
-			}
-			retries = append(retries, info)
-			if a.retryCfg.OnRetry != nil {
-				a.retryCfg.OnRetry(info)
-			}
-			select {
-			case <-ctx.Done():
-				return nil, nil, retries, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-	}
-	return nil, nil, retries, fmt.Errorf("provider call failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result *tool.ToolResult, err error) {
@@ -694,16 +628,6 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result 
 	)
 
 	return result, nil
-}
-
-func extractToolUse(msg *llm.Message) []llm.ToolUseBlock {
-	var calls []llm.ToolUseBlock
-	for _, block := range msg.Content {
-		if tb, ok := block.(llm.ToolUseBlock); ok {
-			calls = append(calls, tb)
-		}
-	}
-	return calls
 }
 
 func messageText(msg *llm.Message) string {

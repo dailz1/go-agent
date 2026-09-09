@@ -1133,28 +1133,38 @@ func TestRunStream_ProviderError(t *testing.T) {
 }
 
 func TestRunStream_StreamingNotSupported(t *testing.T) {
-	provider := NewMockStreamingProvider(nil).WithStreamError(llm.ErrStreamingNotSupported)
+	provider := NewMockProvider(MsgWithUsageResponse(
+		llm.AssistantMessage("fallback response"),
+		&llm.Usage{InputTokens: 10, OutputTokens: 5},
+	))
 
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 	seq, outerErr := agent.RunStream(context.Background(), "hello")
-
-	if outerErr != nil {
-		t.Fatalf("unexpected outer error: %v", outerErr)
+	events, errs := collectEvents(t, seq, outerErr)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected iterator errors: %v", errs)
+	}
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(events))
 	}
 
-	var gotErr error
-	for _, iterErr := range seq {
-		if iterErr != nil {
-			gotErr = iterErr
-			break
-		}
+	text, ok := events[0].(TextDeltaEvent)
+	if !ok {
+		t.Fatalf("first event = %T, want TextDeltaEvent", events[0])
+	}
+	if text.Text != "fallback response" {
+		t.Errorf("TextDeltaEvent.Text = %q, want %q", text.Text, "fallback response")
 	}
 
-	if gotErr == nil {
-		t.Fatal("expected iterator error, got nil")
+	done, ok := events[1].(DoneEvent)
+	if !ok {
+		t.Fatalf("second event = %T, want DoneEvent", events[1])
 	}
-	if !errors.Is(gotErr, llm.ErrStreamingNotSupported) {
-		t.Errorf("errors.Is(err, llm.ErrStreamingNotSupported) = false; err = %v", gotErr)
+	if messageText(&done.Message) != "fallback response" {
+		t.Errorf("DoneEvent.Message text = %q, want %q", messageText(&done.Message), "fallback response")
+	}
+	if done.Usage.InputTokens != 10 || done.Usage.OutputTokens != 5 {
+		t.Errorf("DoneEvent.Usage = %+v, want input=10 output=5", done.Usage)
 	}
 }
 
@@ -2740,12 +2750,9 @@ func TestAgentRun_UsageAccumulatesWithNilInMiddle(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	// lastUsage retains the previous value when nil is returned
-	if result.Usage.InputTokens != 50 {
-		t.Errorf("Usage.InputTokens = %d, want 50 (retained from first iteration)", result.Usage.InputTokens)
-	}
-	if result.Usage.OutputTokens != 20 {
-		t.Errorf("Usage.OutputTokens = %d, want 20 (retained from first iteration)", result.Usage.OutputTokens)
+	// Usage reflects the last iteration, which reported no usage.
+	if !result.Usage.IsZero() {
+		t.Errorf("Usage = %+v, want zero when the last iteration reports nil usage", result.Usage)
 	}
 
 	// totalUsage only has the first iteration (nil usage is not added)
