@@ -1058,7 +1058,7 @@ func TestRunStream_MultipleToolCallsInOneStream(t *testing.T) {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
 
-	// Expect: ToolCall(add), ToolResult(add), ToolCall(mul), ToolResult(mul), TextDelta, Done
+	// Expect: ToolCall(add), ToolCall(mul), ToolResult(add), ToolResult(mul), TextDelta, Done
 	if len(events) != 6 {
 		t.Fatalf("expected 6 events, got %d", len(events))
 	}
@@ -1068,13 +1068,13 @@ func TestRunStream_MultipleToolCallsInOneStream(t *testing.T) {
 	if !ok || tc1.Name != "add" {
 		t.Errorf("events[0] = %T %+v, want ToolCallEvent{Name:%q}", events[0], events[0], "add")
 	}
-	tr1, ok := events[1].(ToolResultEvent)
-	if !ok || tr1.Name != "add" {
-		t.Errorf("events[1] = %T %+v, want ToolResultEvent{Name:%q}", events[1], events[1], "add")
-	}
-	tc2, ok := events[2].(ToolCallEvent)
+	tc2, ok := events[1].(ToolCallEvent)
 	if !ok || tc2.Name != "mul" {
-		t.Errorf("events[2] = %T %+v, want ToolCallEvent{Name:%q}", events[2], events[2], "mul")
+		t.Errorf("events[1] = %T %+v, want ToolCallEvent{Name:%q}", events[1], events[1], "mul")
+	}
+	tr1, ok := events[2].(ToolResultEvent)
+	if !ok || tr1.Name != "add" {
+		t.Errorf("events[2] = %T %+v, want ToolResultEvent{Name:%q}", events[2], events[2], "add")
 	}
 	tr2, ok := events[3].(ToolResultEvent)
 	if !ok || tr2.Name != "mul" {

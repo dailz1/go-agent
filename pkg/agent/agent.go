@@ -194,7 +194,8 @@ type RunResult struct {
 	// History is the full conversation trace including all intermediate
 	// tool calls and results.
 	History []llm.Message
-	// ToolCalls is the total number of tool invocations performed.
+	// ToolCalls is the total number of tool calls the model requested
+	// (announced calls, including rejected or unknown tools).
 	ToolCalls int
 	// Truncated is true when the agent hit maxIter without reaching a final
 	// text response.
@@ -430,6 +431,17 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			}
 
 			totalToolCalls += len(toolBlocks)
+			// Announce every call of the round before executing any of them.
+			// Contiguous ToolCallEvents mark one assistant reply, which is
+			// what lets consumers rebuild history from events alone; do not
+			// add a context check inside this batch — splitting it would
+			// leave an appended assistant message partially announced and
+			// impossible to reconstruct.
+			for _, call := range toolBlocks {
+				if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: call.Input}, nil) {
+					return
+				}
+			}
 			for _, call := range toolBlocks {
 				// Check for context cancellation before each tool execution.
 				select {
@@ -437,9 +449,6 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					yield(nil, ctx.Err())
 					return
 				default:
-				}
-				if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: call.Input}, nil) {
-					return
 				}
 				// executeTool handles: registry lookup, approval check,
 				// execution, and nil-result guard. System-level errors

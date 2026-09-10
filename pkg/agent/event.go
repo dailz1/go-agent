@@ -33,8 +33,12 @@ type ThinkingDeltaEvent struct {
 
 func (ThinkingDeltaEvent) eventType() string { return "thinking_delta" }
 
-// ToolCallEvent is emitted when the agent invokes a tool, carrying the
-// complete call details including the full JSON arguments.
+// ToolCallEvent announces a tool call the model requested in its reply. All
+// calls of a round are announced before any of them executes, so a call may
+// never run (an earlier call fails hard, or the run is cancelled first).
+// ToolResultEvent reports the actual outcome. Delivery is synchronous: a
+// consumer that breaks during the announcement batch stops the run before
+// any tool of the round executes.
 type ToolCallEvent struct {
 	// ID is the unique identifier for this tool call.
 	ID string
@@ -46,12 +50,13 @@ type ToolCallEvent struct {
 
 func (ToolCallEvent) eventType() string { return "tool_call" }
 
-// ToolResultEvent is emitted when a tool execution completes, carrying the
-// result back to the consumer.
+// ToolResultEvent is emitted once a call's outcome is recorded in history,
+// covering successful execution, soft failures, approval rejections, and
+// unknown tools.
 type ToolResultEvent struct {
 	// ID is the tool call ID this result belongs to.
 	ID string
-	// Name is the function name that was invoked.
+	// Name is the function name the call requested.
 	Name string
 	// Result is the execution result (may have IsError=true).
 	Result *tool.ToolResult
@@ -91,7 +96,8 @@ type DoneEvent struct {
 	// History is the full conversation trace including all intermediate
 	// tool calls and results.
 	History []llm.Message
-	// ToolCalls is the total number of tool invocations performed.
+	// ToolCalls is the total number of tool calls the model requested
+	// in completed rounds (announced calls, including rejected or unknown tools).
 	ToolCalls int
 	// Truncated is true when the agent hit maxIter without reaching a final
 	// text response.
