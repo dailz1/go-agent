@@ -45,7 +45,7 @@
 | `llm.Provider` | 接入任意模型供应商 |
 | `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent） |
 | `AgentEvent` 事件流 | 观测 / UI / 审计 / 回放的唯一入口 |
-| `Store`（建设中） | 会话持久化、崩溃恢复、跨会话积累 |
+| `Store`（建设中） | 会话持久化与崩溃恢复：内核自动持久化（`WithStore`/`RunThread`），提交点先落库后行动 |
 
 现有事件类型：`text_delta` / `thinking_delta` / `tool_call` / `tool_result` / `retry` / `done` / `compaction`（与 OpenAI Agents SDK 等业界分类一致）。
 
@@ -68,7 +68,7 @@
 ### P1 运行时安全
 - 工具结果截断：按上下文占比设上限（约 30% 规则），掐头留尾，入库前执行（已落地，见 §7）
 - 历史预算管理：`Compactor` 策略接口 + 最简实现；压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）（已落地，见 §7）
-- 会话持久化 `Store`：**事件日志优先**（追加式事件日志，状态由日志推导，参照 LangGraph 检查点模型与 Temporal 回放原则）；支持"线程 + 检查点"
+- - 会话持久化 `Store`：**内核自动持久化**（`WithStore` 选项 + `RunThread` 线程入口；未配置零开销）。数据形状：线程 = 规范记录日志（`run_started` 含运行输入、版本化事件信封、`round_commit` 轮次提交、终止错误）+ 检查点（可重建加速器：History 快照 + next_seq；日志全量保留，v1 不清理）。两个内核提交点：**输入先落库再调模型；整轮工具调用先落库再执行**；持久化失败即终止本轮（默认安全）。追加带期望版本号（乐观并发）+ record_id 幂等重试；未知记录类型返回类型化错误；v1 单进程（每线程串行、跨线程并行）。实现：接口 + 内存 + JSONL 文件（fsync 先于确认、撕裂尾截断、内部损坏报错）进 `pkg/store`，其余后端留卫星包。中断轮的未决工具调用恢复时按“结果未知”合成软错误（副作用窗口如实记档，工具应幂等）。生命周期记录仅入日志，不改七类密封事件。（契约已定 2026-09-10，见 §7）
 
 ### P2 扩展面
 - `Tool` / `Provider` 中间件（包装器模式）
@@ -105,5 +105,6 @@
 - 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
 - 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
 - 事件折叠契约已钉死：`agent_fold_test.go` 仅凭事件流独立重建 `RunResult.History`，覆盖审批拒绝、未知工具软错误、截断限幅、压缩重同步、重试、非流式回退与错误中断路径；截断轮的悬空工具调用仅经 `DoneEvent.Message` 到达消费者。P0 全部关闭，Store 的前置（事件序列可重建）已具备。
+- Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。实现待开工，验收测试清单见 .omo/evidence/st_01a08a3f-code-review.md。
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
 - 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
