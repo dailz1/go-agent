@@ -303,10 +303,7 @@ func (a *Agent) RunStream(ctx context.Context, input string) (iter.Seq2[AgentEve
 
 func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (iter.Seq2[AgentEvent, error], error) {
 	tools := a.registry.List()
-
-	a.logger.Info("agent runstream started",
-		"tools_count", len(tools),
-	)
+	a.logger.Info("agent runstream started", "tools_count", len(tools))
 
 	var totalToolCalls int
 	var streamRetries []RetryInfo
@@ -323,59 +320,16 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				return
 			default:
 			}
-
-			// Same overflow-safe idiom as toolResultRunes: floor(windowTokens*percent/100).
-			targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
-				(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
-			beforeRunes := estimateRunes(history)
-			if a.compactor != nil && beforeRunes > targetRunes {
-				result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes})
-				for _, strategyErr := range result.Errors {
-					a.logger.Warn("history compaction strategy failed", "error", strategyErr)
-				}
-				if err != nil {
-					a.logger.Warn("history compaction failed", "error", err)
-				} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
-					a.logger.Warn("history compaction produced invalid history", "error", validationErr)
-				} else {
-					if result.Changed {
-						history = result.History
-						afterRunes := estimateRunes(history)
-						a.logger.Warn("history compacted",
-							"strategies", strings.Join(result.Strategies, ","),
-							"dropped_groups", result.DroppedGroups,
-							"before_runes", beforeRunes,
-							"after_runes", afterRunes,
-						)
-						if !yield(CompactionEvent{
-							Strategies:    append([]string{}, result.Strategies...),
-							DroppedGroups: result.DroppedGroups,
-							BeforeRunes:   beforeRunes,
-							AfterRunes:    afterRunes,
-							History:       deepCopyMessages(history),
-						}, nil) {
-							return
-						}
-					}
-
-					select {
-					case <-ctx.Done():
-						yield(nil, ctx.Err())
-						return
-					default:
-					}
-					if estimateRunes(history) > targetRunes {
-						yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
-						return
-					}
-				}
+			var ok bool
+			history, ok = a.compactHistoryRound(ctx, history, yield)
+			if !ok {
+				return
 			}
 
 			a.logger.Debug("agent stream iteration",
 				"iteration", i,
 				"history_length", len(history),
 			)
-
 			stream, ok := a.chatWithRetryAndFallback(
 				ctx,
 				history,
@@ -387,18 +341,15 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			if !ok {
 				return
 			}
-
 			// Accumulate tool call fragments and text from the streaming response.
 			// The accumulator handles interleaved multi-tool-call streams via
 			// map[int]*callAccum keyed by Index, and sorts output by Index in finish().
 			var accum toolCallAccum
-
 			for chunk, chunkErr := range stream {
 				if chunkErr != nil {
 					yield(nil, chunkErr)
 					return
 				}
-
 				switch c := chunk.(type) {
 				case llm.ReasoningDeltaChunk:
 					accum.feed(chunk)
@@ -422,11 +373,9 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					// Silently ignore unknown chunk types for forward compatibility.
 				}
 			}
-
 			if u := accum.usage(); u != nil {
 				totalUsage = totalUsage.Add(*u)
 			}
-
 			assistantMsg, toolBlocks, ok := a.assembleAssistantMessage(&accum, i, yield)
 			if !ok {
 				return
@@ -456,7 +405,6 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				}, nil)
 				return
 			}
-
 			// The LLM requested tool execution. On the last iteration, skip
 			// execution and yield a truncated DoneEvent — tool results would
 			// never be fed back to the LLM since the loop is about to exit.
@@ -482,7 +430,6 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			}
 
 			totalToolCalls += len(toolBlocks)
-
 			for _, call := range toolBlocks {
 				// Check for context cancellation before each tool execution.
 				select {
@@ -491,11 +438,9 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					return
 				default:
 				}
-
 				if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: call.Input}, nil) {
 					return
 				}
-
 				// executeTool handles: registry lookup, approval check,
 				// execution, and nil-result guard. System-level errors
 				// (e.g. tool.Execute returned a Go error) are yielded as
@@ -506,18 +451,70 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					yield(nil, fmt.Errorf("iteration %d: tool %q: %w", i, call.Name, err))
 					return
 				}
-
 				result = a.applyToolResultLimit(call, result)
 				history = append(history, llm.ToolResultMessage(call.ID, result))
-
 				if !yield(ToolResultEvent{ID: call.ID, Name: call.Name, Result: result}, nil) {
 					return
 				}
 			}
-
 			accum.reset()
 		}
 	}, nil
+}
+
+// compactHistoryRound enforces the history budget at the top of each round and reports via events.
+func (a *Agent) compactHistoryRound(
+	ctx context.Context,
+	history []llm.Message,
+	yield func(AgentEvent, error) bool,
+) ([]llm.Message, bool) {
+	// Same overflow-safe idiom as toolResultRunes: floor(windowTokens*percent/100).
+	targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
+		(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
+	beforeRunes := estimateRunes(history)
+	if a.compactor != nil && beforeRunes > targetRunes {
+		result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes})
+		for _, strategyErr := range result.Errors {
+			a.logger.Warn("history compaction strategy failed", "error", strategyErr)
+		}
+		if err != nil {
+			a.logger.Warn("history compaction failed", "error", err)
+		} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
+			a.logger.Warn("history compaction produced invalid history", "error", validationErr)
+		} else {
+			if result.Changed {
+				history = result.History
+				afterRunes := estimateRunes(history)
+				a.logger.Warn("history compacted",
+					"strategies", strings.Join(result.Strategies, ","),
+					"dropped_groups", result.DroppedGroups,
+					"before_runes", beforeRunes,
+					"after_runes", afterRunes,
+				)
+				if !yield(CompactionEvent{
+					Strategies:    append([]string{}, result.Strategies...),
+					DroppedGroups: result.DroppedGroups,
+					BeforeRunes:   beforeRunes,
+					AfterRunes:    afterRunes,
+					History:       deepCopyMessages(history),
+				}, nil) {
+					return history, false
+				}
+			}
+
+			select {
+			case <-ctx.Done():
+				yield(nil, ctx.Err())
+				return history, false
+			default:
+			}
+			if estimateRunes(history) > targetRunes {
+				yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
+				return history, false
+			}
+		}
+	}
+	return history, true
 }
 
 func (a *Agent) assembleAssistantMessage(
