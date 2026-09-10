@@ -6,7 +6,7 @@ Agent core: streaming-first tool-calling loop over an `llm.Provider`, with histo
 | Task | Location |
 |------|----------|
 | Understand the loop | `runStreamInternal` (agent.go:304) - the single execution path; `Run` folds it, non-streaming providers are synthesized into chunks (`synthesizeChunks`) |
-| Retry / streaming fallback | `chatWithRetryAndFallback` (agent.go:553); falls back to `Chat` on `llm.ErrStreamingNotSupported` |
+| Retry / streaming fallback | `chatWithRetryAndFallback` (agent.go:550); falls back to `Chat` on `llm.ErrStreamingNotSupported` |
 | Multi-tool stream reassembly | accumulator.go - `toolCallAccum` keyed by stream `Index` |
 | Compaction strategies | compact.go - standard, sliding-window, drop-oldest-tool-groups, summarization, plus `NewCompactorChain` |
 | Tool-result truncation | truncate.go - head+tail with omission marker; panics on invalid rune limits by contract ("caller bug") |
