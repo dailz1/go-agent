@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dailz1/go-agent/pkg/llm"
+	"github.com/dailz1/go-agent/pkg/store"
 	"github.com/dailz1/go-agent/pkg/tool"
 )
 
@@ -110,6 +111,7 @@ type Agent struct {
 	llmOpts                    []llm.Option
 	retryCfg                   AgentRetryConfig
 	retryCfgSet                bool
+	store                      store.Store
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -187,6 +189,15 @@ func WithRetryConfig(cfg AgentRetryConfig) Option {
 	return func(a *Agent) { a.retryCfg = cfg; a.retryCfgSet = true }
 }
 
+// WithStore enables kernel-automatic session persistence: RunThread /
+// ResumeThread / RunThreadStream address threads explicitly, and Run / RunStream
+// gain a kernel-generated thread ID exposed via ThreadID fields. Without a
+// store nothing changes: no thread ID is generated and the persistence path
+// never executes. See docs/DESIGN.md for the persistence contract.
+func WithStore(s store.Store) Option {
+	return func(a *Agent) { a.store = s }
+}
+
 // RunResult holds the outcome of a single agent.Run call.
 type RunResult struct {
 	// Message is the final assistant response.
@@ -206,6 +217,9 @@ type RunResult struct {
 	Usage llm.Usage
 	// TotalUsage is the cumulative token usage across all iterations.
 	TotalUsage llm.Usage
+	// ThreadID identifies the persisted thread when a store is configured;
+	// empty without one.
+	ThreadID string
 }
 
 // New creates an Agent with the given LLM provider and tool registry.
@@ -245,12 +259,15 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 // Returns an error only for system-level failures (provider unreachable, tool
 // Execute returned a Go error). Tool-level errors are fed back to the LLM.
 func (a *Agent) Run(ctx context.Context, input string) (*RunResult, error) {
+	if a.store != nil {
+		return a.runOnNewThread(ctx, input)
+	}
 	history := make([]llm.Message, 0, 16)
 	if a.system.Content != nil {
 		history = append(history, a.system)
 	}
 	history = append(history, llm.UserMessage(input))
-	seq, err := a.runStreamInternal(ctx, history)
+	seq, err := a.runStreamInternal(ctx, history, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -276,6 +293,7 @@ func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, err
 				Retries:    retries,
 				Usage:      e.Usage,
 				TotalUsage: e.TotalUsage,
+				ThreadID:   e.ThreadID,
 			}, nil
 		case TextDeltaEvent, ThinkingDeltaEvent, ToolCallEvent, ToolResultEvent, CompactionEvent:
 			// Run returns only the completed result.
@@ -294,21 +312,28 @@ func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, err
 //
 // See docs/DESIGN.md for design detail.
 func (a *Agent) RunStream(ctx context.Context, input string) (iter.Seq2[AgentEvent, error], error) {
+	if a.store != nil {
+		return a.runOnNewThreadStream(ctx, input), nil
+	}
 	history := make([]llm.Message, 0, 16)
 	if a.system.Content != nil {
 		history = append(history, a.system)
 	}
 	history = append(history, llm.UserMessage(input))
-	return a.runStreamInternal(ctx, history)
+	return a.runStreamInternal(ctx, history, nil)
 }
 
-func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (iter.Seq2[AgentEvent, error], error) {
+func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, sess *persistence) (iter.Seq2[AgentEvent, error], error) {
 	tools := a.registry.List()
 	a.logger.Info("agent runstream started", "tools_count", len(tools))
 
 	var totalToolCalls int
 	var streamRetries []RetryInfo
 	var totalUsage llm.Usage
+	var threadID string
+	if sess != nil {
+		threadID = sess.thread
+	}
 
 	// Return an iterator closure. The body executes lazily — nothing happens
 	// until the caller starts ranging over the returned Seq2.
@@ -322,7 +347,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 			default:
 			}
 			var ok bool
-			history, ok = a.compactHistoryRound(ctx, history, yield)
+			history, ok = a.compactHistoryRound(ctx, history, yield, sess)
 			if !ok {
 				return
 			}
@@ -396,6 +421,13 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				if u := accum.usage(); u != nil {
 					lastUsage = *u
 				}
+				// Terminal state is durable before the event may be delivered.
+				if sess != nil {
+					if err := sess.finishRun(ctx, assistantMsg, totalToolCalls, false, lastUsage, totalUsage); err != nil {
+						yield(nil, err)
+						return
+					}
+				}
 				yield(DoneEvent{
 					Message:    assistantMsg,
 					History:    copyMessages(history),
@@ -403,6 +435,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					Retries:    streamRetries,
 					Usage:      lastUsage,
 					TotalUsage: totalUsage,
+					ThreadID:   threadID,
 				}, nil)
 				return
 			}
@@ -418,6 +451,18 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 				if u := accum.usage(); u != nil {
 					lastUsage = *u
 				}
+				// Truncation closes the round honestly: the declared calls
+				// are known not to have executed, so they get deterministic
+				// skipped results before the truncated Done is durable and
+				// delivered.
+				if sess != nil {
+					skipped, err := sess.truncateRun(ctx, i, assistantMsg, totalToolCalls, lastUsage, totalUsage)
+					if err != nil {
+						yield(nil, err)
+						return
+					}
+					history = append(history, skipped...)
+				}
 				yield(DoneEvent{
 					Message:    assistantMsg,
 					History:    copyMessages(history),
@@ -426,11 +471,20 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					Retries:    streamRetries,
 					Usage:      lastUsage,
 					TotalUsage: totalUsage,
+					ThreadID:   threadID,
 				}, nil)
 				return
 			}
 
 			totalToolCalls += len(toolBlocks)
+			// The whole round is durable before any call is announced,
+			// executed, or sent to approval.
+			if sess != nil {
+				if err := sess.declareRound(ctx, i, assistantMsg); err != nil {
+					yield(nil, err)
+					return
+				}
+			}
 			// Announce every call of the round before executing any of them.
 			// Contiguous ToolCallEvents mark one assistant reply, which is
 			// what lets consumers rebuild history from events alone; do not
@@ -442,6 +496,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					return
 				}
 			}
+			var roundResults []llm.Message
 			for _, call := range toolBlocks {
 				// Check for context cancellation before each tool execution.
 				select {
@@ -461,8 +516,18 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message) (i
 					return
 				}
 				result = a.applyToolResultLimit(call, result)
-				history = append(history, llm.ToolResultMessage(call.ID, result))
+				resultMsg := llm.ToolResultMessage(call.ID, result)
+				history = append(history, resultMsg)
+				roundResults = append(roundResults, resultMsg)
 				if !yield(ToolResultEvent{ID: call.ID, Name: call.Name, Result: result}, nil) {
+					return
+				}
+			}
+			// The round commits only after every result exists; a crash
+			// before this point replays the whole batch as outcome unknown.
+			if sess != nil {
+				if err := sess.commitRound(ctx, i, roundResults); err != nil {
+					yield(nil, err)
 					return
 				}
 			}
@@ -476,6 +541,7 @@ func (a *Agent) compactHistoryRound(
 	ctx context.Context,
 	history []llm.Message,
 	yield func(AgentEvent, error) bool,
+	sess *persistence,
 ) ([]llm.Message, bool) {
 	// Same overflow-safe idiom as toolResultRunes: floor(windowTokens*percent/100).
 	targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
@@ -494,6 +560,14 @@ func (a *Agent) compactHistoryRound(
 			if result.Changed {
 				history = result.History
 				afterRunes := estimateRunes(history)
+				// The compacted view is durable before it is announced, so
+				// replay never re-runs a (nondeterministic) summarizer.
+				if sess != nil {
+					if err := sess.checkpoint(ctx, history); err != nil {
+						yield(nil, err)
+						return history, false
+					}
+				}
 				a.logger.Warn("history compacted",
 					"strategies", strings.Join(result.Strategies, ","),
 					"dropped_groups", result.DroppedGroups,
@@ -671,7 +745,7 @@ func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
 func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input string) (*RunResult, error) {
 	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
-	seq, err := a.runStreamInternal(ctx, copied)
+	seq, err := a.runStreamInternal(ctx, copied, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -686,7 +760,7 @@ func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input
 func (a *Agent) RunStreamWithHistory(ctx context.Context, history []llm.Message, input string) (iter.Seq2[AgentEvent, error], error) {
 	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
-	return a.runStreamInternal(ctx, copied)
+	return a.runStreamInternal(ctx, copied, nil)
 }
 
 func (a *Agent) resolveRetryConfig() (maxRetries int, baseDelay, maxDelay time.Duration) {

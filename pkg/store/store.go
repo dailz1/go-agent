@@ -1,8 +1,10 @@
 // Package store provides durable session persistence for agent threads.
 //
-// A thread is a canonical record log: lifecycle records (run_started with the
-// run input, round_commit with a full announced tool-call batch, error) and
-// checkpoint records alternate with versioned agent-event envelopes. The log
+// A thread is a canonical record log: lifecycle records (run_started with
+// the run input and thread system prompt, round_declared with a round's full
+// assistant message, round_committed with its ordered model-visible results,
+// error) and checkpoint records alternate with versioned agent-event
+// envelopes. The log
 // is the source of truth; checkpoints are rebuildable accelerators (a history
 // snapshot positioned at a point in the log) and are safe to discard.
 //
@@ -33,11 +35,12 @@ const SchemaV1 = 1
 // them through untouched, because rejecting them is a codec policy (the
 // agent layer decides which kinds affect state).
 const (
-	KindRunStarted  = "run_started"  // payload: run input and base revision
-	KindAgentEvent  = "agent_event"  // payload: versioned AgentEvent envelope
-	KindRoundCommit = "round_commit" // payload: the full announced tool-call batch
-	KindError       = "error"        // payload: terminal stream error description
-	KindCheckpoint  = "checkpoint"   // payload: Checkpoint
+	KindRunStarted     = "run_started"     // payload: run input and thread system prompt
+	KindAgentEvent     = "agent_event"     // payload: versioned AgentEvent envelope
+	KindRoundDeclared  = "round_declared"  // payload: the round's full assistant message
+	KindRoundCommitted = "round_committed" // payload: the round's ordered model-visible results
+	KindError          = "error"           // payload: terminal stream error description
+	KindCheckpoint     = "checkpoint"      // payload: Checkpoint
 )
 
 // Errors returned by Store implementations. Wrapped I/O failures remain
@@ -118,6 +121,15 @@ type Store interface {
 	// kinds appear in Tail untouched.
 	Latest(ctx context.Context, thread string) (ThreadState, error)
 
+	// History returns the thread's records with Seq >= from, in sequence
+	// order, including records a checkpoint would hide: unlike Latest it
+	// never omits a prefix. It is the fallback read for replay when the
+	// newest checkpoint cannot be trusted; from <= 0 selects the entire
+	// log (records start at Seq 0). Unknown threads yield an empty result.
+	// The returned records are copies; mutating them does not affect the
+	// store.
+	History(ctx context.Context, thread string, from int64) ([]Record, error)
+
 	// Delete removes the thread and all its records. Deleting an unknown
 	// thread — including one that exists on disk but has not been loaded in
 	// this process — is equivalent to deleting an empty thread. The thread
@@ -194,7 +206,7 @@ func planAppend(log []Record, expected int64, batch []Record) (apply []Record, h
 
 func validateRecord(r *Record) error {
 	switch r.Kind {
-	case KindRunStarted, KindAgentEvent, KindRoundCommit, KindError, KindCheckpoint:
+	case KindRunStarted, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindError, KindCheckpoint:
 	default:
 		return ErrUnknownKind
 	}
@@ -214,6 +226,20 @@ func validateRecord(r *Record) error {
 		return ErrInvalidRecord
 	}
 	return nil
+}
+
+// historyStart maps a History from bound (Seq >= from) to a slice index over
+// n records numbered from Seq 0: from <= 0 selects the whole log; an
+// overshooting from selects the empty tail.
+func historyStart(from, n int64) int {
+	switch {
+	case from <= 0:
+		return 0
+	case from >= n:
+		return int(n)
+	default:
+		return int(from)
+	}
 }
 
 // timeNow is a seam for tests to stub the clock.

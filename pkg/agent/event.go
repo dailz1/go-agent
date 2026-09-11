@@ -108,6 +108,9 @@ type DoneEvent struct {
 	Usage llm.Usage
 	// TotalUsage is the cumulative token usage across all iterations.
 	TotalUsage llm.Usage
+	// ThreadID identifies the persisted thread when a store is configured;
+	// empty without one.
+	ThreadID string
 }
 
 func (DoneEvent) eventType() string { return "done" }

@@ -28,6 +28,10 @@ func TestJSONLStoreContract(t *testing.T) {
 		s, _ := newTestJSONL(t)
 		return s
 	})
+	exerciseHistoryContract(t, func() Store {
+		s, _ := newTestJSONL(t)
+		return s
+	})
 }
 
 func TestJSONLPersistsAcrossReopen(t *testing.T) {

@@ -115,6 +115,22 @@ func (s *JSONLStore) Latest(ctx context.Context, thread string) (ThreadState, er
 	return state, nil
 }
 
+// History implements Store.
+func (s *JSONLStore) History(ctx context.Context, thread string, from int64) ([]Record, error) {
+	if err := s.checkOpen(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	th, err := s.lockThread(ctx, thread)
+	if err != nil {
+		return nil, err
+	}
+	defer th.mu.Unlock()
+	return cloneRecords(th.records[historyStart(from, int64(len(th.records))):]), nil
+}
+
 // Delete implements Store. It loads (and crash-repairs) the thread first, so
 // a persisted-but-unloaded thread is genuinely removed; the operation is
 // linearized against Append/Latest under the thread lock.

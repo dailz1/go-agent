@@ -73,6 +73,20 @@ func (m *MemoryStore) Latest(ctx context.Context, thread string) (ThreadState, e
 	return state, nil
 }
 
+// History implements Store.
+func (m *MemoryStore) History(ctx context.Context, thread string, from int64) ([]Record, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	log := m.threads[thread]
+	return cloneRecords(log[historyStart(from, int64(len(log))):]), nil
+}
+
 // Delete implements Store. Deleting an unknown thread is a no-op.
 func (m *MemoryStore) Delete(ctx context.Context, thread string) error {
 	if err := ctx.Err(); err != nil {
