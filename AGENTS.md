@@ -5,7 +5,7 @@
 **Branch:** main
 
 ## OVERVIEW
-go-agent is a zero-dependency Go library for building LLM agents: a streaming-first tool-calling loop (`pkg/agent`) over pluggable provider adapters (`pkg/llm` with `glm`/`openai`) and a thread-safe tool registry (`pkg/tool`). No `package main` - library only. Layering: `agent -> llm -> tool`; adapters import `llm`+`tool` and are consumer-selected (nothing in-repo imports `glm`; `openai` only from the e2e test).
+go-agent is a zero-dependency Go library for building LLM agents: a streaming-first tool-calling loop (`pkg/agent`) over pluggable provider adapters (`pkg/llm` with `glm`/`openai`) and a thread-safe tool registry (`pkg/tool`). No `package main` in pkg/ - library only (`examples/` holds demonstration mains outside the kernel). Layering: `agent -> llm -> tool`; adapters import `llm`+`tool` and are consumer-selected (nothing in-repo imports `glm`; `openai` only from the e2e test).
 
 ## STRUCTURE
 ```
