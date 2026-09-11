@@ -36,6 +36,7 @@
 │  pkg/tool   工具接口 + 注册表                   │
 ├─────────────────────────────────────────────┤
 │ 适配器：openai（兼容接口）/ glm（智谱，JWT）      │
+│          openairesponses（Responses 协议）        │
 └─────────────────────────────────────────────┘
 ```
 
@@ -80,3 +81,54 @@
 - 并发：每线程非阻塞运行所有权——第二个并发运行在**任何模型调用之前**即得类型化冲突（单纯加锁等待是串行化，不是冲突）；乐观版本号追加 + record_id 幂等重试作为其他写者的后盾。不可变记录批次与 ID 只生成一次，重试逐字节同一内容。
 - 线程 ID：调用方 ID 非空、有界、不规范化（转义后须满足文件名边界）；内核生成 = crypto-random 128 位，走 **rev=0 保留语义**：目标线程已存在即视为保留冲突，换新 ID 重试（绝不污染既有线程），重试仅限该次冲突。`RunResult` 与 `DoneEvent` 暴露 `ThreadID`；无 store 时不生成。显式线程入口（`RunThread` / `ResumeThread` / `RunThreadStream`）要求已配置 Store，否则返回 `ErrNoStore`，不静默降级为非持久运行。head=0 即"新建"，无"线程不存在"语义；调用方 ID 复用即"追加到既有线程"。`RunWithHistory` / `RunStreamWithHistory` 保持非持久（一次性导入语义，不入线程）。运行所有权按（Store 实例, 线程）全局登记，不按 Agent 实例；Store 值必须可比较（指针式实现，两个内置后端均满足），否则所有权登记返回类型化错误而不 panic。
 - v1 单进程（写入按线程串行化；同目录仅允许一个 JSONL 实例，由 NewJSONL 强制）。所有失败、取消与中断均保持运行可恢复；agent v1 从不写终止错误记录（KindError 仅为兼容保留：重放时视为关闭运行）。v1 非目标：HITL 等待落库、日志清理、跨进程协调；同步审批回调参与宣告/提交轮状态，但不是持久化 HITL 等待。
+
+### OpenAI Responses 协议适配器（`pkg/llm/openairesponses`，建设中）
+
+独立子包实现同一 `llm.Provider` 接口（`Name` 为 `openai_responses`），与 glm/openai 平行；协议差异是条目级的，不做双协议混包。已裁决（2026-09-11）：D1 独立子包；D2 状态策略 A（`store:false` + 手动回放）；D3 新增条目级 reasoning 块；D4 内建工具不做；D5 Chat+ChatStream 全量、mock SSE 单测 + e2e。
+
+- 状态策略：`store:false` + 手动全量回放 items——历史由调用方持有，与 Compactor/截断/Store 完全正交；不使用 `previous_response_id` 与 Conversations API（B 方案留作未来可选模式）。
+- 输入映射：system 消息 → 顶层 `instructions`；user/assistant 消息 → `message` item；assistant 的 `tool_use` block → `function_call` item；`tool_result` → `function_call_output`（`call_id` 关联）；`reasoning_item` block → `reasoning` item（`encrypted_content` 原样透传，置于其 `function_call` 之前，保持声明顺序）。
+- 输出映射：`message.output_text` → `TextBlock`；`reasoning` → `ReasoningItemBlock`；`function_call` → `ToolUseBlock`（`call_id` 即块 ID）；未知输出 item 类型忽略（debug 日志，向前兼容）。
+- 流式映射：`response.output_text.delta` → `TextDeltaChunk`；`response.reasoning_summary_text.delta` → `ReasoningDeltaChunk`；`response.output_item.added`(function_call) → `ToolCallStartChunk`（index = output_index）；`response.function_call_arguments.delta` → `ToolCallArgsChunk`；`response.output_item.done`/`response.completed` → 累积与 `DoneChunk`（usage）；`response.failed`/`response.incomplete`/`error` → 错误。未知流式事件类型忽略。
+- `llm` 新增 `ContentBlock` 变体 `ReasoningItemBlock{ID, EncryptedContent, Summary}`（type `reasoning_item`）：条目级推理项，与 `ReasoningBlock`（CC 协议内嵌推理文本）语义不同；持久化原样承载。既有适配器转换时跳过该 block，不产出也不出错。
+- v1 不支持：内建工具（web_search/file_search/code_interpreter/computer/MCP）、结构化输出（`text.format`）、`previous_response_id`、WebSocket 模式。ToolInfo 只产 function 定义，内建工具无法被请求。
+- SSE 复用 `llm.DoStreamRequest`/`llm.ScanSSEEvents`；非 2xx 用 `llm.APIError`；Chat（非流式）解析 `output` items 组装最终消息。
+
+### P2 扩展面
+- `Tool` / `Provider` 中间件（包装器模式）
+- 工具并行执行（默认串行保证确定性；历史按调用顺序追加，完成可乱序靠 ID 配对）
+- 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent
+
+### P3 生态
+- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包）
+- agent-as-tool（30 行适配器，多智能体由此组装）
+- README + `examples/`
+
+### Backlog（按需）
+结构化输出（JSON schema）；花费上限；原生 Anthropic / Ollama 适配器；更丰富的人工介入（改写、批准后继续）。
+
+### 永不做
+模型训练/微调、图形界面、内置 RAG、图编排引擎。
+
+### 扩展包（内核之外，独立演进的卫星包）
+记忆包（情景/语义记忆）、自进化包（程序记忆：从轨迹总结经验、改进提示词、学新工具）、工具集包。验收标准：这些包落地时内核 diff 为零。
+
+## 6. 关键调研结论（2026-09-09）
+
+- 事件分类、只读事件 + 包装器扩展，均与业界共识一致（OpenAI Agents SDK / Vercel AI SDK / PydanticAI）。
+- 截断教训：只掐头不留尾是 bug 来源（Hermes 案例）；按上下文占比限幅（openclaw 30% 规则）；上游 API 不会静默截断（Claude 超限直接报错），限幅必须发生在本层。
+- 压缩参照 Microsoft Agent Framework：策略组合（丢最老工具组 → 滑窗 → 摘要），在 token 预算下依序执行。
+- 持久化参照 LangGraph（线程/检查点）与 Temporal（事件回放，恢复时不重新执行不确定操作）。
+- 行业正在把本层命名为 "agent runtime" 并与 agent 逻辑分离——本项目方向与行业收敛一致。
+
+## 7. 当前状态（2026-09-10）
+
+- 模块 `github.com/dailz1/go-agent`，Go 1.26，stdlib-only，git 已建（main，基线 `d5281c9`）。
+- 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm 适配、token 用量统计、完整测试（5 包全绿）。
+- 工具结果截断（单结果 ≤ max(128, WithContextWindowTokens×30%) rune，50/50 掐头留尾，默认窗口 8192）。
+- 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
+- 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
+- 事件折叠契约已钉死：`agent_fold_test.go` 仅凭事件流独立重建 `RunResult.History`，覆盖审批拒绝、未知工具软错误、截断限幅、压缩重同步、重试、非流式回退与错误中断路径；截断轮的悬空工具调用仅经 `DoneEvent.Message` 到达消费者。P0 全部关闭，Store 的前置（事件序列可重建）已具备。
+- Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。实现待开工，验收测试清单见 .omo/evidence/st_01a08a3f-code-review.md。
+- 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
+- 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
