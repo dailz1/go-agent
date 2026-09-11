@@ -130,6 +130,7 @@ type Store interface {
 // run it under their locks before any classification, so stored state never
 // aliases caller memory and validation cannot diverge.
 func prepareBatch(batch []Record) ([]Record, error) {
+	seen := make(map[string]struct{}, len(batch))
 	out := make([]Record, len(batch))
 	for i := range batch {
 		r := batch[i]
@@ -139,15 +140,12 @@ func prepareBatch(batch []Record) ([]Record, error) {
 		if err := validateRecord(&r); err != nil {
 			return nil, err
 		}
-		r.Payload = append(json.RawMessage(nil), r.Payload...)
-		out[i] = r
-	}
-	seen := make(map[string]struct{}, len(out))
-	for i := range out {
-		if _, dup := seen[out[i].ID]; dup {
+		if _, dup := seen[r.ID]; dup {
 			return nil, ErrInvalidRecord
 		}
-		seen[out[i].ID] = struct{}{}
+		seen[r.ID] = struct{}{}
+		r.Payload = append(json.RawMessage(nil), r.Payload...)
+		out[i] = r
 	}
 	return out, nil
 }
