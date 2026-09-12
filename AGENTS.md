@@ -15,6 +15,7 @@ go-agent is a zero-dependency Go library for building LLM agents: a streaming-fi
 ├── pkg/llm/        # Provider iface, Message/Chunk model, HTTP+SSE, retry, APIError
 │   ├── glm/        # GLM adapter: JWT/bearer auth sniffing, eager stream request
 │   └── openai/     # OpenAI-compatible adapter: lazy stream, include_usage
+│   └── openairesponses/ # OpenAI Responses protocol: typed items, store:false replay, reasoning items
 └── pkg/tool/       # Tool iface, soft-error ToolResult, RWMutex Registry
 ```
 

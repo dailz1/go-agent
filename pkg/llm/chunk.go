@@ -25,6 +25,10 @@ type Chunk interface {
 type TextDeltaChunk struct {
 	// Text is the incremental content produced by the model in this chunk.
 	Text string
+	// OutputIndex is the position of the owning output item in the
+	// provider's output array (Responses protocol); zero for protocols
+	// without item indexing.
+	OutputIndex int64
 }
 
 func (TextDeltaChunk) chunkType() string { return "text_delta" }
@@ -70,6 +74,19 @@ type ToolCallArgsChunk struct {
 }
 
 func (ToolCallArgsChunk) chunkType() string { return "tool_call_args" }
+
+// ReasoningItemChunk delivers one entry-level reasoning item (Responses
+// protocol) during streaming, tagged with its output index so the assembled
+// assistant message preserves the protocol's item order.
+type ReasoningItemChunk struct {
+	// OutputIndex is the item's position in the response output array.
+	OutputIndex int64
+	// Item is the complete reasoning item, including encrypted content when
+	// requested.
+	Item ReasoningItemBlock
+}
+
+func (ReasoningItemChunk) chunkType() string { return "reasoning_item" }
 
 // DoneChunk signals that the stream has completed. No more chunks will follow.
 type DoneChunk struct {

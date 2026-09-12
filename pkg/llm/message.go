@@ -66,6 +66,20 @@ type ToolUseBlock struct {
 
 func (ToolUseBlock) blockType() string { return "tool_use" }
 
+// ReasoningItemBlock is an entry-level reasoning item from the Responses
+// protocol: the model's reasoning tokens as a distinct, addressable item
+// (with its server-side ID and, for stateless store:false usage, the opaque
+// encrypted content) that must be replayed ahead of the tool calls it
+// precedes. It is protocol-specific: Chat Completions adapters skip it.
+type ReasoningItemBlock struct {
+	Type             string   `json:"type"`
+	ID               string   `json:"id,omitempty"`
+	EncryptedContent string   `json:"encrypted_content,omitempty"`
+	Summary          []string `json:"summary,omitempty"`
+}
+
+func (ReasoningItemBlock) blockType() string { return "reasoning_item" }
+
 // ToolResultBlock represents the result of a tool execution, fed back to the LLM.
 type ToolResultBlock struct {
 	Type      string `json:"type"`
@@ -189,6 +203,9 @@ func unmarshalContentBlock(data []byte) (ContentBlock, error) {
 		return b, json.Unmarshal(data, &b)
 	case "reasoning":
 		var b ReasoningBlock
+		return b, json.Unmarshal(data, &b)
+	case "reasoning_item":
+		var b ReasoningItemBlock
 		return b, json.Unmarshal(data, &b)
 	case "image":
 		var b ImageBlock

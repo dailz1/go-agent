@@ -13,6 +13,7 @@ Shared kernel: `Provider` interface, `Message`/`ContentBlock` model, `Chunk` str
 | Retry classification | retry.go - only 429/5xx/network retry; `sleepFor` package-var test seam |
 | GLM adapter (glm/) | JWT-vs-bearer auth sniffed from key content, thinking mode, `tool_stream`, eager HTTP request |
 | Auth internals (glm/) | auth.go - HS256 JWT, ~5-min early-expiry token cache (sync.Map), `timeNow` clock seam |
+| Responses adapter (openairesponses/) | POST /responses, store:false + full item replay, entry reasoning items (ReasoningItemBlock) with encrypted_content, semantic SSE events; built-in tools/structured outputs/previous_response_id NOT supported (v1) |
 | OpenAI adapter (openai/) | lazy request inside iterator, `stream_options.include_usage`, fails stream without a DoneChunk, round-trips ReasoningContent |
 | Request knobs | `llm.Option` set: WithModel / WithMaxTokens / WithTemperature / WithStop; applied via exported `ApplyOptions` (provider.go) |
 | Message constructors | SystemMessage / UserMessage / AssistantMessage / AssistantToolCallMessage / ToolResultMessage (message.go) |
@@ -27,4 +28,4 @@ Shared kernel: `Provider` interface, `Message`/`ContentBlock` model, `Chunk` str
 
 ## ANTI-PATTERNS (THIS PACKAGE)
 - Do not implement `Provider`/`ContentBlock`/`Chunk` outside this package - sealed via unexported marker methods.
-- Do not add a third adapter by forking one and "improving" shared helpers in only one place - keep the pair in sync.
+- ~~Do not add a third adapter~~: `openairesponses/` (Responses protocol) is sanctioned (owner ruling 2026-09-11) as an independent item-based adapter. The CC pair (glm/openai) must still stay in sync with each other; `ReasoningItemBlock` in assistant history is SKIPPED (never emitted, never errored) by both CC adapters, and EMITTED only by `openairesponses`.

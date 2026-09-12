@@ -331,7 +331,7 @@ func convertStandardMessage(m llm.Message) (chatMessage, error) {
 	parts := make([]contentPart, 0, len(m.Content))
 	for _, block := range m.Content {
 		switch b := block.(type) {
-		case llm.ReasoningBlock:
+		case llm.ReasoningBlock, llm.ReasoningItemBlock, *llm.ReasoningItemBlock:
 			continue
 		case llm.TextBlock:
 			parts = append(parts, contentPart{Type: "text", Text: b.Text})
@@ -363,6 +363,11 @@ func convertAssistant(m llm.Message) (chatMessage, error) {
 		switch b := block.(type) {
 		case llm.ReasoningBlock:
 			reasoningContent = &b.Content
+			continue
+		case *llm.ReasoningItemBlock:
+			continue
+		case llm.ReasoningItemBlock:
+			// Responses-protocol entry: no Chat Completions equivalent; skip.
 			continue
 		case llm.TextBlock:
 			textParts = append(textParts, b.Text)

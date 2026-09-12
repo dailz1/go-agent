@@ -443,7 +443,7 @@ func convertStandardMessage(m llm.Message) (chatMessage, error) {
 	parts := make([]contentPart, 0, len(m.Content))
 	for _, block := range m.Content {
 		switch b := block.(type) {
-		case llm.ReasoningBlock:
+		case llm.ReasoningBlock, llm.ReasoningItemBlock, *llm.ReasoningItemBlock:
 			// Silently strip — GLM doesn't accept reasoning in outbound messages
 			continue
 		case llm.TextBlock:
@@ -470,7 +470,7 @@ func convertAssistant(m llm.Message) (chatMessage, error) {
 
 	for _, block := range m.Content {
 		switch b := block.(type) {
-		case llm.ReasoningBlock:
+		case llm.ReasoningBlock, llm.ReasoningItemBlock, *llm.ReasoningItemBlock:
 			// Silently strip — GLM doesn't accept reasoning in outbound messages
 			continue
 		case llm.TextBlock:

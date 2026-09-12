@@ -48,6 +48,15 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 					cloned := *typed
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
+			case llm.ReasoningItemBlock:
+				typed.Summary = append([]string(nil), typed.Summary...)
+				dst[messageIndex].Content[blockIndex] = typed
+			case *llm.ReasoningItemBlock:
+				if typed != nil {
+					cloned := *typed
+					cloned.Summary = append([]string(nil), cloned.Summary...)
+					dst[messageIndex].Content[blockIndex] = &cloned
+				}
 			case *llm.ToolResultBlock:
 				if typed != nil {
 					cloned := *typed
@@ -393,6 +402,11 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					//   - ToolCallStartChunk → create new callAccum{ id, name }
 					//   - ToolCallArgsChunk → append Delta to args strings.Builder
 					accum.feed(chunk)
+				case llm.ReasoningItemChunk:
+					// Entry-level reasoning item (Responses protocol): consumed
+					// by the accumulator for ordered assembly; not a consumer
+					// event.
+					accum.feed(chunk)
 				case llm.DoneChunk:
 					accum.feed(chunk)
 				default:
@@ -605,15 +619,12 @@ func (a *Agent) assembleAssistantMessage(
 	iteration int,
 	yield func(AgentEvent, error) bool,
 ) (llm.Message, []llm.ToolUseBlock, bool) {
-	// Reconstruct the assistant message from accumulated content.
-	// We build it manually (combining textBlocks + toolUseBlocks) rather
-	// than using llm.AssistantToolCallMessage(), which discards text blocks
-	// when tool calls are present. The model may emit "thinking" text
-	// alongside tool calls, and that text must be preserved in history.
-	var contentBlocks []llm.ContentBlock
-	contentBlocks = append(contentBlocks, accum.reasoningBlocks()...)
-	contentBlocks = append(contentBlocks, accum.textBlocks()...)
-	toolBlocks, assembleErr := accum.assemble()
+	// Reconstruct the assistant message from accumulated content. We build
+	// it manually (combining textBlocks + toolUseBlocks) rather than using
+	// llm.AssistantToolCallMessage(), which discards text blocks when tool
+	// calls are present. The model may emit "thinking" text alongside tool
+	// calls, and that text must be preserved in history.
+	contentBlocks, toolBlocks, assembleErr := accum.assembleContent()
 	if assembleErr != nil {
 		a.logger.Warn("stream response corrupted, aborting iteration",
 			"iteration", iteration,
@@ -621,9 +632,6 @@ func (a *Agent) assembleAssistantMessage(
 		)
 		yield(nil, fmt.Errorf("iteration %d: %w", iteration, assembleErr))
 		return llm.Message{}, nil, false
-	}
-	for _, b := range toolBlocks {
-		contentBlocks = append(contentBlocks, b)
 	}
 
 	assistantMsg := llm.Message{Role: llm.RoleAssistant, Content: contentBlocks}
