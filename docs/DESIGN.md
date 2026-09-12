@@ -55,6 +55,11 @@
 
 - **内核装机制，扩展包装策略。** 压缩算法、记忆整理、进化方法都是策略；存储接口、事件模型、截断边界都是机制。
 - **观察用事件，改行为用包装。** 事件流只读；要改变行为就包装 `Tool` 或 `Provider`（中间件模式），不给 hook 随意改写流量的权限。
+  - 包装器守则（P2-1）:
+    - 观察型包装器默认透传完整 `ToolInfo`（名称、schema、`RequiresApproval`）。允许有意改名，但注册与广播都按包装体最终 `Info().Name`，注册名与模型可见名必须一致。
+    - `Execute` 传递原 `ctx` 与 `args`；软错误 `ToolResult` 不得提升为 Go error，Go error 也不得降级为软结果；包装错误必须 `%w`，保持 `errors.Is/As` 对哨兵与 `*llm.APIError` 的识别（尤其不得吞 `ErrStreamingNotSupported`，否则非流回退与重试分类失效）。
+    - Provider 包装器原样传递 messages/tools/options/usage 与外层、迭代内错误；流式包装器不得预先 range，保持 `iter.Seq2` 惰性与早退安全；限流许可横跨迭代器生命周期（自然结束与早退都要释放）。
+    - 日志示例只记元数据（名称、ID、长度）或显式截断/脱敏载荷，不逐字复制 prompt/参数/结果。可运行示例见 `examples/middleware`。
 - **流是原语，同步是衍生物。** 只维护一条执行路径，`Run` 是事件流的归并。
 - **默认安全。** 危险工具须审批；工具 panic 不外泄；结果截断；预算可设。
 - **每步可靠胜过整体聪明。** 每步 95% 可靠，连跑 10 步只剩 60%（误差复利）。内核的每一分投入都优先花在"每一步更可靠"上。
@@ -97,7 +102,7 @@
 - SSE 复用 `llm.DoStreamRequest`/`llm.ScanSSEEvents`；非 2xx 用 `llm.APIError`；Chat（非流式）解析 `output` items 组装最终消息。
 
 ### P2 扩展面
-- `Tool` / `Provider` 中间件（包装器模式）
+- `Tool` / `Provider` 中间件（包装器模式）——已落地（P2-1，docs+example，见 `examples/middleware`；不加内核类型或链式 API）
 - 工具并行执行（默认串行保证确定性；历史按调用顺序追加，完成可乱序靠 ID 配对）
 - 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent
 
