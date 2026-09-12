@@ -126,11 +126,12 @@
 ## 7. 当前状态（2026-09-10）
 
 - 模块 `github.com/dailz1/go-agent`，Go 1.26，stdlib-only，git 已建（main，基线 `d5281c9`）。
-- 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm 适配、token 用量统计、完整测试（5 包全绿）。
+- 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm/openairesponses 适配、token 用量统计、完整测试（7 包全绿）。
 - 工具结果截断（单结果 ≤ max(128, WithContextWindowTokens×30%) rune，50/50 掐头留尾，默认窗口 8192）。
 - 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
 - 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
 - 事件折叠契约已钉死：`agent_fold_test.go` 仅凭事件流独立重建 `RunResult.History`，覆盖审批拒绝、未知工具软错误、截断限幅、压缩重同步、重试、非流式回退与错误中断路径；截断轮的悬空工具调用仅经 `DoneEvent.Message` 到达消费者。P0 全部关闭，Store 的前置（事件序列可重建）已具备。
-- Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。实现待开工，验收测试清单见 .omo/evidence/st_01a08a3f-code-review.md。
+- Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。Store v1 已实现并提交：pkg/agent 侧 16feb3b（WithStore/RunThread/ResumeThread/RunThreadStream），pkg/store 契约实现 dfb7803。
+- OpenAI Responses 适配器已实现并提交（fe2c7d6，pkg/llm/openairesponses）：typed items、store:false 全量回放、reasoning items（含 encrypted_content）；内置工具/结构化输出/previous_response_id 不支持（v1）。
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
 - 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。

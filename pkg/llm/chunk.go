@@ -4,9 +4,9 @@
 package llm
 
 // Chunk is a sealed interface for streaming response fragments emitted by
-// [Provider.ChatStream]. Only the five types defined in this package
+// [Provider.ChatStream]. Only the six types defined in this package
 // (TextDeltaChunk, ReasoningDeltaChunk, ToolCallStartChunk, ToolCallArgsChunk,
-// DoneChunk) can implement it. Consumers should use a type switch to handle
+// ReasoningItemChunk, DoneChunk) can implement it. Consumers should use a type switch to handle
 // each variant:
 //
 //	switch c := chunk.(type) {
@@ -14,6 +14,7 @@ package llm
 //	case llm.ReasoningDeltaChunk: // model's thinking/reasoning fragment
 //	case llm.ToolCallStartChunk:  // begin a new tool call accumulator
 //	case llm.ToolCallArgsChunk:   // append c.Delta to arguments buffer
+//	case llm.ReasoningItemChunk:  // Responses-protocol reasoning item
 //	case llm.DoneChunk:           // stream finished (c.FinishReason)
 //	}
 type Chunk interface {

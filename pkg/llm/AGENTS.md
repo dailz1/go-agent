@@ -7,7 +7,7 @@ Shared kernel: `Provider` interface, `Message`/`ContentBlock` model, `Chunk` str
 |------|----------|
 | Provider contract | provider.go:19 - `Name`/`Chat`/`ChatStream`; sentinel `ErrStreamingNotSupported`; `llm.Option` + exported `ApplyOptions` |
 | Message model | message.go - sealed `ContentBlock` (Text/Reasoning/Image/ToolUse/ToolResult); custom `UnmarshalJSON` accepts string, array, or null content |
-| Stream chunks | chunk.go - 5 sealed variants: TextDelta, ReasoningDelta, ToolCallStart, ToolCallArgs, Done |
+| Stream chunks | chunk.go - 6 sealed variants: TextDelta, ReasoningDelta, ToolCallStart, ToolCallArgs, ReasoningItem, Done |
 | HTTP boundary / APIError | http.go (`DoJSONRequest`/`DoStreamRequest`, 10MB body cap, Cleanup-func contract), errors.go (`StatusCode`/`RetryAfter`/`Retryable()`) |
 | SSE parsing | sse.go - lazy iterator, 1MB line cap |
 | Retry classification | retry.go - only 429/5xx/network retry; `sleepFor` package-var test seam |

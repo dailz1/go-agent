@@ -35,7 +35,7 @@ go-agent is a zero-dependency Go library for building LLM agents: a streaming-fi
 |--------|------|----------|------|------|
 | llm.Provider | interface | pkg/llm/provider.go:19 | agent + both adapters | Name/Chat/ChatStream; ErrStreamingNotSupported sentinel |
 | llm.Message / ContentBlock | struct / sealed iface | pkg/llm/message.go | highest traffic | custom UnmarshalJSON (string/array/null) |
-| llm.Chunk | sealed iface | pkg/llm/chunk.go | heavy in pkg/agent | 5 stream variants |
+| llm.Chunk | sealed iface | pkg/llm/chunk.go | heavy in pkg/agent | 6 stream variants |
 | agent.Agent | struct | pkg/agent/agent.go:100 | consumer entry | loop, approval, retry, compaction wiring |
 | agent.New | func | pkg/agent/agent.go:211 | | central normalization of all options |
 | agent.Compactor | interface | pkg/agent/compact.go:43 | | 4 strategies + chain |
@@ -79,4 +79,4 @@ gofmt -l .
 - `estimateRunes` JSON-marshals the whole history per call (heuristic, known O(n^2)-ish on long histories; acknowledged in DESIGN.md).
 - Bounded I/O: response bodies capped at 10MB, SSE lines at 1MB, default HTTP client timeout 120s.
 - Approval fails closed: a `RequiresApproval` tool with no callback set is rejected and the rejection is fed to the LLM.
-- `mock_provider.go` ships exported mocks in a non-test file; the base `NewMockProvider` takes unexported types (unusable outside `pkg/agent`), while the streaming/retryable constructors take public types. A public test-double package is a DESIGN.md roadmap item.
+- `mock_provider.go` ships exported mocks in a non-test file; the base `NewMockProvider` takes unexported parameter types, but it IS externally composable — external packages can build it as `agent.NewMockProvider(agent.MsgResponse(...))` using the exported constructors. The streaming/retryable constructors also take public types. A dedicated public test-double package remains a DESIGN.md roadmap item.
