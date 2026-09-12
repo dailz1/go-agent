@@ -103,6 +103,8 @@
 
 ### P2 扩展面
 - `Tool` / `Provider` 中间件（包装器模式）——已落地（P2-1，docs+example，见 `examples/middleware`；不加内核类型或链式 API）
+- 工具并行执行（默认串行保证确定性；历史按调用顺序追加，完成可乱序靠 ID 配对）——已落地（P2-2，冻结契约见下）
+- 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent——已落地（P2-3，冻结契约见下）
 #### 工具并行执行（P2-2 冻结契约）
 
 `WithToolConcurrency(n int)` 设置同一模型回复内的工具执行并发度；`agent.New` 将 `n <= 0` 归一为 `1`，默认也是 `1`。`n=1` 保持今天的可观察行为：逐调用、live `Get -> approval -> Execute`，且现有 panic 仍按原路径逃逸。`n>1` 是显式 opt-in，工具的同轮副作用可重叠。
@@ -121,6 +123,16 @@ hardError 优先于 missing。`n=1` 每完成一个槽位即走共享 settlement
 
 TC-first、结果截断先于 event/history/Store、生命周期记录先于对应 event 交付，以及消费者在 ToolCall 批或 ToolResult 批 break 时停止后续执行/materialization（不 commit）的既有契约不变。hardError、missing 或 commit failure 交付给消费者后无条件终止本轮，不能因 consumer 接受 error 而继续执行。commit 失败不回滚已交付事件，开放 declaration 由恢复路径按声明顺序合成 unknown 结果。
 - 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent
+
+#### 公开测试替身（P2-3 冻结契约）
+
+`pkg/agenttest` 是公开、stdlib-only 的测试替身包；它只 import `pkg/llm`、`pkg/tool` 与标准库，绝不反向 import `agent`。它提供全局严格有序的 `ScriptedProvider`、`Recorder`/`Replayer` 和最小的 `ToolFunc`。`Request` 深拷贝并严格比较 messages、按名称排序的 tools 与 `llm.ApplyOptions` 后的 options；函数型 option 的身份不是契约。Chat 与 ChatStream 共享一个全局 Exchange 顺序，方法交替也必须匹配。成功的 ChatStream 在调用时保留步骤，迭代自然结束、已交付的 terminal stream error 或 nil-error chunk 后的 early break 才释放；保留期间的任意调用返回 `ErrConcurrentScriptUse`。脚本耗尽返回带方法和一基 step 编号的 `ErrScriptExhausted`；不匹配返回含零基全局 step、expected/actual method 的 `RequestMismatchError`（`ErrScriptMismatch`）；`Verify` 对未消费或 active stream 返回含 Next、Remaining、Active 的 `ScriptVerificationError`（`ErrUnverifiedScript`）。
+
+录制 bytes 的 wire schema 固定为 v1：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个值形式 chunk DTO 都有 `type` discriminator，并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。所有 pointer-form chunks（含 typed nil）继续按原动态形式交付下游，但 `Bytes` 返回带动态类型的 `UnsupportedChunkError`/`ErrUnsupportedChunk`；v1 不将其归一化为值形式。
+
+error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.ErrStreamingNotSupported` 哨兵身份、带 StatusCode/RetryAfter/Body 的 `*llm.APIError`、`llm.IsNetworkError` 所认定的 timeout/temporary `net.Error`、`url.Error` 包装与 ECONNREFUSED/ECONNRESET/EPIPE，以及最后的仅 message generic error。回放必须保留相应 `errors.Is`、`errors.As` 或 `llm.IsNetworkError` 分类。未知 schema version、chunk/error type 或字段、非法 DTO 字段，均以 `ErrIncompatibleRecording` 类型化拒绝；多个 DoneChunk 原样回放；没有 Done 且没有 tool calls 的流按自然 exhaustion 成功。Replayer 同样严格执行全局 exchange 顺序、call-time reservation 和 Verify。
+
+`ToolFunc` 直接暴露 `Definition tool.ToolInfo` 与 `ExecuteFunc func(context.Context, json.RawMessage) (*tool.ToolResult, error)`；每次 Execute 先深拷贝记录 args，`Calls` 返回受 mutex 保护的深拷贝快照。nil handler 返回普通 Go error，panic 原样透传，便于测试 Agent 的既有边界。
 
 ### P3 生态
 - MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包）
