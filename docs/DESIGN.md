@@ -103,7 +103,23 @@
 
 ### P2 扩展面
 - `Tool` / `Provider` 中间件（包装器模式）——已落地（P2-1，docs+example，见 `examples/middleware`；不加内核类型或链式 API）
-- 工具并行执行（默认串行保证确定性；历史按调用顺序追加，完成可乱序靠 ID 配对）
+#### 工具并行执行（P2-2 冻结契约）
+
+`WithToolConcurrency(n int)` 设置同一模型回复内的工具执行并发度；`agent.New` 将 `n <= 0` 归一为 `1`，默认也是 `1`。`n=1` 保持今天的可观察行为：逐调用、live `Get -> approval -> Execute`，且现有 panic 仍按原路径逃逸。`n>1` 是显式 opt-in，工具的同轮副作用可重叠。
+
+所有并发度下，模型可见的 tools 都是一次 run 开始时 `registry.List()` 取得的快照，后续模型轮不得刷新该列表。仅 `n>1` 在每个工具轮规划时冻结执行 handle 和 `Info`；规划后 `Register` 的工具不影响本轮，虽可由之后工具轮的 live `Get` 找到（模型广播仍是 run-start 快照）。
+
+`n>1` 在任何 dispatch 前按声明顺序完成 handle/`Info` 规划和整批 approval。unknown tool、无 callback 与拒绝是对应声明槽位的软结果；callback 或 planner `Info()` panic 在该边界 recover 为 hardError，停止后续规划和全部 Execute。`n=1` 的 approval/`Info` panic 行为不变。
+
+每个声明有一个槽位，终态为 resolved、hardError 或 missing。worker 与预计算软结果在发布槽位前立即执行 `applyToolResultLimit`；完成顺序绝不泄漏到 history、事件或 Store。共享 settlement/materialization routine 供两种模式使用，只有规划/dispatch 不同：
+
+- hardError：选取最低声明索引的 hardError，仅 materialize 它之前连续 resolved 前缀，返回带 iteration/name 上下文的错误，不 commit；
+- missing：无 hardError 时仅 materialize 第一个 missing 前的连续 resolved 前缀，返回 `ctx.Err()`，不 commit；
+- 全部 settled：按声明顺序 materialize 全部结果，随后单次 `commitRound`；结果位置必须逐项对应 declaration，满足 `validateResultBatch`。
+
+hardError 优先于 missing。`n=1` 每完成一个槽位即走共享 settlement，以保留 c1 在 c2 派发前 materialize 的旧时序；`n>1` 停止派发并排空已启动任务后才结算。并行调度使用最多 `min(n, len(calls))` 个 worker；每调用在 dispatch 前检查 ctx，取消停止派发、把 ctx 传给已启动工具并排空。排空没有人为上界：工具必须 honor ctx，内核不以泄漏 goroutine 伪造终止。
+
+TC-first、结果截断先于 event/history/Store、生命周期记录先于对应 event 交付，以及消费者在 ToolCall 批或 ToolResult 批 break 时停止后续执行/materialization（不 commit）的既有契约不变。hardError、missing 或 commit failure 交付给消费者后无条件终止本轮，不能因 consumer 接受 error 而继续执行。commit 失败不回滚已交付事件，开放 declaration 由恢复路径按声明顺序合成 unknown 结果。
 - 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent
 
 ### P3 生态
