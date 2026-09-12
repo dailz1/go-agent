@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/dailz1/go-agent/pkg/llm"
 	"github.com/dailz1/go-agent/pkg/store"
@@ -136,11 +135,13 @@ func (a *Agent) reserveGeneratedThread(ctx context.Context, st store.Store, thre
 			Err: fmt.Errorf("thread already exists at head %d", state.Head)}
 	}
 	// The reservation append is retried byte-identical so an ambiguous
-	// failure resolves through Store idempotency: the same content either
-	// completes the reservation or reports the pre-existing thread as a
-	// conflict. No error path can strand an active run on an undiscoverable
-	// thread — if every attempt fails, the run ID is returned in the error
-	// so the caller can still ResumeThread it.
+	// failure resolves through Store idempotency: if the store reports an
+	// idempotent match — the record already landed — the existing reservation
+	// is adopted and the run continues under the same thread and run ID; if
+	// it reports a content mismatch, that is a reservation conflict. No error
+	// path can strand an active run on an undiscoverable thread — if every
+	// attempt fails, the run ID is returned in the error so the caller can
+	// still ResumeThread it.
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if ctx.Err() != nil {
@@ -241,66 +242,4 @@ func (p *persistence) finishRun(ctx context.Context, msg llm.Message, toolCalls 
 		return err
 	}
 	return p.append(ctx, rec)
-}
-
-// checkpoint persists a compaction snapshot so replay never re-runs a
-// nondeterministic summarizer. The snapshot carries the run lifecycle
-// context the tail replay needs. The ID is bound to the record's future
-// position, keeping retries byte-identical.
-func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) error {
-	payload, err := json.Marshal(agentCheckpoint{
-		History:   history,
-		System:    p.system,
-		RunActive: true,
-		RunID:     p.runID,
-		LastRound: p.lastRound,
-	})
-	if err != nil {
-		return fmt.Errorf("agent: encode checkpoint: %w", err)
-	}
-	return p.append(ctx, store.Record{
-		Kind: store.KindCheckpoint, Schema: store.SchemaV1,
-		ID:      fmt.Sprintf("cp-%d", p.head),
-		Payload: payload,
-	})
-}
-
-// release gives up thread ownership. Safe to call once per session.
-func (p *persistence) release() { releaseThread(p.a.store, p.thread) }
-
-// seededHistory prepends the thread's frozen system message to the replayed
-// history — unless the history already begins with it, which is the case for
-// a checkpoint snapshot whose compacted view carries the prefix.
-func seededHistory(system string, history []llm.Message) []llm.Message {
-	if system == "" {
-		return history
-	}
-	if len(history) > 0 && history[0].Role == llm.RoleSystem {
-		return history
-	}
-	out := make([]llm.Message, 0, len(history)+1)
-	out = append(out, llm.SystemMessage(system))
-	return append(out, history...)
-}
-
-// promptText extracts the text of a system message built by WithSystemPrompt.
-func promptText(m llm.Message) string {
-	var b strings.Builder
-	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.TextBlock); ok {
-			b.WriteString(tb.Text)
-		}
-	}
-	return b.String()
-}
-
-// toolUseBlocks extracts the tool calls of an assistant message in order.
-func toolUseBlocks(m llm.Message) []llm.ToolUseBlock {
-	var out []llm.ToolUseBlock
-	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.ToolUseBlock); ok {
-			out = append(out, tb)
-		}
-	}
-	return out
 }
