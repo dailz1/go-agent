@@ -121,6 +121,7 @@ type Agent struct {
 	retryCfg                   AgentRetryConfig
 	retryCfgSet                bool
 	store                      store.Store
+	toolConcurrency            int
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -183,6 +184,13 @@ func WithApprovalFn(fn ApprovalFunc) Option {
 	return func(a *Agent) { a.approvalFn = fn }
 }
 
+// WithToolConcurrency sets the maximum number of tool calls dispatched in
+// parallel within one model response. Values less than one normalize to one.
+// The default is one, preserving serial execution semantics.
+func WithToolConcurrency(n int) Option {
+	return func(a *Agent) { a.toolConcurrency = n }
+}
+
 // WithLogger sets the structured logger. Defaults to slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(a *Agent) { a.logger = l }
@@ -241,6 +249,7 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 		compactor:                  NewStandardCompactor(),
 		compactionThresholdPercent: DefaultCompactionThresholdPercent,
 		logger:                     slog.Default(),
+		toolConcurrency:            1,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -253,6 +262,9 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	}
 	if a.compactionThresholdPercent < 1 || a.compactionThresholdPercent > 100 {
 		a.compactionThresholdPercent = DefaultCompactionThresholdPercent
+	}
+	if a.toolConcurrency <= 0 {
+		a.toolConcurrency = 1
 	}
 	return a
 }
@@ -510,40 +522,8 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					return
 				}
 			}
-			var roundResults []llm.Message
-			for _, call := range toolBlocks {
-				// Check for context cancellation before each tool execution.
-				select {
-				case <-ctx.Done():
-					yield(nil, ctx.Err())
-					return
-				default:
-				}
-				// executeTool handles: registry lookup, approval check,
-				// execution, and nil-result guard. System-level errors
-				// (e.g. tool.Execute returned a Go error) are yielded as
-				// errors; tool-level errors are wrapped in ToolResult with
-				// IsError=true and fed back to the LLM in the next iteration.
-				result, err := a.executeTool(ctx, call)
-				if err != nil {
-					yield(nil, fmt.Errorf("iteration %d: tool %q: %w", i, call.Name, err))
-					return
-				}
-				result = a.applyToolResultLimit(call, result)
-				resultMsg := llm.ToolResultMessage(call.ID, result)
-				history = append(history, resultMsg)
-				roundResults = append(roundResults, resultMsg)
-				if !yield(ToolResultEvent{ID: call.ID, Name: call.Name, Result: result}, nil) {
-					return
-				}
-			}
-			// The round commits only after every result exists; a crash
-			// before this point replays the whole batch as outcome unknown.
-			if sess != nil {
-				if err := sess.commitRound(ctx, i, roundResults); err != nil {
-					yield(nil, err)
-					return
-				}
+			if !a.executeToolRound(ctx, i, toolBlocks, &history, sess, yield) {
+				return
 			}
 			accum.reset()
 		}
@@ -836,43 +816,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result 
 		}
 	}
 
-	a.logger.Info("tool call executing",
-		"tool_name", call.Name,
-		"tool_call_id", call.ID,
-	)
-	a.logger.Debug("tool call input",
-		"tool_name", call.Name,
-		"tool_call_id", call.ID,
-		"input", llm.Truncate(string(call.Input), 500),
-	)
-
-	defer func() {
-		if r := recover(); r != nil {
-			a.logger.Error("tool panicked",
-				"tool_name", call.Name,
-				"tool_call_id", call.ID,
-				"panic", r,
-			)
-			result = tool.NewErrorResult("tool %q panicked: %v", call.Name, r)
-		}
-	}()
-
-	result, err = t.Execute(ctx, call.Input)
-	if err != nil {
-		return nil, fmt.Errorf("execute: %w", err)
-	}
-	if result == nil {
-		return tool.NewErrorResult("tool %q returned nil result", call.Name), nil
-	}
-
-	a.logger.Debug("tool call result",
-		"tool_name", call.Name,
-		"tool_call_id", call.ID,
-		"is_error", result.IsError(),
-		"result", llm.Truncate(result.Content, 500),
-	)
-
-	return result, nil
+	return a.executeToolHandle(ctx, call, t)
 }
 
 func messageText(msg *llm.Message) string {
