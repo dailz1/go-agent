@@ -37,19 +37,50 @@ type ToolInfo struct {
 	RequiresApproval bool            `json:"requires_approval,omitempty"`
 }
 
-// ParameterSchema is a JSON Schema "object" that describes tool parameters.
-// It serializes directly into the format expected by LLM function calling APIs.
-type ParameterSchema struct {
-	Type       string              `json:"type"` // always "object"
-	Properties map[string]Property `json:"properties"`
-	Required   []string            `json:"required,omitempty"`
+// SchemaKeyword carries one JSON Schema keyword that has no typed representation.
+// Value must contain exactly one valid JSON value.
+type SchemaKeyword struct {
+	Name  string
+	Value json.RawMessage
 }
 
-// Property describes a single parameter within a ParameterSchema.
+// ParameterSchema is a JSON Schema object that describes tool parameters.
+// Its custom JSON codec preserves typed recursive fields and carried keywords.
+type ParameterSchema struct {
+	Type                       string
+	Properties                 map[string]Property
+	Required                   []string
+	Description                string
+	AdditionalProperties       *bool
+	AdditionalPropertiesSchema *Property
+	AnyOf                      []*Property
+	OneOf                      []*Property
+	AllOf                      []*Property
+	Ref                        string
+	Keywords                   []SchemaKeyword
+
+	typeAbsent, propertiesInactive, descriptionPresent, refPresent bool
+}
+
+// Property describes a JSON Schema node within a ParameterSchema.
 type Property struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description"`
-	Enum        []string `json:"enum,omitempty"`
+	Type                       string
+	Description                string
+	Enum                       []string
+	Nullable                   bool
+	Properties                 map[string]Property
+	Required                   []string
+	Items                      *Property
+	AdditionalProperties       *bool
+	AdditionalPropertiesSchema *Property
+	AnyOf                      []*Property
+	OneOf                      []*Property
+	AllOf                      []*Property
+	Ref                        string
+	Keywords                   []SchemaKeyword
+	BooleanSchema              *bool
+
+	typeAbsent, propertiesInactive, descriptionAbsent, refPresent, decoded bool
 }
 
 type ResultStatus string

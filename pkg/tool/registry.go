@@ -43,15 +43,8 @@ func (r *Registry) Register(t Tool) error {
 }
 
 func validateToolInfo(info ToolInfo) error {
-	for _, name := range info.Parameters.Required {
-		if _, ok := info.Parameters.Properties[name]; !ok {
-			return fmt.Errorf("tool %q: required parameter %q not defined in properties", info.Name, name)
-		}
-	}
-	for name, prop := range info.Parameters.Properties {
-		if prop.Type == "" {
-			return fmt.Errorf("tool %q: property %q has empty type", info.Name, name)
-		}
+	if err := validateRegistrySchema(info.Parameters); err != nil {
+		return fmt.Errorf("tool %q: %w", info.Name, err)
 	}
 	return nil
 }
