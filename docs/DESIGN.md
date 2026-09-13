@@ -20,7 +20,7 @@
 
 1. **稳定**：模型断流、工具崩溃、超长返回、任务失控——库必须兜住。该重试的重试，该截断的截断，该刹车的刹车。用户程序不能挂，花费不能失控。
 2. **可替换**：换模型供应商、换工具实现，使用者的业务代码一行不改。
-3. **小**：内核只放"不管做什么产品都必须有"的机制；"看产品而定"的能力放扩展包。内核永远 stdlib-only（CI 守护：`go list -m all` 只有一行）。
+3. **小**：内核只放"不管做什么产品都必须有"的机制；"看产品而定"的能力放扩展包。`pkg/agent`、`pkg/llm`、`pkg/store`、`pkg/tool` 的完整依赖闭包不得含第三方 module；SDK source import 只允许出现在根 module 的 `mcp/` packages。CI 用 `go list -deps` 断言该闭包，并逐字节断言根 `go.mod` 直接 require `github.com/modelcontextprotocol/go-sdk v1.7.0`。`pkg/tool` schema codec/Registry 只使用标准库（JSON 工具限 `encoding/json`、`fmt`，cycle identity 可用 `reflect`），不引入 validator。
 4. **好用**：四个核心概念（Agent / Provider / Tool / Event）即可上手；全程事件流可观测、可录制、可回放；出问题不用猜。
 5. **留口子**：今天存储的每笔数据（完整对话、每次工具调用与结果）都为明天的功能（记忆、自进化、审计、训练数据导出）保持完整可取。今天多守的规矩，就是明天新功能的入场券；工具结果按截断策略后的轨迹保存，超长原文不保留（稳定目标的代价，截断时记 Warn 日志）。
 
@@ -45,7 +45,7 @@
 | 契约 | 作用 |
 |---|---|
 | `llm.Provider` | 接入任意模型供应商 |
-| `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent） |
+| `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent）；参数 schema 为递归 typed fields 加按名称排序的完整词汇 carrier。remote bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；fidelity 限 SDK decode surface，Registry 只作 typed graph structural checks、从不解释 carrier，whole-schema raw escape hatch 禁止。 |
 | `AgentEvent` 事件流 | 观测 / UI / 审计 / 回放的唯一入口 |
 | `Store`（建设中） | 会话持久化与崩溃恢复：内核自动持久化（`WithStore`/`RunThread`），提交点先落库后行动 |
 
@@ -63,7 +63,18 @@
 - **流是原语，同步是衍生物。** 只维护一条执行路径，`Run` 是事件流的归并。
 - **默认安全。** 危险工具须审批；工具 panic 不外泄；结果截断；预算可设。
 - **每步可靠胜过整体聪明。** 每步 95% 可靠，连跑 10 步只剩 60%（误差复利）。内核的每一分投入都优先花在"每一步更可靠"上。
-- **内核不变小、不变胖，只变稳。**
+- **内核不变小、不变胖，只变稳。** Tool schema codec 以 nullable null-first、空值归一和 presence state 作确定性投影；`Properties`/`Items`/AP-schema/composition 的 active-stack cycle 失败关闭。carrier 是有序 `SchemaKeyword` 值，保留非 typed keyword，自己的 raw-JSON 路径拒绝重复键，但绝不解释其 JSON Schema 语义；whole-schema raw escape hatch 禁止。adapter 不得静默降级 schema。remote MCP 的 fidelity 限 SDK decode surface（duplicate key、encounter order 和精确 numeric token 已在 SDK 边界丢失），本地 agenttest v2 raw parser 保持 token 严格。
+
+  外部 keyed construction 的语义：
+
+  | 构造值 | presence / wire 语义 |
+  |---|---|
+  | `BooleanSchema != nil` | bare boolean schema（`true`/`false`） |
+  | `Ref != ""` / `Ref == ""` | 前者输出 `$ref`；后者在无 codec state 时 absent |
+  | `Type != ""` / `Type == ""` | 前者输出 type；后者在无 codec state 时维持旧模型零值 wire 行为 |
+  | `Nullable:true`、非空 `Properties`、`Items`、AP、composition、carrier | presence；空容器按 omission 处理 |
+
+  `UnmarshalJSON` 是唯一产生 explicit-empty type/description/`$ref` 等 pathological exact-presence state 的路径。
 
 ## 5. 路线图
 
@@ -128,14 +139,16 @@ TC-first、结果截断先于 event/history/Store、生命周期记录先于对�
 
 `pkg/agenttest` 是公开、stdlib-only 的测试替身包；它只 import `pkg/llm`、`pkg/tool` 与标准库，绝不反向 import `agent`。它提供全局严格有序的 `ScriptedProvider`、`Recorder`/`Replayer` 和最小的 `ToolFunc`。`Request` 深拷贝并严格比较 messages、按名称排序的 tools 与 `llm.ApplyOptions` 后的 options；函数型 option 的身份不是契约。Chat 与 ChatStream 共享一个全局 Exchange 顺序，方法交替也必须匹配。成功的 ChatStream 在调用时保留步骤，迭代自然结束、已交付的 terminal stream error 或 nil-error chunk 后的 early break 才释放；保留期间的任意调用返回 `ErrConcurrentScriptUse`。脚本耗尽返回带方法和一基 step 编号的 `ErrScriptExhausted`；不匹配返回含零基全局 step、expected/actual method 的 `RequestMismatchError`（`ErrScriptMismatch`）；`Verify` 对未消费或 active stream 返回含 Next、Remaining、Active 的 `ScriptVerificationError`（`ErrUnverifiedScript`）。
 
-录制 bytes 的 wire schema 固定为 v1：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个值形式 chunk DTO 都有 `type` discriminator，并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。所有 pointer-form chunks（含 typed nil）继续按原动态形式交付下游，但 `Bytes` 返回带动态类型的 `UnsupportedChunkError`/`ErrUnsupportedChunk`；v1 不将其归一化为值形式。
+录制 bytes 的 **v1 grammar** 固定不变：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个值形式 chunk DTO 都有 `type` discriminator，并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。所有 pointer-form chunks（含 typed nil）继续按原动态形式交付下游，但 `Bytes` 返回带动态类型的 `UnsupportedChunkError`/`ErrUnsupportedChunk`；v1 不将其归一化为值形式。
 
 error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.ErrStreamingNotSupported` 哨兵身份、带 StatusCode/RetryAfter/Body 的 `*llm.APIError`、`llm.IsNetworkError` 所认定的 timeout/temporary `net.Error`、`url.Error` 包装与 ECONNREFUSED/ECONNRESET/EPIPE，以及最后的仅 message generic error。回放必须保留相应 `errors.Is`、`errors.As` 或 `llm.IsNetworkError` 分类。未知 schema version、chunk/error type 或字段、非法 DTO 字段，均以 `ErrIncompatibleRecording` 类型化拒绝；多个 DoneChunk 原样回放；没有 Done 且没有 tool calls 的流按自然 exhaustion 成功。Replayer 同样严格执行全局 exchange 顺序、call-time reservation 和 Verify。
 
 `ToolFunc` 直接暴露 `Definition tool.ToolInfo` 与 `ExecuteFunc func(context.Context, json.RawMessage) (*tool.ToolResult, error)`；每次 Execute 先深拷贝记录 args，`Calls` 返回受 mutex 保护的深拷贝快照。nil handler 返回普通 Go error，panic 原样透传，便于测试 Agent 的既有边界。
 
+录制 bytes 是显式版本化契约：既有 **v1** 录制继续按上述冻结 grammar 读取；**v2** 由 Recorder 写入，Replayer 读取 v1/v2。v2 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。
+
 ### P3 生态
-- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包）
+- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包）。tools schema 采用 recursive typed fields 与 name-sorted carrier：nullable、items、tri-state/schema-valued additionalProperties、composition、`$ref` 与 BooleanSchema 均可保留；Registry 只执行 typed graph 的结构检查（含现有 typed properties 的 required/type checks）并从不解释 carried keywords。bridge 将 SDK `map[string]any` canonical-marshal 后交 codec 重建 presence state；仅 decoded root/naming/projection structural error fail closed 且零注册，provider 接受度独立。
 - agent-as-tool（30 行适配器，多智能体由此组装）
 - README + `examples/`
 
@@ -158,7 +171,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 
 ## 7. 当前状态（2026-09-10）
 
-- 模块 `github.com/dailz1/go-agent`，Go 1.26，stdlib-only，git 已建（main，基线 `d5281c9`）。
+- 模块 `github.com/dailz1/go-agent`，Go 1.26，git 已建（main，基线 `d5281c9`）；kernel package closure 维持 stdlib-only，MCP SDK 仅允许位于未来 `mcp/` packages。
 - 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm/openairesponses 适配、token 用量统计、完整测试（7 包全绿）。
 - 工具结果截断（单结果 ≤ max(128, WithContextWindowTokens×30%) rune，50/50 掐头留尾，默认窗口 8192）。
 - 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
@@ -168,3 +181,4 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - OpenAI Responses 适配器已实现并提交（fe2c7d6，pkg/llm/openairesponses）：typed items、store:false 全量回放、reasoning items（含 encrypted_content）；内置工具/结构化输出/previous_response_id 不支持（v1）。
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
 - 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
+- P3-1 已扩展 `tool.ParameterSchema`/`Property`：typed recursive schema、nullable canonical codec、carrier、presence state 与 marshal/Registry cycle safety 均已落地；旧公开模型构造值的 JSON 保持 byte-exact。
