@@ -45,7 +45,7 @@
 | 契约 | 作用 |
 |---|---|
 | `llm.Provider` | 接入任意模型供应商 |
-| `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent）；参数 schema 为递归 typed fields 加按名称排序的完整词汇 carrier。remote bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；fidelity 限 SDK decode surface，Registry 只作 typed graph structural checks、从不解释 carrier，whole-schema raw escape hatch 禁止。 |
+| `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent）；参数 schema 为递归 typed fields 加按名称排序的完整词汇 carrier。`agenttool` 是内核外的 satellite composition surface：固定 `input:string`，每次只 `Run` 一次子 Agent、只回传最终文本，不转发子事件；不改 Tool interface。remote bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；fidelity 限 SDK decode surface，Registry 只作 typed graph structural checks、从不解释 carrier，whole-schema raw escape hatch 禁止。 |
 | `AgentEvent` 事件流 | 观测 / UI / 审计 / 回放的唯一入口 |
 | `Store`（建设中） | 会话持久化与崩溃恢复：内核自动持久化（`WithStore`/`RunThread`），提交点先落库后行动 |
 
@@ -60,6 +60,7 @@
     - `Execute` 传递原 `ctx` 与 `args`；软错误 `ToolResult` 不得提升为 Go error，Go error 也不得降级为软结果；包装错误必须 `%w`，保持 `errors.Is/As` 对哨兵与 `*llm.APIError` 的识别（尤其不得吞 `ErrStreamingNotSupported`，否则非流回退与重试分类失效）。
     - Provider 包装器原样传递 messages/tools/options/usage 与外层、迭代内错误；流式包装器不得预先 range，保持 `iter.Seq2` 惰性与早退安全；限流许可横跨迭代器生命周期（自然结束与早退都要释放）。
     - 日志示例只记元数据（名称、ID、长度）或显式截断/脱敏载荷，不逐字复制 prompt/参数/结果。可运行示例见 `examples/middleware`。
+    - `agenttool` 是行为包装器：原样传递 ctx；malformed input、子 Agent 截断或无最终文本是软 `ToolResult`，子 `Run` 的 Go error 必须 `%w` 硬传；外层与子层 approval 各自生效，禁止注入子事件。每个 `New` 返回的 adapter 用 context-aware 单槽 gate 串行其子 `Run`；同一 child 的多个 adapter 不互锁，调用方负责共享 Provider、Compactor、Store、Registry 与子 Tool 的并发安全。
 - **流是原语，同步是衍生物。** 只维护一条执行路径，`Run` 是事件流的归并。
 - **默认安全。** 危险工具须审批；工具 panic 不外泄；结果截断；预算可设。
 - **每步可靠胜过整体聪明。** 每步 95% 可靠，连跑 10 步只剩 60%（误差复利）。内核的每一分投入都优先花在"每一步更可靠"上。
@@ -172,8 +173,8 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 `<escaped>` 按 rune 将 backslash、quote、CR、LF、`]` 分别写为 `\\`、`\"`、`\r`、`\n`、`\]`，其余 rune 原样写入。因此远端字段不能闭合 placeholder 或注入另一行。Data envelope 形状为 `{"mcp_content":[...]}`；image/audio entry 无论 mimeType 或 data 是否为空，均固定有 `index`、`type`、`mimeType`、JSON-base64 `data` 字段。`WithResultDataLimit` 对每次候选 entry 的最终累计 JSON 编码预检，默认 1,048,576 bytes，恰上限接纳，超一 byte 的 entry 改为 `[mcp:<type> omitted: bridge data limit]`（embedded text 仍保留）。没有接纳 entry 时 Data 为 nil。OutputSchema、top-level Title/Icons、content Annotations、ResourceLink Icons、工具/调用/content/resource `_meta` 全部 drop；不接受 per-call `_meta` 注入，progress 也不发 event/content/data。
 
 **SDK v1.7.0 discovery boundary:** `ClientSession.ListTools` unconditionally logs and silently excludes a tool whose inputSchema has an invalid `x-mcp-header`: an annotation on a non-string/integer/boolean property, a non-string/empty/invalid HTTP-field-name value, or a duplicate case-insensitive header value at any property nesting. The bridge cannot observe or reject those filtered rows. Server authors must fix the annotation; a future SDK option is the only v1 escape. This is an SDK-boundary limitation alongside decoded-map duplicate-key/order/numeric-token loss, and provider acceptance remains independent from schema representability.
-- agent-as-tool（30 行适配器，多智能体由此组装）
-- README + `examples/`
+- agent-as-tool（已完成）：卫星包 `agenttool` 冻结为 `agenttool.New(*agent.Agent, Config) tool.Tool`，`Config` 只含工具面向父模型的 Name、Description、RequiresApproval。schema 固定 required `input:string`；每次 Execute 无状态地只调一次 `Run`，按顺序只提取 value-form `TextBlock`，Data 为 nil。malformed input、截断、无文本是软结果；子 `Run`/ctx 错误以 `%w` 硬传。每个 returned adapter 以单槽 gate 串行，多个 adapter 包装同一 child 时不互锁，调用方负责共享协作者的并发安全；不共享 session/thread，child 配置 Store 时仍由每次 `Run` 生成独立 thread 且 adapter 不暴露它；不做 pool、retry 或 nested event forwarding，父层只见一个最终 `ToolResult`。
+- README + `examples/`（本轮完成目标）
 
 ### Backlog（按需）
 结构化输出（JSON schema）；花费上限；原生 Anthropic / Ollama 适配器；更丰富的人工介入（改写、批准后继续）。
