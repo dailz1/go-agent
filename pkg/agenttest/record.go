@@ -24,7 +24,7 @@ var (
 	ErrInterruptedRecording  = errors.New("interrupted recording")
 )
 
-// UnsupportedChunkError identifies a pointer-form chunk which cannot be represented by v1.
+// UnsupportedChunkError identifies a pointer-form chunk which cannot be represented by the recording grammar.
 type UnsupportedChunkError struct{ Type string }
 
 func (e *UnsupportedChunkError) Error() string { return "unsupported recording chunk: " + e.Type }
@@ -140,8 +140,10 @@ func (r *Recorder) Bytes() ([]byte, error) {
 	if r.unsupported != nil {
 		return nil, r.unsupported
 	}
-	return json.Marshal(dtoRecording{Version: 1, Exchanges: append([]dtoExchange(nil), r.exchanges...)})
+	return json.Marshal(dtoRecording{Version: recordingVersion, Exchanges: append([]dtoExchange(nil), r.exchanges...)})
 }
+
+const recordingVersion = 2
 
 type dtoRecording struct {
 	Version   int           `json:"version"`

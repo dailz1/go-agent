@@ -13,7 +13,7 @@ import (
 	"github.com/dailz1/go-agent/pkg/tool"
 )
 
-// Replayer implements llm.Provider from a strict v1 Recorder payload.
+// Replayer implements llm.Provider from strict v1 and v2 Recorder payloads.
 type Replayer struct{ script *ScriptedProvider }
 
 func NewReplayer(recording []byte) (*Replayer, error) {

@@ -1380,6 +1380,39 @@ func TestConvertStandard_ReasoningBlockStripped(t *testing.T) {
 	}
 }
 
+func TestConvertToolDefs_ExtendedSchemaWire(t *testing.T) {
+	falseValue, trueValue := false, true
+	defs, err := convertToolDefs([]tool.ToolInfo{{
+		Name:        "extended",
+		Description: "extended schema",
+		Parameters: tool.ParameterSchema{
+			Type: "object",
+			Properties: map[string]tool.Property{
+				"choice":        {AnyOf: []*tool.Property{{Type: "string", Description: "choice"}, {BooleanSchema: &falseValue}}},
+				"config":        {Type: "object", Properties: map[string]tool.Property{"enabled": {Type: "boolean", Description: "enabled"}}, Required: []string{"enabled"}, AdditionalProperties: &falseValue},
+				"labels":        {Type: "array", Nullable: true, Items: &tool.Property{Type: "string", Description: "label"}},
+				"metadata":      {Type: "object", AdditionalPropertiesSchema: &tool.Property{Type: "string", Description: "metadata value"}},
+				"reference":     {Ref: "#/$defs/value"},
+				"unconstrained": {BooleanSchema: &trueValue},
+			},
+			Required:             []string{"choice", "config", "labels", "metadata", "reference", "unconstrained"},
+			AdditionalProperties: &falseValue,
+			Keywords:             []tool.SchemaKeyword{{Name: "x-vendor", Value: json.RawMessage(`{"enabled":true}`)}, {Name: "$defs", Value: json.RawMessage(`{"value":{"type":"integer"}}`)}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("convertToolDefs: %v", err)
+	}
+	got, err := json.Marshal(defs)
+	if err != nil {
+		t.Fatalf("marshal definitions: %v", err)
+	}
+	const want = `[{"type":"function","function":{"name":"extended","description":"extended schema","parameters":{"type":"object","properties":{"choice":{"anyOf":[{"type":"string","description":"choice"},false]},"config":{"type":"object","properties":{"enabled":{"type":"boolean","description":"enabled"}},"required":["enabled"],"additionalProperties":false},"labels":{"type":["null","array"],"items":{"type":"string","description":"label"}},"metadata":{"type":"object","additionalProperties":{"type":"string","description":"metadata value"}},"reference":{"$ref":"#/$defs/value"},"unconstrained":true},"required":["choice","config","labels","metadata","reference","unconstrained"],"additionalProperties":false,"$defs":{"value":{"type":"integer"}},"x-vendor":{"enabled":true}}}}]`
+	if string(got) != want {
+		t.Fatalf("wire JSON = %s\nwant %s", got, want)
+	}
+}
+
 // --- Helpers ---
 
 func newTestLogger() *slog.Logger {

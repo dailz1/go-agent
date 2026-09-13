@@ -22,12 +22,12 @@ func decodeRecording(data []byte) (dtoRecording, error) {
 	if err := wireValue(root, "exchanges", &exchanges); err != nil {
 		return dtoRecording{}, err
 	}
-	if version != 1 {
+	if version != 1 && version != recordingVersion {
 		return dtoRecording{}, incompatiblef("unsupported recording version %d", version)
 	}
 	out := dtoRecording{Version: version, Exchanges: make([]dtoExchange, len(exchanges))}
 	for i, raw := range exchanges {
-		value, err := decodeWireExchange(raw)
+		value, err := decodeWireExchange(raw, version)
 		if err != nil {
 			return dtoRecording{}, fmt.Errorf("exchange %d: %w", i, err)
 		}
@@ -35,7 +35,7 @@ func decodeRecording(data []byte) (dtoRecording, error) {
 	}
 	return out, nil
 }
-func decodeWireExchange(raw json.RawMessage) (dtoExchange, error) {
+func decodeWireExchange(raw json.RawMessage, version int) (dtoExchange, error) {
 	object, err := wireObject(raw, "method", "request", "chat", "stream")
 	if err != nil {
 		return dtoExchange{}, err
@@ -44,7 +44,7 @@ func decodeWireExchange(raw json.RawMessage) (dtoExchange, error) {
 	if err := wireValue(object, "method", &method); err != nil {
 		return dtoExchange{}, err
 	}
-	request, err := decodeWireRequest(object["request"])
+	request, err := decodeWireRequest(object["request"], version)
 	if err != nil {
 		return dtoExchange{}, err
 	}
@@ -63,7 +63,7 @@ func decodeWireExchange(raw json.RawMessage) (dtoExchange, error) {
 	}
 	return out, nil
 }
-func decodeWireRequest(raw json.RawMessage) (dtoRequest, error) {
+func decodeWireRequest(raw json.RawMessage, version int) (dtoRequest, error) {
 	object, err := wireObject(raw, "messages", "tools", "options")
 	if err != nil {
 		return dtoRequest{}, err
@@ -94,7 +94,7 @@ func decodeWireRequest(raw json.RawMessage) (dtoRequest, error) {
 		}
 	}
 	for i, raw := range tools {
-		out.Tools[i], err = decodeWireTool(raw)
+		out.Tools[i], err = decodeWireTool(raw, version)
 		if err != nil {
 			return dtoRequest{}, err
 		}

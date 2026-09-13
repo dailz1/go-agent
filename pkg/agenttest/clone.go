@@ -2,6 +2,7 @@ package agenttest
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
 
 	"github.com/dailz1/go-agent/pkg/llm"
@@ -97,13 +98,105 @@ func cloneTools(in []tool.ToolInfo) []tool.ToolInfo {
 	return out
 }
 func cloneSchema(in tool.ParameterSchema) tool.ParameterSchema {
-	out := tool.ParameterSchema{Type: in.Type, Required: cloneStrings(in.Required)}
-	if in.Properties != nil {
-		out.Properties = make(map[string]tool.Property, len(in.Properties))
-		for name, property := range in.Properties {
-			property.Enum = cloneStrings(property.Enum)
-			out.Properties[name] = property
-		}
+	cloner := schemaCloner{
+		maps:  make(map[uintptr]map[string]tool.Property),
+		props: make(map[*tool.Property]*tool.Property),
+		bools: make(map[*bool]*bool),
+	}
+	out := in
+	out.Required = cloneStrings(in.Required)
+	out.Keywords = cloner.keywords(in.Keywords)
+	out.Properties = cloner.properties(in.Properties)
+	out.AdditionalProperties = cloner.boolean(in.AdditionalProperties)
+	out.AdditionalPropertiesSchema = cloner.property(in.AdditionalPropertiesSchema)
+	out.AnyOf = cloner.propertySlice(in.AnyOf)
+	out.OneOf = cloner.propertySlice(in.OneOf)
+	out.AllOf = cloner.propertySlice(in.AllOf)
+	return out
+}
+
+type schemaCloner struct {
+	maps  map[uintptr]map[string]tool.Property
+	props map[*tool.Property]*tool.Property
+	bools map[*bool]*bool
+}
+
+func (c *schemaCloner) properties(in map[string]tool.Property) map[string]tool.Property {
+	if in == nil {
+		return nil
+	}
+	id := reflect.ValueOf(in).Pointer()
+	if out, ok := c.maps[id]; ok {
+		return out
+	}
+	out := make(map[string]tool.Property, len(in))
+	c.maps[id] = out
+	for name, property := range in {
+		out[name] = c.propertyValue(property)
+	}
+	return out
+}
+
+func (c *schemaCloner) property(in *tool.Property) *tool.Property {
+	if in == nil {
+		return nil
+	}
+	if out, ok := c.props[in]; ok {
+		return out
+	}
+	out := new(tool.Property)
+	c.props[in] = out
+	*out = c.propertyValue(*in)
+	return out
+}
+
+func (c *schemaCloner) propertyValue(in tool.Property) tool.Property {
+	out := in
+	out.Enum = cloneStrings(in.Enum)
+	out.Required = cloneStrings(in.Required)
+	out.Keywords = c.keywords(in.Keywords)
+	out.Properties = c.properties(in.Properties)
+	out.Items = c.property(in.Items)
+	out.AdditionalProperties = c.boolean(in.AdditionalProperties)
+	out.AdditionalPropertiesSchema = c.property(in.AdditionalPropertiesSchema)
+	out.AnyOf = c.propertySlice(in.AnyOf)
+	out.OneOf = c.propertySlice(in.OneOf)
+	out.AllOf = c.propertySlice(in.AllOf)
+	out.BooleanSchema = c.boolean(in.BooleanSchema)
+	return out
+}
+
+func (c *schemaCloner) propertySlice(in []*tool.Property) []*tool.Property {
+	if in == nil {
+		return nil
+	}
+	out := make([]*tool.Property, len(in))
+	for i, property := range in {
+		out[i] = c.property(property)
+	}
+	return out
+}
+
+func (c *schemaCloner) boolean(in *bool) *bool {
+	if in == nil {
+		return nil
+	}
+	if out, ok := c.bools[in]; ok {
+		return out
+	}
+	out := new(bool)
+	*out = *in
+	c.bools[in] = out
+	return out
+}
+
+func (c *schemaCloner) keywords(in []tool.SchemaKeyword) []tool.SchemaKeyword {
+	if in == nil {
+		return nil
+	}
+	out := make([]tool.SchemaKeyword, len(in))
+	for i, keyword := range in {
+		out[i] = tool.SchemaKeyword{Name: keyword.Name, Value: cloneRaw(keyword.Value)}
 	}
 	return out
 }
