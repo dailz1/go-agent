@@ -148,7 +148,30 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 录制 bytes 是显式版本化契约：既有 **v1** 录制继续按上述冻结 grammar 读取；**v2** 由 Recorder 写入，Replayer 读取 v1/v2。v2 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。
 
 ### P3 生态
-- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包）。tools schema 采用 recursive typed fields 与 name-sorted carrier：nullable、items、tri-state/schema-valued additionalProperties、composition、`$ref` 与 BooleanSchema 均可保留；Registry 只执行 typed graph 的结构检查（含现有 typed properties 的 required/type checks）并从不解释 carried keywords。bridge 将 SDK `map[string]any` canonical-marshal 后交 codec 重建 presence state；仅 decoded root/naming/projection structural error fail closed 且零注册，provider 接受度独立。
+- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 在调用方提供的 fresh、未发布且完全静止的 Registry 中分页发现并一次性注册 wrapper；调用方只可在成功后发布 Registry。不会 refresh/unregister；stale tool 的 protocol error 是硬错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。
+
+  `mcp.WithApprovalRequired(true)` 默认要求全部 bridge tools 审批；显式 false 时，也只有 `annotations != nil && annotations.ReadOnlyHint && (annotations.DestructiveHint == nil || !*annotations.DestructiveHint)` 的可证明只读工具可免审批，其他 annotation 组合仍要求审批。参数 schema 采用 recursive typed fields 与 name-sorted carrier：bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；仅 decoded-object root、命名、marshal/projection structural error fail closed 且零注册，provider 接受度独立。
+
+  Execute 对非法 JSON、null、数组或标量参数返回软错误且不发 RPC；MCP `IsError` 和 `NeedsInput` 是软错误，protocol、transport、context、wire/decode 与 marshal 错误是保留 `%w` 的硬错误。文本 content 按顺序以换行 join；image/audio、resource link、embedded resource 生成已转义的单行 placeholder，并在 `ToolResult.Data` 生成带原 content index 的 `{"mcp_content":[...]}` envelope；embedded text 仍在 Content。StructuredContent 紧凑 JSON 为最后一个片段；未知已解码 dynamic content 或 nil embedded resource 为整项软错误。placeholder 对 `\\`、`"`、CR、LF、`]` 分别转义为 `\\\\`、`\\"`、`\\r`、`\\n`、`\\]`。`WithResultDataLimit` 默认 1 MiB，非正值在 Connect 前拒绝；每个 entry 按最终累计 JSON 大小预检，恰好上限接受，超限以 omitted placeholder 代替，且全部省略时 Data 为 nil。
+
+  工具 `OutputSchema`、top-level Title/Icons、content Annotations、ResourceLink Icons 及所有 `_meta` 均丢弃；progress notification 静默丢弃。Close 的公开前置是调用方先取消并以精确 join 信号等待所有 in-flight Execute 返回；不支持 Close 与 Execute 并发，Bridge 直接委托 SDK session Close。`mcp/README.md` 记录这些边界、Data 仅供 live `ToolResultEvent`（history/Store 只有 Content）和静态生命周期。
+
+#### MCP client bridge（P3-3 冻结契约）
+
+| MCP 输入或结果 | bridge 映射 |
+|---|---|
+| static discovery | 仅连接时分页 `tools/list`；不订阅 list-changed、不 refresh/unregister。已删除 remote tool 的 protocol/transport error 是 Go hard error。 |
+| request args | 只接受 JSON object（`{}` 合法）；invalid JSON、null、array、scalar 为 soft result，零 RPC。原 ctx 传给 `CallTool`；bridge 不 retry/redial。 |
+| `IsError` / `NeedsInput` | 都是 soft ToolResult；后者内容固定为“v1 不支持 MCP input-required continuation”，并因 `MultiRoundTrip.Disabled:true` 精确一次 call。protocol、transport、ctx、nil result、SDK wire/decode 与 structured marshal error 都保留 `%w` 为 hard error。 |
+| text | 保持 content 原顺序并以 `\n` join；不写 Data entry。 |
+| image / audio | 分别写 `[mcp:image mimeType="<escaped>" bytes=<n>]`、`[mcp:audio mimeType="<escaped>" bytes=<n>]`，并写带原 content index、type、mimeType、JSON-base64 data 的 Data entry。 |
+| resource link | 写 `[mcp:resource_link name="<escaped>" uri="<escaped>" title="<escaped>" mimeType="<escaped>"]`，Data entry 带 index、uri/name/title/description/mimeType/size。 |
+| embedded resource | 写 `[mcp:resource uri="<escaped>" mimeType="<escaped>" bytes=<n>]`，其 nonempty text 紧随该行；Data entry 带 index、uri/mimeType/blob JSON-base64，text 不重复进 Data。 |
+| StructuredContent / decoded mapper failure | StructuredContent 紧凑 JSON 是最后一个 Content 片段；未知已解码 dynamic content type 或 nil embedded Resource 是整项 soft error、不返回 partial success。 |
+
+`<escaped>` 按 rune 将 backslash、quote、CR、LF、`]` 分别写为 `\\`、`\"`、`\r`、`\n`、`\]`，其余 rune 原样写入。因此远端字段不能闭合 placeholder 或注入另一行。Data envelope 形状为 `{"mcp_content":[...]}`；image/audio entry 无论 mimeType 或 data 是否为空，均固定有 `index`、`type`、`mimeType`、JSON-base64 `data` 字段。`WithResultDataLimit` 对每次候选 entry 的最终累计 JSON 编码预检，默认 1,048,576 bytes，恰上限接纳，超一 byte 的 entry 改为 `[mcp:<type> omitted: bridge data limit]`（embedded text 仍保留）。没有接纳 entry 时 Data 为 nil。OutputSchema、top-level Title/Icons、content Annotations、ResourceLink Icons、工具/调用/content/resource `_meta` 全部 drop；不接受 per-call `_meta` 注入，progress 也不发 event/content/data。
+
+**SDK v1.7.0 discovery boundary:** `ClientSession.ListTools` unconditionally logs and silently excludes a tool whose inputSchema has an invalid `x-mcp-header`: an annotation on a non-string/integer/boolean property, a non-string/empty/invalid HTTP-field-name value, or a duplicate case-insensitive header value at any property nesting. The bridge cannot observe or reject those filtered rows. Server authors must fix the annotation; a future SDK option is the only v1 escape. This is an SDK-boundary limitation alongside decoded-map duplicate-key/order/numeric-token loss, and provider acceptance remains independent from schema representability.
 - agent-as-tool（30 行适配器，多智能体由此组装）
 - README + `examples/`
 
