@@ -14,9 +14,9 @@ import (
 	"github.com/dailz1/go-agent/pkg/tool"
 )
 
-// eventFold rebuilds conversation history from an AgentEvent stream. It pins
-// the DESIGN.md P0 contract "the event sequence suffices to rebuild a run":
-// seed + folded events must equal DoneEvent.History with no extra information.
+// eventFold rebuilds history previews from stream events. DoneEvent.History is
+// authoritative because persistence, fallback conversion, and future event
+// additions can carry information not reconstructible from the event stream.
 //
 // Rebuild rules. A round announces ALL its ToolCallEvents before executing
 // any, so contiguous announced calls identify one assistant reply: the fold
@@ -24,20 +24,15 @@ import (
 // first ToolResultEvent arrives, and appends each result in event order. A
 // terminal error keeps the reply only if calls were announced (the loop
 // appends the assistant message before executing); pending deltas with no
-// calls mean a pre-assembly failure, so they are discarded. A truncated run
-// announces no calls for its dangling final round — that round reaches the
-// consumer only via DoneEvent.Message, which the fold absorbs; a finish-only
-// final round (no deltas, no calls) is detected the same way, by comparing
-// against the last assistant the fold materialized. A CompactionEvent
-// snapshot carries the FULL history including the seed, so resyncing
-// replaces the seed too.
+// calls mean a pre-assembly failure, so they are discarded. CompactionEvent
+// and DoneEvent snapshots replace the preview with independently copied
+// authoritative history.
 type eventFold struct {
-	seed          []llm.Message
-	history       []llm.Message
-	reasoning     strings.Builder
-	text          strings.Builder
-	calls         []llm.ToolUseBlock
-	lastAssistant llm.Message
+	seed      []llm.Message
+	history   []llm.Message
+	reasoning strings.Builder
+	text      strings.Builder
+	calls     []llm.ToolUseBlock
 }
 
 func newEventFold(seed []llm.Message) *eventFold {
@@ -68,19 +63,9 @@ func (f *eventFold) apply(t *testing.T, event AgentEvent) {
 	case RetryEvent:
 		// Retries leave no trace in history.
 	case DoneEvent:
-		if e.Truncated {
-			// The dangling round's calls never became events; the
-			// DoneEvent carries the whole final message instead.
-			f.resetRound()
-			f.history = append(f.history, e.Message)
-		} else {
-			f.flushAssistant()
-			if !reflect.DeepEqual(f.lastAssistant, e.Message) {
-				// The final round never materialized this message from
-				// events (finish-only round): it exists only here.
-				f.history = append(f.history, e.Message)
-			}
-		}
+		f.resetRound()
+		f.seed = deepCopyMessages(e.History)
+		f.history = nil
 	default:
 		t.Fatalf("eventFold: unexpected event type %T", event)
 	}
@@ -121,8 +106,7 @@ func (f *eventFold) flushAssistant() {
 	if len(blocks) == 0 {
 		return
 	}
-	f.lastAssistant = llm.Message{Role: llm.RoleAssistant, Content: blocks}
-	f.history = append(f.history, f.lastAssistant)
+	f.history = append(f.history, llm.Message{Role: llm.RoleAssistant, Content: blocks})
 	f.resetRound()
 }
 
@@ -130,6 +114,27 @@ func (f *eventFold) resetRound() {
 	f.reasoning.Reset()
 	f.text.Reset()
 	f.calls = nil
+}
+
+func TestEventFoldDoneSnapshotReplacesPreviewAndDeepCopies(t *testing.T) {
+	fold := newEventFold([]llm.Message{llm.UserMessage("old")})
+	fold.apply(t, TextDeltaEvent{Text: "preview"})
+	history := []llm.Message{
+		llm.UserMessage("go"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{"x":1}`)},
+		}},
+		llm.ToolResultMessage("c1", tool.NewErrorResult("not executed: the run reached its iteration limit")),
+	}
+	fold.apply(t, DoneEvent{History: history, Truncated: true})
+	if !reflect.DeepEqual(fold.full(), history) {
+		t.Fatalf("Done snapshot did not replace preview: %#v", fold.full())
+	}
+	history[1].Content[0].(llm.ToolUseBlock).Input[2] = 'z'
+	got := fold.full()[1].Content[0].(llm.ToolUseBlock).Input
+	if string(got) != `{"x":1}` {
+		t.Errorf("fold retained DoneEvent mutable input: %q", got)
+	}
 }
 
 // runAndFold streams a full run, folds every event, and returns the events,
@@ -437,7 +442,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 			},
 		},
 		{
-			name: "truncated final round with text deltas folds via DoneEvent.Message",
+			name: "truncated final round reconciles DoneEvent history",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("hi")})
@@ -454,7 +459,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
 					llm.TextBlock{Type: "text", Text: "partial thought "},
 					llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)},
-				}})
+				}}, llm.ToolResultMessage("c1", tool.NewErrorResult("not executed: the run reached its iteration limit")))
 				check := func(t *testing.T, _ []AgentEvent, done DoneEvent) {
 					t.Helper()
 					if !done.Truncated {
@@ -465,7 +470,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 			},
 		},
 		{
-			name: "maxIter stop leaves dangling call without result",
+			name: "maxIter stop pairs terminal call with result",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
 				call := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
@@ -479,7 +484,10 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				})
 				ag := New(p, registry, WithMaxIter(1), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
-				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{call}})
+				want := append(seed,
+					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{call}},
+					llm.ToolResultMessage("c1", tool.NewErrorResult("not executed: the run reached its iteration limit")),
+				)
 				check := func(t *testing.T, _ []AgentEvent, done DoneEvent) {
 					t.Helper()
 					if !done.Truncated {

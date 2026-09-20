@@ -34,11 +34,15 @@ type ThinkingDeltaEvent struct {
 func (ThinkingDeltaEvent) eventType() string { return "thinking_delta" }
 
 // ToolCallEvent announces a tool call the model requested in its reply. All
-// calls of a round are announced before any of them executes, so a call may
-// never run (an earlier call fails hard, or the run is cancelled first).
-// ToolResultEvent reports the actual outcome. Delivery is synchronous: a
-// consumer that breaks during the announcement batch stops the run before
-// any tool of the round executes.
+// calls of an ordinary executable round are announced before any executes.
+// A call may never execute because an earlier call fails hard, the run is
+// cancelled, or the iteration limit records its deterministic skip result.
+// ToolResultEvent reports the recorded outcome. Delivery is synchronous: in
+// an ordinary executable round, a consumer that breaks during announcements
+// stops the run before any tool executes. An already-closed maxIter terminal
+// skip batch is the exception: its results are recorded before its first
+// announcement, so a break stops only later event delivery and cannot reopen
+// the run for ResumeThread.
 type ToolCallEvent struct {
 	// ID is the unique identifier for this tool call.
 	ID string

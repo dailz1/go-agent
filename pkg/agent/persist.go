@@ -9,7 +9,6 @@ import (
 
 	"github.com/dailz1/go-agent/pkg/llm"
 	"github.com/dailz1/go-agent/pkg/store"
-	"github.com/dailz1/go-agent/pkg/tool"
 )
 
 // persistence is the per-run durability session for one thread. It lives for
@@ -212,12 +211,7 @@ func (p *persistence) truncateRun(ctx context.Context, round int, msg llm.Messag
 	if err := p.declareRound(ctx, round, msg); err != nil {
 		return nil, err
 	}
-	calls := toolUseBlocks(msg)
-	results := make([]llm.Message, 0, len(calls))
-	for _, call := range calls {
-		results = append(results, llm.ToolResultMessage(call.ID,
-			tool.NewErrorResult("not executed: the run reached its iteration limit")))
-	}
+	results := iterationLimitResults(toolUseBlocks(msg))
 	if err := p.commitRound(ctx, round, results); err != nil {
 		return nil, err
 	}

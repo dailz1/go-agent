@@ -465,10 +465,15 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}, nil)
 				return
 			}
-			// The LLM requested tool execution. On the last iteration, skip
-			// execution and yield a truncated DoneEvent — tool results would
-			// never be fed back to the LLM since the loop is about to exit.
+			// The LLM requested tools. At the iteration limit, declare every request
+			// and record a deterministic skipped result without approval or execution.
+			// A Store closes that terminal batch before its TC/TR/Done delivery.
 			if i == a.maxIter-1 {
+				if err := ctx.Err(); err != nil {
+					yield(nil, err)
+					return
+				}
+				totalToolCalls += len(toolBlocks)
 				a.logger.Warn("agent runstream truncated",
 					"iterations", a.maxIter,
 					"tool_calls", totalToolCalls,
@@ -477,17 +482,32 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				if u := accum.usage(); u != nil {
 					lastUsage = *u
 				}
-				// Truncation closes the round honestly: the declared calls
-				// are known not to have executed, so they get deterministic
-				// skipped results before the truncated Done is durable and
-				// delivered.
+				var skipped []llm.Message
 				if sess != nil {
-					skipped, err := sess.truncateRun(ctx, i, assistantMsg, totalToolCalls, lastUsage, totalUsage)
+					var err error
+					skipped, err = sess.truncateRun(ctx, i, assistantMsg, totalToolCalls, lastUsage, totalUsage)
 					if err != nil {
 						yield(nil, err)
 						return
 					}
-					history = append(history, skipped...)
+				} else {
+					skipped = iterationLimitResults(toolBlocks)
+				}
+				history = append(history, skipped...)
+				for _, call := range toolBlocks {
+					if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: call.Input}, nil) {
+						return
+					}
+				}
+				for index, call := range toolBlocks {
+					block := skipped[index].Content[0].(llm.ToolResultBlock)
+					result := &tool.ToolResult{Content: block.Content}
+					if block.IsError {
+						result.Status = tool.ResultError
+					}
+					if !yield(ToolResultEvent{ID: call.ID, Name: call.Name, Result: result}, nil) {
+						return
+					}
 				}
 				yield(DoneEvent{
 					Message:    assistantMsg,
@@ -700,21 +720,21 @@ func (a *Agent) chatWithRetryAndFallback(
 
 func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
 	chunks := make([]llm.Chunk, 0, len(blocks)+1)
-	toolIndex := 0
 	hasToolUse := false
-	for _, block := range blocks {
+	for outputIndex, block := range blocks {
 		switch b := block.(type) {
 		case llm.ReasoningBlock:
 			chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
 		case llm.TextBlock:
-			chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text})
+			chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
 		case llm.ToolUseBlock:
 			hasToolUse = true
 			chunks = append(chunks,
-				llm.ToolCallStartChunk{Index: toolIndex, ID: b.ID, Name: b.Name},
-				llm.ToolCallArgsChunk{Index: toolIndex, Delta: string(b.Input)},
+				llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
+				llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
 			)
-			toolIndex++
+		case llm.ReasoningItemBlock:
+			chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: b})
 		case llm.ImageBlock, llm.ToolResultBlock:
 			// These blocks have no streaming representation.
 		}

@@ -30,8 +30,13 @@ func (a *Agent) RunThread(ctx context.Context, threadID string, input string) (*
 // input. An interrupted round (a declaration whose tools may or may not have
 // executed) is first resolved durably: every unresolved call receives one
 // error tool result reporting the outcome as unknown, and the model decides
-// how to proceed. Failures, cancellation, and consumer abandonment all leave
-// a run resumable this way.
+// how to proceed.
+//
+// Failures, cancellation, and consumer abandonment leave ordinary rounds
+// resumable. The sole exception is a maxIter terminal skip batch after its
+// declaration, skipped results, commit, and Done are durably precommitted:
+// later delivery interruption cannot reopen it, so ResumeThread returns
+// ErrNothingToResume.
 func (a *Agent) ResumeThread(ctx context.Context, threadID string) (*RunResult, error) {
 	if a.store == nil {
 		return nil, ErrNoStore

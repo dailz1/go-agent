@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"reflect"
 	"testing"
 
 	"github.com/dailz1/go-agent/pkg/llm"
@@ -32,10 +34,15 @@ func TestStreamingReasoningItemOrderPreserved(t *testing.T) {
 		},
 	})
 	a := New(provider, newEchoRegistry(), WithLogger(discardLogger()))
-	res, err := a.Run(t.Context(), "interleave")
+	seq, err := a.RunStream(t.Context(), "interleave")
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
+	events, errs := collectEvents(t, seq, nil)
+	if len(errs) != 0 {
+		t.Fatalf("RunStream errors: %v", errs)
+	}
+	res := terminalDone(t, events)
 
 	// First-round assistant message: the four blocks in declaration order.
 	first := res.History[1] // system, user, assistant
@@ -59,6 +66,90 @@ func TestStreamingReasoningItemOrderPreserved(t *testing.T) {
 	}
 	if ri, ok := first.Content[0].(llm.ReasoningItemBlock); !ok || ri.EncryptedContent != "enc-0" {
 		t.Errorf("block[0] encrypted content = %+v, want enc-0", first.Content[0])
+	}
+	calls, results := terminalEventIDs(t, events)
+	if !reflect.DeepEqual(calls, []string{"call_1", "call_2"}) || !reflect.DeepEqual(results, calls) {
+		t.Errorf("normal reasoning event pairs = calls %v results %v", calls, results)
+	}
+}
+
+func TestTerminalReasoningItemOrderPreserved(t *testing.T) {
+	r0 := llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_0", EncryptedContent: "enc-0"}
+	r1 := llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc-1"}
+	provider := NewMockStreamingProvider([][]llm.Chunk{{
+		llm.ReasoningItemChunk{OutputIndex: 0, Item: r0},
+		llm.ToolCallStartChunk{Index: 1, ID: "call_1", Name: "echo"},
+		llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
+		llm.ReasoningItemChunk{OutputIndex: 2, Item: r1},
+		llm.ToolCallStartChunk{Index: 3, ID: "call_2", Name: "echo"},
+		llm.ToolCallArgsChunk{Index: 3, Delta: `{}`},
+		llm.DoneChunk{FinishReason: "tool_calls"},
+	}})
+	seq, err := New(provider, newEchoRegistry(), WithMaxIter(1), WithLogger(discardLogger())).RunStream(context.Background(), "interleave")
+	events, errs := collectEvents(t, seq, err)
+	if len(errs) != 0 {
+		t.Fatalf("RunStream errors: %v", errs)
+	}
+	done := terminalDone(t, events)
+	want := []llm.Message{
+		llm.UserMessage("interleave"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+			r0,
+			llm.ToolUseBlock{Type: "tool_use", ID: "call_1", Name: "echo", Input: []byte(`{}`)},
+			r1,
+			llm.ToolUseBlock{Type: "tool_use", ID: "call_2", Name: "echo", Input: []byte(`{}`)},
+		}},
+		llm.ToolResultMessage("call_1", tool.NewErrorResult("not executed: the run reached its iteration limit")),
+		llm.ToolResultMessage("call_2", tool.NewErrorResult("not executed: the run reached its iteration limit")),
+	}
+	if !reflect.DeepEqual(done.History, want) {
+		t.Errorf("terminal reasoning history = %#v, want %#v", done.History, want)
+	}
+	calls, results := terminalEventIDs(t, events)
+	if !reflect.DeepEqual(calls, []string{"call_1", "call_2"}) || !reflect.DeepEqual(results, calls) {
+		t.Errorf("terminal reasoning event pairs = calls %v results %v", calls, results)
+	}
+}
+
+func TestFallbackReasoningItemOrderPreserved(t *testing.T) {
+	item := llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs", EncryptedContent: "enc"}
+	call := llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "echo", Input: []byte(`{}`)}
+	mixed := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+		item, llm.TextBlock{Type: "text", Text: "calling"}, call,
+	}}
+	for _, test := range []struct {
+		name      string
+		maxIter   int
+		responses []mockResponse
+		want      []llm.Message
+	}{
+		{
+			name:      "normal",
+			maxIter:   2,
+			responses: []mockResponse{MsgResponse(mixed), MsgResponse(llm.AssistantMessage("done"))},
+			want: []llm.Message{
+				llm.UserMessage("go"), mixed, llm.ToolResultMessage("call", tool.NewTextResult("echoed")), llm.AssistantMessage("done"),
+			},
+		},
+		{
+			name:      "terminal",
+			maxIter:   1,
+			responses: []mockResponse{MsgResponse(mixed)},
+			want: []llm.Message{
+				llm.UserMessage("go"), mixed,
+				llm.ToolResultMessage("call", tool.NewErrorResult("not executed: the run reached its iteration limit")),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := New(NewMockProvider(test.responses...), newEchoRegistry(), WithMaxIter(test.maxIter), WithLogger(discardLogger())).Run(context.Background(), "go")
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !reflect.DeepEqual(result.History, test.want) {
+				t.Errorf("fallback history = %#v, want %#v", result.History, test.want)
+			}
+		})
 	}
 }
 

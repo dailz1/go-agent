@@ -615,8 +615,8 @@ func TestAgentRun_MaxIterBoundary(t *testing.T) {
 	if !result.Truncated {
 		t.Error("Truncated = false, want true")
 	}
-	if result.ToolCalls != 0 {
-		t.Errorf("ToolCalls = %d, want 0 (last iteration tools not executed)", result.ToolCalls)
+	if result.ToolCalls != 1 {
+		t.Errorf("ToolCalls = %d, want 1", result.ToolCalls)
 	}
 	if result.Message.Role != llm.RoleAssistant {
 		t.Errorf("Message.Role = %q, want %q", result.Message.Role, llm.RoleAssistant)
@@ -1112,20 +1112,34 @@ func TestRunStream_Truncated(t *testing.T) {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
 
-	// Expect: DoneEvent(truncated) only — last iteration tools are not executed.
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	// Expect terminal declaration, deterministic skip result, then Done.
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
 	}
 
-	done, ok := events[0].(DoneEvent)
+	call, ok := events[0].(ToolCallEvent)
+	if !ok {
+		t.Fatalf("events[0] = %T, want ToolCallEvent", events[0])
+	}
+	if call.ID != "c1" {
+		t.Errorf("ToolCallEvent.ID = %q, want c1", call.ID)
+	}
+	result, ok := events[1].(ToolResultEvent)
+	if !ok {
+		t.Fatalf("events[1] = %T, want ToolResultEvent", events[1])
+	}
+	if result.ID != "c1" || !result.Result.IsError() {
+		t.Errorf("ToolResultEvent = %+v, want c1 iteration-limit error", result)
+	}
+	done, ok := events[2].(DoneEvent)
 	if !ok {
 		t.Fatalf("events[0] = %T, want DoneEvent", events[0])
 	}
 	if !done.Truncated {
 		t.Error("DoneEvent.Truncated = false, want true")
 	}
-	if done.ToolCalls != 0 {
-		t.Errorf("DoneEvent.ToolCalls = %d, want 0 (last iteration tools not executed)", done.ToolCalls)
+	if done.ToolCalls != 1 {
+		t.Errorf("DoneEvent.ToolCalls = %d, want 1", done.ToolCalls)
 	}
 	if done.Message.Role != llm.RoleAssistant {
 		t.Errorf("DoneEvent.Message.Role = %q, want %q", done.Message.Role, llm.RoleAssistant)

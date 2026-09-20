@@ -164,6 +164,49 @@ func TestFallbackSynthesizesEvents(t *testing.T) {
 	}
 }
 
+func TestUnifiedRunStreamTerminalMaxIterEquivalence(t *testing.T) {
+	calls := []llm.ToolUseBlock{
+		{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{"n":1}`)},
+		{Type: "tool_use", ID: "c2", Name: "echo", Input: json.RawMessage(`{"n":2}`)},
+	}
+	message := llm.AssistantToolCallMessage(calls...)
+	registry := tool.NewRegistry()
+	registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("must not run")})
+	streaming := New(
+		NewMockStreamingProvider([][]llm.Chunk{parallelToolRound(calls)}),
+		registry,
+		WithMaxIter(1),
+		WithLogger(discardLogger()),
+	)
+	fallback := New(
+		NewMockProvider(MsgResponse(message)),
+		registry,
+		WithMaxIter(1),
+		WithLogger(discardLogger()),
+	)
+
+	seq, err := streaming.RunStream(context.Background(), "go")
+	events, errs := collectEvents(t, seq, err)
+	if len(errs) != 0 {
+		t.Fatalf("RunStream errors = %v", errs)
+	}
+	runResult, err := fallback.Run(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	done := terminalDone(t, events)
+	if !reflect.DeepEqual(
+		RunResult{
+			Message: done.Message, History: done.History, ToolCalls: done.ToolCalls, Truncated: done.Truncated,
+		},
+		RunResult{
+			Message: runResult.Message, History: runResult.History, ToolCalls: runResult.ToolCalls, Truncated: runResult.Truncated,
+		},
+	) {
+		t.Errorf("Run and RunStream terminal results differ:\nstream=%#v\nrun=%#v", done, runResult)
+	}
+}
+
 func TestRetryOnceCallback(t *testing.T) {
 	// Given: two retryable failures followed by a successful fallback response.
 	provider := NewRetryableMockProvider(

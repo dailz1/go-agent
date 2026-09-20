@@ -52,7 +52,8 @@ func TestMaxIterNonPersistent(t *testing.T) {
 	if err != nil || !result.Truncated || executed.Load() != 0 {
 		t.Fatalf("non-persistent maxIter result = %#v, err = %v, executions = %d", result, err, executed.Load())
 	}
-	if len(historyResultBlocks(result.History)) != 0 {
-		t.Fatalf("non-persistent maxIter history synthesized results: %#v", result.History)
+	results := historyResultBlocks(result.History)
+	if len(results) != 1 || !results[0].IsError || !strings.Contains(results[0].Content, "not executed") {
+		t.Fatalf("non-persistent maxIter results = %#v, want one deterministic skip", results)
 	}
 }
