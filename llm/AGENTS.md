@@ -1,31 +1,31 @@
-# llm
+# llm/
 
-Shared kernel: `Provider` interface, `Message`/`ContentBlock` model, `Chunk` streaming, HTTP+SSE plumbing, retry, `APIError` - plus two adapter subpackages. Earned its file: score 11 (largest inbound-ref count after tool; adapter duplication rule lives here).
+## OVERVIEW
+Provider-agnostic LLM seam: Provider iface, Message/ContentBlock/Chunk sealed unions, shared HTTP+SSE+retry plumbing; three adapter subpackages (glm/, openai/, openairesponses/).
 
 ## WHERE TO LOOK
 | Task | Location |
 |------|----------|
-| Provider contract | provider.go:19 - `Name`/`Chat`/`ChatStream`; sentinel `ErrStreamingNotSupported`; `llm.Option` + exported `ApplyOptions` |
-| Message model | message.go - sealed `ContentBlock` (Text/Reasoning/Image/ToolUse/ToolResult); custom `UnmarshalJSON` accepts string, array, or null content |
-| Stream chunks | chunk.go - 6 sealed variants: TextDelta, ReasoningDelta, ToolCallStart, ToolCallArgs, ReasoningItem, Done |
-| HTTP boundary / APIError | http.go (`DoJSONRequest`/`DoStreamRequest`, 10MB body cap, Cleanup-func contract), errors.go (`StatusCode`/`RetryAfter`/`Retryable()`) |
-| SSE parsing | sse.go - lazy iterator, 1MB line cap |
-| Retry classification | retry.go - only 429/5xx/network retry; `sleepFor` package-var test seam |
-| GLM adapter (glm/) | JWT-vs-bearer auth sniffed from key content, thinking mode, `tool_stream`, eager HTTP request |
-| Auth internals (glm/) | auth.go - HS256 JWT, ~5-min early-expiry token cache (sync.Map), `timeNow` clock seam |
-| Responses adapter (openairesponses/) | POST /responses, store:false + full item replay, entry reasoning items (ReasoningItemBlock) with encrypted_content, semantic SSE events; built-in tools/structured outputs/previous_response_id NOT supported (v1) |
-| OpenAI adapter (openai/) | lazy request inside iterator, `stream_options.include_usage`, fails stream without a DoneChunk, round-trips ReasoningContent |
-| Request knobs | `llm.Option` set: WithModel / WithMaxTokens / WithTemperature / WithStop; applied via exported `ApplyOptions` (provider.go) |
-| Message constructors | SystemMessage / UserMessage / AssistantMessage / AssistantToolCallMessage / ToolResultMessage (message.go) |
-| Token accounting | Usage (usage.go): Total / Add / IsZero / String |
-| Shared truncate | `llm.Truncate` (util.go) - rune-count helper reused by agent |
+| Provider contract | provider.go:19 — Name/Chat/ChatStream; `ErrStreamingNotSupported` sentinel; lazy `iter.Seq2` (:23-33) |
+| Message model | message.go:22 — Role + sealed []ContentBlock :27 (Text/Reasoning/Image/ToolUse/ReasoningItem/ToolResult); OpenAI string-content compatible; constructors :93-:126 |
+| Stream chunks | chunk.go:20 — 6 sealed variants (TextDelta..DoneChunk) |
+| Retry + errors | retry.go, errors.go:9 — `APIError` leaf (no Unwrap); `Retryable()` = 429/5xx :21 |
+| HTTP/SSE plumbing | http.go (10MB body cap :20), sse.go (1MB line cap :29) |
 
 ## CONVENTIONS (differs from parent)
-- **Adapter duplication is intentional.** `convert*`, `firstNonEmpty`, `ptrToString`, `encodeBase64`, `parseStreamPayload` exist near-verbatim in BOTH glm/ and openai/. Any change to shared conversion semantics must be applied to both; do not extract a shared helper package.
-- Option-function normalization is the exception, not the rule: constructors normalize (except glm's `WithTopP`, which clamps 0.01-1.0 in place).
-- Reasoning differs per adapter: OpenAI round-trips `ReasoningContent`; GLM silently strips ReasoningBlocks outbound. GLM truncates `stop` to 1 entry.
-- Stream timing differs: GLM issues the HTTP request eagerly before returning the iterator; OpenAI lazily inside it - this changes which errors count as retryable pre-stream failures.
+- Adapters: `openai.NewProvider` adapter.go:50, `glm.NewProvider` :104 (of llm/glm/adapter.go), `openairesponses.NewProvider` :56 — all satisfy Provider.
+- glm: API key containing `.` selects self-signed JWT auth (adapter.go:105-108) — bearer key with a dot WILL misauthenticate; `WithTopP` is the only option that clamps in place (:77-86); `timeNow` seam (auth.go:13-14).
+- openai: lazy-stream contract — request errors surface only when ranging begins (adapter.go:158-165); `StreamOptions.IncludeUsage` (:174-175).
+- openairesponses: typed items, store:false + full item-history replay per call, reasoning via encrypted_content; v1 exclusions documented in adapter.go:1-16 (no built-in tools, text.format, previous_response_id, WS).
+- Bounded I/O + 120s default client timeout in all three adapters.
 
 ## ANTI-PATTERNS (THIS PACKAGE)
-- Do not implement `Provider`/`ContentBlock`/`Chunk` outside this package - sealed via unexported marker methods.
-- ~~Do not add a third adapter~~: `openairesponses/` (Responses protocol) is sanctioned (owner ruling 2026-09-11) as an independent item-based adapter. The CC pair (glm/openai) must still stay in sync with each other; `ReasoningItemBlock` in assistant history is SKIPPED (never emitted, never errored) by both CC adapters, and EMITTED only by `openairesponses`.
+- Conversion helpers (`convert*`, `firstNonEmpty`, `ptrToString`, `encodeBase64`, `parseStreamPayload`) are duplicated near-verbatim in glm/ and openai/ BY DESIGN — change both, never extract a shared helper.
+- Do not pre-range a ChatStream in wrappers — lazy contract breaks (docs/DESIGN.md:61).
+- Do not implement the sealed interfaces outside their defining package.
+- Do not wrap/retry mid-stream SSE errors.
+
+## NOTES
+- Message constructors live at message.go:93-:126 (Text/System/User/etc.) — build histories with these, not struct literals.
+- The e2e file llm/openairesponses/e2e_test.go is `//go:build e2e`-gated and invisible to plain `go test ./...`.
+- Every adapter pins a 120s default HTTP client timeout; overrides flow through llm.Option.

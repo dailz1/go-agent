@@ -1,30 +1,33 @@
-# agent
+# pkg/agent → agent/
 
-Agent core: streaming-first tool-calling loop over an `llm.Provider`, with history compaction, tool-result truncation, approval gating, and retry/fallback. Earned its file: score 8 (largest, most complex package; core domain).
+## OVERVIEW
+Core autonomous loop: chat → tool calls → results → chat, streaming `AgentEvent`s, with compaction, truncation, approval, retry/fallback, and durable threads. Earned its file: largest, most complex package (~3.4k source vs ~11.5k test LOC).
 
 ## WHERE TO LOOK
 | Task | Location |
 |------|----------|
-| Understand the loop | `runStreamInternal` (agent.go:304) - the single execution path; `Run` folds it, non-streaming providers are synthesized into chunks (`synthesizeChunks`) |
-| Retry / streaming fallback | `chatWithRetryAndFallback` (agent.go:550); falls back to `Chat` on `llm.ErrStreamingNotSupported` |
-| Multi-tool stream reassembly | accumulator.go - `toolCallAccum` keyed by stream `Index` |
-| Compaction strategies | compact.go - standard, sliding-window, drop-oldest-tool-groups, summarization, plus `NewCompactorChain` |
-| Tool-result truncation | truncate.go - head+tail with omission marker; panics on invalid rune limits by contract ("caller bug") |
-| Events a stream consumer sees | event.go - 7 sealed `AgentEvent` variants (TextDelta, ThinkingDelta, ToolCall, ToolResult, Retry, Done, Compaction) + `RetryInfo` |
-| Provider mocks | mock_provider.go - non-test file; base `NewMockProvider` takes unexported types, streaming/retryable variants take public types |
-| Loop outcome | RunResult (agent.go:191): Message, History, ToolCalls, Truncated, Retries, Usage, TotalUsage |
-| Retry behavior | `WithRetryConfig` / `AgentRetryConfig`: exponential backoff + full jitter honoring `APIError.RetryAfter`; `MaxRetries: -1` disables; defaults 3 / 500ms / 120s |
-| Compaction trigger | `DefaultContextWindowTokens = 8_192`, `DefaultCompactionThresholdPercent = 80` (agent.go:130-134) |
+| Understand the loop | `runStreamInternal` agent.go:347 — single execution path; Run :282 folds it (`foldRunStream` :298), RunStream :335 |
+| Retry / stream fallback | `chatWithRetryAndFallback` agent.go:641; falls back to Chat on `llm.ErrStreamingNotSupported` |
+| Stream reassembly | accumulator.go — `toolCallAccum` keyed by stream Index |
+| maxIter terminal skip (C10) | truncation branch agent.go:471-517; skip helper max_iter.go:8 (`iterationLimitResults`); Store side `truncateRun` persist.go:210 |
+| Events a consumer sees | event.go — 7 sealed variants; TC-first semantics :36-44; DoneEvent :97 (History field :102 is the authoritative snapshot) |
+| Compaction strategies | compact.go — standard, sliding-window, drop-oldest-tool-groups, summarization, `NewCompactorChain` (`Compactor` iface compact.go:43) |
+| Tool-result truncation | truncate.go:17 — head+tail with omission marker; panics on invalid rune limits ("caller bug") |
+| Durable threads | persist_api.go:19/40/55 (RunThread/ResumeThread/RunThreadStream); persist.go (declareRound/commit/truncateRun); persist_replay.go |
+| Provider mocks | mock_provider.go — exported constructors over UNEXPORTED types; external packages use agenttest instead |
+| Options | agent.go:152-214 — normalized in New :243 (maxIter<1→10, window<=0→8192, concurrency<1→1); defaults :142/:146 |
 
 ## CONVENTIONS (differs from parent)
-- Compaction failure is non-fatal: logged at Warn, the run continues with the original history.
-- Unknown provider chunk types are silently ignored (forward compat); an unknown `AgentEvent` aborts with an error in `foldRunStream`.
-- `ctx` is checked (`select`/`default`) before each LLM round and each tool execution.
-- Sentinels `ErrInvalidHistory`, `ErrCompactionBudgetExceeded` (compact.go) - compare with `errors.Is`.
-- Tool execution recovers panics and feeds a soft error result to the LLM.
-- History is deep-copied via `deepCopyMessages`; do not mutate caller-owned slices.
+- TC-first: all ToolCallEvents of a round yield before any executes; the announcement batch has NO context check (splitting strands a partially-announced assistant) — agent.go:526-543.
+- maxIter terminal round: every requested call is announced then given a deterministic skipped `ToolResultEvent` (IsError, "iteration limit"); zero execution, zero approval; Store closes the batch first, break cannot reopen (event.go:41-44).
+- Durable-before-visible: declareRound before announce/execute/approval; compaction checkpoint before CompactionEvent; terminal state before DoneEvent.
+- Fold contract: initial input + fold(events) = DoneEvent.History; DoneEvent.History is authoritative (ReasoningItemChunk emits no event); stream ending without Done = error.
+- Compaction failure is non-fatal: Warn log, run continues with original history. Unknown provider chunks silently ignored; unknown AgentEvent aborts the fold.
+- ctx checked before each LLM round and each tool execution; history deep-copied (`deepCopyMessages`), never mutate caller slices.
+- Sentinels: `ErrInvalidHistory`, `ErrCompactionBudgetExceeded`; persistence: `ErrRunIncomplete` (persist.go:87 — RunThread must ResumeThread), `ErrNothingToResume` (persist.go:68).
 
 ## ANTI-PATTERNS (THIS PACKAGE)
-- Do not retry mid-stream SSE errors here (or anywhere) - only pre-stream failures retry.
-- Do not grow `runStreamInternal` into parallel paths for Run vs RunStream - everything folds through it.
+- Do not retry mid-stream SSE errors anywhere — only pre-stream failures retry.
+- Do not grow `runStreamInternal` into parallel Run-vs-RunStream paths — everything folds through it.
 - Do not add channels to public APIs; streaming is `iter.Seq2`.
+- Do not emit events for ReasoningItemChunk (index-ordered assembly only; consumers read DoneEvent.History).
