@@ -82,7 +82,7 @@
 ### P0 结构统一（已完成 2026-09-10）
 - 合并 Run/RunStream 为单一执行路径（`Run` = 事件流归并）
 - 修复 OpenAI 流式重复 `DoneChunk`
-- 事件日志友好：保证事件序列足以完整重建一次运行（契约测试 `pkg/agent/agent_fold_test.go`；发射顺序：一轮的全部 `ToolCallEvent` 在任何执行前宣告，同轮调用连续、跨轮可分辨；已知细微点：maxIter 截断轮的悬空工具调用仅经 `DoneEvent.Message` 可见）
+- 事件与完整 history：Text/Thinking/ToolCall/ToolResult events 提供实时观察；同一成功 Done 中的 maxIter 工具请求按 declaration order 发出连续 ToolCallEvent，并各有一条 iteration-limit soft-error ToolResultEvent。`DoneEvent.History` / `RunResult.History` 是完整、无损的权威 history snapshot；因为 Responses `ReasoningItemChunk` 当前不映射为 AgentEvent，consumer 不得仅靠增量 events 重建含 reasoning items 的 assistant，必须在 Done 时以该 snapshot reconciliation。普通 Chat-only history 可作 event-only diagnostic fold，但不是通用完整-history 契约。
 
 ### P1 运行时安全
 - 工具结果截断：按上下文占比设上限（约 30% 规则），掐头留尾，入库前执行（已落地，见 §7）
@@ -94,10 +94,10 @@
   - 版本化事件信封：显式 DTO 编解码（sealed 接口直接 JSON 不可逆）；未知记录类型 / 信封版本 → 类型化兼容性错误，不静默忽略；
   - 检查点：可重建加速器，定位在其自身记录的 Seq；快照同时携带运行生命周期状态与线程系统提示词，避免快路径重放丢失上下文。快照解码或校验失败 → 经 `History(ctx, thread, fromSeq)` 全量回退重建（`Latest` 只返回尾部，故必须提供范围读；记录 Seq 从 0 开始，返回 Seq >= from 的记录）。日志全量保留，v1 不清理。
 - 恢复语义：重放日志重建状态，**不向新流重放历史事件**（新消费者只看本次运行的事件）。中断轮 = 有 `round_declared` 无 `round_committed` → 对每个未提交调用合成一条 role=tool、`IsError=true` 的"结果未知"消息（每调用一条、按宣告顺序，满足 TC/TR 配对与 OpenAI/GLM 转换要求）；maxIter 截断 = **确定未执行** → 合成"因达到迭代上限未执行"软结果（非"未知"）。绝不盲目重执行工具。悬挂输入：活动运行存在时 `RunThread` 拒绝新输入（类型化 `ErrRunIncomplete`）；`ResumeThread` 恢复已落库输入、不追加。崩溃先于终态落库的模型回复可能丢失并在恢复时重新生成（at-least-once，显式记录）；工具副作用完成后、`round_committed` 落库前的崩溃窗口同样如实报"结果未知"（不可避免的副作用窗口）。
-- 提交点与流式栅栏：**输入先落库再调模型；宣告先落库再执行任何工具；Done 先落库再发出**——生命周期记录必须先于对应事件交付而落库。增量片段（text/thinking delta）与重试事件是消费者遥测，不入规范日志（其聚合结果由宣告记录承载）；恢复时不重放历史事件。消费者中途断开 → 运行保持未完成（可恢复）；持久化失败即终止本轮并返回存储错误（按序合并原始错误，默认安全）。提交失败前已交付给消费者的工具结果事件不回滚——日志事实保持开放的宣告，恢复时如实合成"结果未知"。
+- 消费者中途断开：普通可执行工具轮在 TC/TR delivery 中断时保持 incomplete/resumable，replay 依 durable declaration/results 补未知或继续。唯一例外是已经完整 durable precommit 的 `maxIter` terminal skip batch：它在首个 terminal TC 前已写 declaration、all skipped results、commit、Done；consumer 在 TC 或 TR break 只停止该 consumer 的 delivery，thread 已 closed，`ResumeThread` 返回 `ErrNothingToResume`。
 - 并发：每线程非阻塞运行所有权——第二个并发运行在**任何模型调用之前**即得类型化冲突（单纯加锁等待是串行化，不是冲突）；乐观版本号追加 + record_id 幂等重试作为其他写者的后盾。不可变记录批次与 ID 只生成一次，重试逐字节同一内容。
 - 线程 ID：调用方 ID 非空、有界、不规范化（转义后须满足文件名边界）；内核生成 = crypto-random 128 位，走 **rev=0 保留语义**：目标线程已存在即视为保留冲突，换新 ID 重试（绝不污染既有线程），重试仅限该次冲突。`RunResult` 与 `DoneEvent` 暴露 `ThreadID`；无 store 时不生成。显式线程入口（`RunThread` / `ResumeThread` / `RunThreadStream`）要求已配置 Store，否则返回 `ErrNoStore`，不静默降级为非持久运行。head=0 即"新建"，无"线程不存在"语义；调用方 ID 复用即"追加到既有线程"。`RunWithHistory` / `RunStreamWithHistory` 保持非持久（一次性导入语义，不入线程）。运行所有权按（Store 实例, 线程）全局登记，不按 Agent 实例；Store 值必须可比较（指针式实现，两个内置后端均满足），否则所有权登记返回类型化错误而不 panic。
-- v1 单进程（写入按线程串行化；同目录仅允许一个 JSONL 实例，由 NewJSONL 强制）。所有失败、取消与中断均保持运行可恢复；agent v1 从不写终止错误记录（KindError 仅为兼容保留：重放时视为关闭运行）。v1 非目标：HITL 等待落库、日志清理、跨进程协调；同步审批回调参与宣告/提交轮状态，但不是持久化 HITL 等待。
+- 失败、取消与中断默认保留可恢复的未闭合 run，绝不写假的 Done。例外仅限 `maxIter` terminal skip batch：其 preparation 前或 precommit 期间的取消/写入失败仍按默认恢复语义；但 precommit 完整成功后，TC/TR/Done delivery 不再检查 ctx，post-precommit cancellation 不撤销闭合 batch，也不产生可 resume run。
 
 ### OpenAI Responses 协议适配器（`pkg/llm/openairesponses`，建设中）
 
@@ -133,7 +133,7 @@
 
 hardError 优先于 missing。`n=1` 每完成一个槽位即走共享 settlement，以保留 c1 在 c2 派发前 materialize 的旧时序；`n>1` 停止派发并排空已启动任务后才结算。并行调度使用最多 `min(n, len(calls))` 个 worker；每调用在 dispatch 前检查 ctx，取消停止派发、把 ctx 传给已启动工具并排空。排空没有人为上界：工具必须 honor ctx，内核不以泄漏 goroutine 伪造终止。
 
-TC-first、结果截断先于 event/history/Store、生命周期记录先于对应 event 交付，以及消费者在 ToolCall 批或 ToolResult 批 break 时停止后续执行/materialization（不 commit）的既有契约不变。hardError、missing 或 commit failure 交付给消费者后无条件终止本轮，不能因 consumer 接受 error 而继续执行。commit 失败不回滚已交付事件，开放 declaration 由恢复路径按声明顺序合成 unknown 结果。
+TC-first 与 materialization：普通轮的全部 TC 连续宣布后才执行；break 在 TC/TR 期间停止 materialization，且 Store 仍未 commit，因此可 resume。`maxIter` terminal skip round 是唯一已知结局的例外：无 planner/approval/worker/Execute，先整体 durable close（Store）或构造完整 terminal history（non-Store），再同步 TC → skipped TR → Done。其 break/cancel 规则见 P1。
 - 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent
 
 #### 公开测试替身（P2-3 冻结契约）
@@ -200,7 +200,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 工具结果截断（单结果 ≤ max(128, WithContextWindowTokens×30%) rune，50/50 掐头留尾，默认窗口 8192）。
 - 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
 - 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
-- 事件折叠契约已钉死：`agent_fold_test.go` 仅凭事件流独立重建 `RunResult.History`，覆盖审批拒绝、未知工具软错误、截断限幅、压缩重同步、重试、非流式回退与错误中断路径；截断轮的悬空工具调用仅经 `DoneEvent.Message` 到达消费者。P0 全部关闭，Store 的前置（事件序列可重建）已具备。
+- 事件/History 契约已更新：maxIter terminal tool calls 以 TC + deterministic skipped TR 公开，Store 与非 Store 的 Done History 相同且可 paired continuation。`DoneEvent.History` 是完全历史的 canonical snapshot；OpenAI Responses reasoning items 不单独成为 AgentEvent，故 consumer/test fold 在 Done snapshot reconciliation，而非宣称 raw event stream 独立编码所有 assistant blocks。覆盖位于 `agent_fold_test.go`、`reasoning_order_test.go` 及 persistence stream tests。
 - Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。Store v1 已实现并提交：pkg/agent 侧 16feb3b（WithStore/RunThread/ResumeThread/RunThreadStream），pkg/store 契约实现 dfb7803。
 - OpenAI Responses 适配器已实现并提交（fe2c7d6，pkg/llm/openairesponses）：typed items、store:false 全量回放、reasoning items（含 encrypted_content）；内置工具/结构化输出/previous_response_id 不支持（v1）。
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
