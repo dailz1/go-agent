@@ -108,7 +108,7 @@ defer bridge.Close()
 - 选择 Store thread 所有权；需要恢复时保留 thread ID。
 - 用自己的 metrics/logging policy 记录 provider error、usage、retry 和 event。
 - 用 approval gate 保护有副作用的工具，并让每个工具遵守 context cancellation。
-- 使用 `pkg/agenttest` script 和 tool double 编写确定性测试。
+- 使用 `agenttest` script 和 tool double 编写确定性测试。
 - 审阅 [docs/DESIGN.md](docs/DESIGN.md) 中的公开契约。
 
 ## 限制

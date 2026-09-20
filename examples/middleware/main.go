@@ -11,8 +11,8 @@ import (
 	"iter"
 	"log/slog"
 
-	"github.com/dailz1/go-agent/pkg/llm"
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/tool"
 )
 
 // loggingTool wraps a tool.Tool for observation only: full ToolInfo

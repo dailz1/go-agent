@@ -1,4 +1,4 @@
-// Command testdouble shows deterministic Agent tests with pkg/agenttest. Run
+// Command testdouble shows deterministic Agent tests with agenttest. Run
 // `go run ./examples/testdouble`; it makes no network requests. ScriptedProvider
 // verifies the exact provider exchange and ToolFunc records the tool arguments.
 package main
@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dailz1/go-agent/pkg/agent"
-	"github.com/dailz1/go-agent/pkg/agenttest"
-	"github.com/dailz1/go-agent/pkg/llm"
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/agent"
+	"github.com/dailz1/go-agent/agenttest"
+	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func main() {

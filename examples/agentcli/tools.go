@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func registerTools(r *tool.Registry) {

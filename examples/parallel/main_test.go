@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dailz1/go-agent/pkg/llm"
+	"github.com/dailz1/go-agent/llm"
 )
 
 func TestParallelToolsStartTogetherAndResultsStayOrdered(t *testing.T) {

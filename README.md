@@ -108,7 +108,7 @@ Read the [MCP bridge guide](mcp/README.md) before using it. In particular, cance
 - Choose Store thread ownership and retain thread IDs where recovery matters.
 - Instrument provider errors, usage, retries, and events with your metrics/logging policy.
 - Gate side-effecting tools with approval and honor context cancellation in every tool.
-- Use `pkg/agenttest` scripts and tool doubles for deterministic tests.
+- Use `agenttest` scripts and tool doubles for deterministic tests.
 - Review the public contracts in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Limitations

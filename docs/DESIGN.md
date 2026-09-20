@@ -20,7 +20,7 @@
 
 1. **稳定**：模型断流、工具崩溃、超长返回、任务失控——库必须兜住。该重试的重试，该截断的截断，该刹车的刹车。用户程序不能挂，花费不能失控。
 2. **可替换**：换模型供应商、换工具实现，使用者的业务代码一行不改。
-3. **小**：内核只放"不管做什么产品都必须有"的机制；"看产品而定"的能力放扩展包。`pkg/agent`、`pkg/llm`、`pkg/store`、`pkg/tool` 的完整依赖闭包不得含第三方 module；SDK source import 只允许出现在根 module 的 `mcp/` packages。CI 用 `go list -deps` 断言该闭包，并逐字节断言根 `go.mod` 直接 require `github.com/modelcontextprotocol/go-sdk v1.7.0`。`pkg/tool` schema codec/Registry 只使用标准库（JSON 工具限 `encoding/json`、`fmt`，cycle identity 可用 `reflect`），不引入 validator。
+3. **小**：内核只放"不管做什么产品都必须有"的机制；"看产品而定"的能力放扩展包。`agent`、`llm`、`store`、`tool` 的完整依赖闭包不得含第三方 module；SDK source import 只允许出现在根 module 的 `mcp/` packages。CI 用 `go list -deps` 断言该闭包，并逐字节断言根 `go.mod` 直接 require `github.com/modelcontextprotocol/go-sdk v1.7.0`。`tool` schema codec/Registry 只使用标准库（JSON 工具限 `encoding/json`、`fmt`，cycle identity 可用 `reflect`），不引入 validator。
 4. **好用**：四个核心概念（Agent / Provider / Tool / Event）即可上手；全程事件流可观测、可录制、可回放；出问题不用猜。
 5. **留口子**：今天存储的每笔数据（完整对话、每次工具调用与结果）都为明天的功能（记忆、自进化、审计、训练数据导出）保持完整可取。今天多守的规矩，就是明天新功能的入场券；工具结果按截断策略后的轨迹保存，超长原文不保留（稳定目标的代价，截断时记 Warn 日志）。
 
@@ -31,9 +31,9 @@
 │ 使用者的应用（业务逻辑、system prompt、工具实现） │
 ├─────────────────────────────────────────────┤
 │ go-agent 内核（本库）                          │
-│  pkg/agent  自主循环 + 事件流 + 审批 + 重试      │
-│  pkg/llm    消息模型 / 事件模型 / HTTP·SSE / 重试│
-│  pkg/tool   工具接口 + 注册表                   │
+│  agent  自主循环 + 事件流 + 审批 + 重试      │
+│  llm    消息模型 / 事件模型 / HTTP·SSE / 重试│
+│  tool   工具接口 + 注册表                   │
 ├─────────────────────────────────────────────┤
 │ 适配器：openai（兼容接口）/ glm（智谱，JWT）      │
 │          openairesponses（Responses 协议）        │
@@ -99,7 +99,7 @@
 - 线程 ID：调用方 ID 非空、有界、不规范化（转义后须满足文件名边界）；内核生成 = crypto-random 128 位，走 **rev=0 保留语义**：目标线程已存在即视为保留冲突，换新 ID 重试（绝不污染既有线程），重试仅限该次冲突。`RunResult` 与 `DoneEvent` 暴露 `ThreadID`；无 store 时不生成。显式线程入口（`RunThread` / `ResumeThread` / `RunThreadStream`）要求已配置 Store，否则返回 `ErrNoStore`，不静默降级为非持久运行。head=0 即"新建"，无"线程不存在"语义；调用方 ID 复用即"追加到既有线程"。`RunWithHistory` / `RunStreamWithHistory` 保持非持久（一次性导入语义，不入线程）。运行所有权按（Store 实例, 线程）全局登记，不按 Agent 实例；Store 值必须可比较（指针式实现，两个内置后端均满足），否则所有权登记返回类型化错误而不 panic。
 - 失败、取消与中断默认保留可恢复的未闭合 run，绝不写假的 Done。例外仅限 `maxIter` terminal skip batch：其 preparation 前或 precommit 期间的取消/写入失败仍按默认恢复语义；但 precommit 完整成功后，TC/TR/Done delivery 不再检查 ctx，post-precommit cancellation 不撤销闭合 batch，也不产生可 resume run。
 
-### OpenAI Responses 协议适配器（`pkg/llm/openairesponses`，建设中）
+### OpenAI Responses 协议适配器（`llm/openairesponses`，建设中）
 
 独立子包实现同一 `llm.Provider` 接口（`Name` 为 `openai_responses`），与 glm/openai 平行；协议差异是条目级的，不做双协议混包。已裁决（2026-09-11）：D1 独立子包；D2 状态策略 A（`store:false` + 手动回放）；D3 新增条目级 reasoning 块；D4 内建工具不做；D5 Chat+ChatStream 全量、mock SSE 单测 + e2e。
 
@@ -138,7 +138,7 @@ TC-first 与 materialization：普通轮的全部 TC 连续宣布后才执行；
 
 #### 公开测试替身（P2-3 冻结契约）
 
-`pkg/agenttest` 是公开、stdlib-only 的测试替身包；它只 import `pkg/llm`、`pkg/tool` 与标准库，绝不反向 import `agent`。它提供全局严格有序的 `ScriptedProvider`、`Recorder`/`Replayer` 和最小的 `ToolFunc`。`Request` 深拷贝并严格比较 messages、按名称排序的 tools 与 `llm.ApplyOptions` 后的 options；函数型 option 的身份不是契约。Chat 与 ChatStream 共享一个全局 Exchange 顺序，方法交替也必须匹配。成功的 ChatStream 在调用时保留步骤，迭代自然结束、已交付的 terminal stream error 或 nil-error chunk 后的 early break 才释放；保留期间的任意调用返回 `ErrConcurrentScriptUse`。脚本耗尽返回带方法和一基 step 编号的 `ErrScriptExhausted`；不匹配返回含零基全局 step、expected/actual method 的 `RequestMismatchError`（`ErrScriptMismatch`）；`Verify` 对未消费或 active stream 返回含 Next、Remaining、Active 的 `ScriptVerificationError`（`ErrUnverifiedScript`）。
+`agenttest` 是公开、stdlib-only 的测试替身包；它只 import `llm`、`tool` 与标准库，绝不反向 import `agent`。它提供全局严格有序的 `ScriptedProvider`、`Recorder`/`Replayer` 和最小的 `ToolFunc`。`Request` 深拷贝并严格比较 messages、按名称排序的 tools 与 `llm.ApplyOptions` 后的 options；函数型 option 的身份不是契约。Chat 与 ChatStream 共享一个全局 Exchange 顺序，方法交替也必须匹配。成功的 ChatStream 在调用时保留步骤，迭代自然结束、已交付的 terminal stream error 或 nil-error chunk 后的 early break 才释放；保留期间的任意调用返回 `ErrConcurrentScriptUse`。脚本耗尽返回带方法和一基 step 编号的 `ErrScriptExhausted`；不匹配返回含零基全局 step、expected/actual method 的 `RequestMismatchError`（`ErrScriptMismatch`）；`Verify` 对未消费或 active stream 返回含 Next、Remaining、Active 的 `ScriptVerificationError`（`ErrUnverifiedScript`）。
 
 录制 bytes 的 **v1 grammar** 固定不变：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个值形式 chunk DTO 都有 `type` discriminator，并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。所有 pointer-form chunks（含 typed nil）继续按原动态形式交付下游，但 `Bytes` 返回带动态类型的 `UnsupportedChunkError`/`ErrUnsupportedChunk`；v1 不将其归一化为值形式。
 
@@ -201,8 +201,8 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
 - 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
 - 事件/History 契约已更新：maxIter terminal tool calls 以 TC + deterministic skipped TR 公开，Store 与非 Store 的 Done History 相同且可 paired continuation。`DoneEvent.History` 是完全历史的 canonical snapshot；OpenAI Responses reasoning items 不单独成为 AgentEvent，故 consumer/test fold 在 Done snapshot reconciliation，而非宣称 raw event stream 独立编码所有 assistant blocks。覆盖位于 `agent_fold_test.go`、`reasoning_order_test.go` 及 persistence stream tests。
-- Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。Store v1 已实现并提交：pkg/agent 侧 16feb3b（WithStore/RunThread/ResumeThread/RunThreadStream），pkg/store 契约实现 dfb7803。
-- OpenAI Responses 适配器已实现并提交（fe2c7d6，pkg/llm/openairesponses）：typed items、store:false 全量回放、reasoning items（含 encrypted_content）；内置工具/结构化输出/previous_response_id 不支持（v1）。
+- Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。Store v1 已实现并提交：agent 侧 16feb3b（WithStore/RunThread/ResumeThread/RunThreadStream），store 契约实现 dfb7803。
+- OpenAI Responses 适配器已实现并提交（fe2c7d6，llm/openairesponses）：typed items、store:false 全量回放、reasoning items（含 encrypted_content）；内置工具/结构化输出/previous_response_id 不支持（v1）。
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
 - 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
 - P3-1 已扩展 `tool.ParameterSchema`/`Property`：typed recursive schema、nullable canonical codec、carrier、presence state 与 marshal/Registry cycle safety 均已落地；旧公开模型构造值的 JSON 保持 byte-exact。

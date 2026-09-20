@@ -10,11 +10,11 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/dailz1/go-agent/agent"
+	"github.com/dailz1/go-agent/agenttest"
 	"github.com/dailz1/go-agent/agenttool"
-	"github.com/dailz1/go-agent/pkg/agent"
-	"github.com/dailz1/go-agent/pkg/agenttest"
-	"github.com/dailz1/go-agent/pkg/llm"
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestParentDelegationReturnsFinalTextAndOnlyParentEvents(t *testing.T) {

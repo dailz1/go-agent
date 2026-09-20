@@ -17,9 +17,9 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/dailz1/go-agent/pkg/agent"
-	"github.com/dailz1/go-agent/pkg/llm/openai"
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/agent"
+	"github.com/dailz1/go-agent/llm/openai"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func main() {

@@ -3,7 +3,7 @@ set -euo pipefail
 
 kernel_third_party_modules=$(go list -deps -f \
   '{{with .Module}}{{if not .Main}}{{.Path}}{{end}}{{end}}' \
-  ./pkg/agent ./pkg/llm ./pkg/store ./pkg/tool | sed '/^$/d' | sort -u)
+  ./agent ./llm ./store ./tool | sed '/^$/d' | sort -u)
 test -z "$kernel_third_party_modules"
 
 sdk_root_requirement=$(go list -m -f \

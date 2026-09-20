@@ -29,11 +29,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dailz1/go-agent/pkg/agent"
-	"github.com/dailz1/go-agent/pkg/llm"
-	"github.com/dailz1/go-agent/pkg/llm/openai"
-	"github.com/dailz1/go-agent/pkg/store"
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/agent"
+	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/llm/openai"
+	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 const systemPrompt = "You are a helpful coding assistant working inside the user's current directory. " +

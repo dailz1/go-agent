@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dailz1/go-agent/pkg/tool"
+	"github.com/dailz1/go-agent/tool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
