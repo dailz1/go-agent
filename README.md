@@ -2,6 +2,10 @@
 
 [简体中文](README.zh-CN.md)
 
+[![ci](https://github.com/dailz1/go-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/dailz1/go-agent/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/tag/dailz1/go-agent?label=release)](https://github.com/dailz1/go-agent/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An embeddable Go agent runtime, not an orchestration framework. It provides Agents, Providers, Tools, Events, and Stores as small composable building blocks.
 
 ## 10-minute streaming quickstart
@@ -119,4 +123,4 @@ The MCP bridge is client-only and tools-only. It has static discovery (no refres
 
 ## Project status and contributing
 
-The project is pre-v0.1; breaking changes may occur before a separately planned stable release. There are no release, CI, license, or download badges because this repository does not currently publish those assets. Contributions should preserve the contracts in [docs/DESIGN.md](docs/DESIGN.md) and keep tests deterministic.
+The project is released as [v0.1.0](https://github.com/dailz1/go-agent/releases/tag/v0.1.0) under the [MIT license](LICENSE). CI runs the verification battery and the kernel closure guard on every push to `main`. The API may still evolve before a separately planned v1.0; contributions should preserve the contracts in [docs/DESIGN.md](docs/DESIGN.md) and keep tests deterministic.

@@ -206,3 +206,10 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
 - 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
 - P3-1 已扩展 `tool.ParameterSchema`/`Property`：typed recursive schema、nullable canonical codec、carrier、presence state 与 marshal/Registry cycle safety 均已落地；旧公开模型构造值的 JSON 保持 byte-exact。
+
+## 8. 状态更新（2026-09-20）
+
+- 路线图 P0–P3 全部闭环，已发布 v0.1.0（tag 于 `f064c63`）；§5 的 C10 修订（maxIter 终局轮宣告 ToolCallEvent + 确定性 skip ToolResultEvent，零执行零审批）已落地为 `agent/max_iter.go` 与折叠契约的 Done reconciliation（`DoneEvent.History` 为权威快照）。
+- 仓库结构：pkg/ 目录废除，五包提升至模块根（`agent/`、`llm/`、`store/`、`tool/`、`agenttest/`）；卫星包 `mcp/`（包名 `mcpbridge`）、`agenttool/`、`examples/` 平铺于根；import 路径为 `github.com/dailz1/go-agent/<pkg>`。
+- 内核闭包（agent/llm/store/tool 零第三方依赖）由 scripts/kernel-closure-guard.sh 与 CI（.github/workflows/ci.yml，battery + kernel-closure 两 job）永久守护；`go list -m all` 现为 14 行（MCP SDK + 传递依赖），属预期形态。
+- 许可证：MIT（LICENSE）；知识库 AGENTS.md 已于 f064c63 重生成（root + 6 包），锚点经机检。

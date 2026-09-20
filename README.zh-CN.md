@@ -2,6 +2,10 @@
 
 [English](README.md)
 
+[![ci](https://github.com/dailz1/go-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/dailz1/go-agent/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/tag/dailz1/go-agent?label=release)](https://github.com/dailz1/go-agent/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 一个可嵌入的 Go agent runtime，不是 orchestration framework。它以小而可组合的构件提供 Agent、Provider、Tool、Event 和 Store。
 
 ## 10 分钟流式快速开始
@@ -119,4 +123,4 @@ MCP bridge 是 client-only、tools-only。它使用静态发现（没有 refresh
 
 ## 项目状态与贡献
 
-项目处于 pre-v0.1；在独立规划的稳定发布之前可能发生 breaking changes。由于仓库当前没有发布这些资产，不放 release、CI、license 或 download badge。贡献应保持 [docs/DESIGN.md](docs/DESIGN.md) 的契约，并确保测试为确定性的。
+项目已发布 [v0.1.0](https://github.com/dailz1/go-agent/releases/tag/v0.1.0)，采用 [MIT 许可证](LICENSE)。CI 在每次 push 到 `main` 时自动运行验证电池与内核闭包守卫。在独立规划的 v1.0 之前 API 仍可能演进；贡献应保持 [docs/DESIGN.md](docs/DESIGN.md) 的契约，并确保测试为确定性的。
