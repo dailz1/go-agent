@@ -76,10 +76,15 @@ func (a *Agent) threadSession(ctx context.Context, threadID string, input string
 		defer sess.release()
 		inner, err := a.runStreamInternal(ctx, history, sess)
 		if err != nil {
-			yield(nil, err)
+			yield(nil, wrapPersistentRunError(sess.thread, err))
 			return
 		}
-		inner(yield)
+		inner(func(event AgentEvent, err error) bool {
+			if err != nil {
+				return yield(nil, wrapPersistentRunError(sess.thread, err))
+			}
+			return yield(event, nil)
+		})
 	}
 }
 
@@ -106,7 +111,9 @@ func (a *Agent) runOnNewThreadStream(ctx context.Context, input string) iter.Seq
 				// ownership mean "this ID already names a thread" — retry
 				// with a new one. No event has been delivered and no model
 				// call made, so the retry cannot duplicate or drop anything.
-				if err != nil && (isReservationConflict(err) || errors.Is(err, ErrThreadBusy)) {
+				var interrupted *RunInterruptedError
+				if err != nil && !errors.As(err, &interrupted) &&
+					(isReservationConflict(err) || errors.Is(err, ErrThreadBusy)) {
 					retry = true
 					return false
 				}

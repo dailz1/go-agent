@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -122,6 +121,7 @@ type Agent struct {
 	retryCfgSet                bool
 	store                      store.Store
 	toolConcurrency            int
+	roundContextProvider       RoundContextProvider
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -215,6 +215,12 @@ func WithStore(s store.Store) Option {
 	return func(a *Agent) { a.store = s }
 }
 
+// WithRoundContextProvider enables a transient runtime-context overlay on
+// every direct provider invocation. A nil provider disables the feature.
+func WithRoundContextProvider(provider RoundContextProvider) Option {
+	return func(a *Agent) { a.roundContextProvider = provider }
+}
+
 // RunResult holds the outcome of a single agent.Run call.
 type RunResult struct {
 	// Message is the final assistant response.
@@ -265,6 +271,9 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	}
 	if a.toolConcurrency <= 0 {
 		a.toolConcurrency = 1
+	}
+	if a.roundContextProvider == nil {
+		a.roundContextProvider = nil
 	}
 	return a
 }
@@ -372,6 +381,10 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			if !ok {
 				return
 			}
+			if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCap() {
+				yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
+				return
+			}
 
 			a.logger.Debug("agent stream iteration",
 				"iteration", i,
@@ -381,7 +394,10 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				ctx,
 				history,
 				tools,
-				i,
+				RoundContextRequest{
+					Round:    i + sessionRoundBase(sess),
+					ThreadID: threadID,
+				},
 				yield,
 				&streamRetries,
 			)
@@ -560,6 +576,9 @@ func (a *Agent) compactHistoryRound(
 	// Same overflow-safe idiom as toolResultRunes: floor(windowTokens*percent/100).
 	targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
 		(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
+	if a.roundContextProvider != nil && targetRunes > a.canonicalContextCap() {
+		targetRunes = a.canonicalContextCap()
+	}
 	beforeRunes := estimateRunes(history)
 	if a.compactor != nil && beforeRunes > targetRunes {
 		result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes})
@@ -605,11 +624,15 @@ func (a *Agent) compactHistoryRound(
 				return history, false
 			default:
 			}
-			if estimateRunes(history) > targetRunes {
+			if a.roundContextProvider == nil && estimateRunes(history) > targetRunes {
 				yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
 				return history, false
 			}
 		}
+	}
+	if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCap() {
+		yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
+		return history, false
 	}
 	return history, true
 }
@@ -636,114 +659,6 @@ func (a *Agent) assembleAssistantMessage(
 
 	assistantMsg := llm.Message{Role: llm.RoleAssistant, Content: contentBlocks}
 	return assistantMsg, toolBlocks, true
-}
-
-func (a *Agent) chatWithRetryAndFallback(
-	ctx context.Context,
-	history []llm.Message,
-	tools []tool.ToolInfo,
-	iteration int,
-	yield func(AgentEvent, error) bool,
-	streamRetries *[]RetryInfo,
-) (iter.Seq2[llm.Chunk, error], bool) {
-	// Request a streaming response from the provider with retry.
-	// Pre-stream errors (429, 5xx, network) are retried with backoff;
-	// non-retryable errors and mid-stream errors are yielded immediately.
-	maxRetries, baseDelay, maxDelay := a.resolveRetryConfig()
-	maxAttempts := maxRetries + 1
-	if maxRetries < 0 {
-		maxAttempts = 1
-	}
-
-	var stream iter.Seq2[llm.Chunk, error]
-	var lastRetryErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		stream, lastRetryErr = a.provider.ChatStream(ctx, history, tools, a.llmOpts...)
-		if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
-			response, usage, err := a.provider.Chat(ctx, history, tools, a.llmOpts...)
-			lastRetryErr = err
-			if err == nil {
-				stream = func(yield func(llm.Chunk, error) bool) {
-					for _, chunk := range synthesizeChunks(response.Content, usage) {
-						if !yield(chunk, nil) {
-							return
-						}
-					}
-				}
-				break
-			}
-		}
-		if lastRetryErr == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			yield(nil, ctx.Err())
-			return nil, false
-		}
-		if !llm.IsRetryableError(lastRetryErr) && !llm.IsNetworkError(lastRetryErr) {
-			yield(nil, fmt.Errorf("iteration %d: provider chat stream (attempt %d/%d): %w", iteration, attempt, maxAttempts, lastRetryErr))
-			return nil, false
-		}
-		a.logger.Warn("agent retrying stream",
-			"attempt", attempt+1,
-			"max_attempts", maxAttempts,
-			"error", lastRetryErr,
-		)
-		if attempt < maxAttempts {
-			delay := llm.Backoff(baseDelay, maxDelay, attempt)
-			info := RetryInfo{
-				Attempt:     attempt + 1,
-				MaxAttempts: maxAttempts,
-				Delay:       delay,
-				Reason:      llm.SanitizeRetryReason(lastRetryErr),
-				Err:         lastRetryErr,
-			}
-			*streamRetries = append(*streamRetries, info)
-			if !yield(RetryEvent{RetryInfo: info}, nil) {
-				return nil, false
-			}
-			if a.retryCfg.OnRetry != nil {
-				a.retryCfg.OnRetry(info)
-			}
-			if werr := llm.WaitForRetry(ctx, lastRetryErr, baseDelay, maxDelay, attempt); werr != nil {
-				yield(nil, werr)
-				return nil, false
-			}
-		}
-	}
-	if lastRetryErr != nil {
-		yield(nil, fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w", iteration, maxAttempts, lastRetryErr))
-		return nil, false
-	}
-	return stream, true
-}
-
-func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
-	chunks := make([]llm.Chunk, 0, len(blocks)+1)
-	hasToolUse := false
-	for outputIndex, block := range blocks {
-		switch b := block.(type) {
-		case llm.ReasoningBlock:
-			chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
-		case llm.TextBlock:
-			chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
-		case llm.ToolUseBlock:
-			hasToolUse = true
-			chunks = append(chunks,
-				llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
-				llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
-			)
-		case llm.ReasoningItemBlock:
-			chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: b})
-		case llm.ImageBlock, llm.ToolResultBlock:
-			// These blocks have no streaming representation.
-		}
-	}
-	finishReason := "stop"
-	if hasToolUse {
-		finishReason = "tool_calls"
-	}
-	return append(chunks, llm.DoneChunk{FinishReason: finishReason, Usage: usage})
 }
 
 // RunWithHistory executes the agent loop with a pre-existing conversation history
@@ -785,6 +700,13 @@ func (a *Agent) resolveRetryConfig() (maxRetries int, baseDelay, maxDelay time.D
 		maxDelay = llm.DefaultMaxDelay
 	}
 	return
+}
+
+func sessionRoundBase(sess *persistence) int {
+	if sess == nil {
+		return 0
+	}
+	return sess.roundBase
 }
 
 func (a *Agent) toolResultRunes() int {
