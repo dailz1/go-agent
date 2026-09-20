@@ -9,6 +9,7 @@ import (
 	"iter"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1716,22 +1717,36 @@ func TestAgentRun_RetryWithCallback(t *testing.T) {
 
 func TestAgentRun_RetryContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	provider := NewMockProvider(
 		ErrResponse(&llm.APIError{StatusCode: 429}),
 	)
+	retryStarted := make(chan struct{})
 	agent := New(provider, tool.NewRegistry(),
-		WithRetryConfig(AgentRetryConfig{BaseDelay: 50 * time.Millisecond}),
+		WithRetryConfig(AgentRetryConfig{
+			BaseDelay: 50 * time.Millisecond,
+			OnRetry: func(RetryInfo) {
+				close(retryStarted)
+			},
+		}),
 		WithLogger(discardLogger()),
 	)
 
-	// Cancel context after a short delay to trigger mid-retry cancellation
+	errs := make(chan error, 1)
 	go func() {
-		time.Sleep(10 * time.Millisecond)
-		cancel()
+		_, err := agent.Run(ctx, "hello")
+		errs <- err
 	}()
 
-	_, err := agent.Run(ctx, "hello")
+	select {
+	case <-retryStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("retry wait never started")
+	}
+	cancel()
+
+	err := <-errs
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2009,23 +2024,41 @@ func TestAgentRunStream_NoRetryOnNonRetryable(t *testing.T) {
 
 func TestAgentRunStream_RetryContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
 		99,
 		nil,
 	)
+	retryStarted := make(chan struct{})
+	var retryStartedOnce sync.Once
 	agent := New(provider, tool.NewRegistry(),
-		WithRetryConfig(AgentRetryConfig{BaseDelay: 50 * time.Millisecond}),
+		WithRetryConfig(AgentRetryConfig{
+			BaseDelay: 50 * time.Millisecond,
+			OnRetry: func(RetryInfo) {
+				retryStartedOnce.Do(func() {
+					close(retryStarted)
+				})
+			},
+		}),
 		WithLogger(discardLogger()),
 	)
 
+	errsCh := make(chan []error, 1)
 	go func() {
-		time.Sleep(10 * time.Millisecond)
-		cancel()
+		_, errs := collectAllEvents(agent, ctx, "hello")
+		errsCh <- errs
 	}()
 
-	_, errs := collectAllEvents(agent, ctx, "hello")
+	select {
+	case <-retryStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("stream retry wait never started")
+	}
+	cancel()
+
+	errs := <-errsCh
 	if len(errs) == 0 {
 		t.Fatal("expected error, got none")
 	}

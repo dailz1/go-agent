@@ -144,19 +144,45 @@ func TestDoJSONRequest(t *testing.T) {
 
 	t.Run("context cancellation", func(t *testing.T) {
 		t.Parallel()
+		handlerEntered := make(chan struct{})
+		handlerRelease := make(chan struct{})
+		handlerDone := make(chan struct{})
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(5 * time.Second)
+			defer close(handlerDone)
+			close(handlerEntered)
+			<-handlerRelease
 		}))
 		defer srv.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		var resp testResponse
-		err := DoJSONRequest(ctx, srv.Client(), RequestConfig{
-			Method: http.MethodPost,
-			URL:    srv.URL,
-		}, map[string]string{}, &resp)
+		errs := make(chan error, 1)
+		go func() {
+			var resp testResponse
+			errs <- DoJSONRequest(ctx, srv.Client(), RequestConfig{
+				Method: http.MethodPost,
+				URL:    srv.URL,
+			}, map[string]string{}, &resp)
+		}()
+
+		select {
+		case <-handlerEntered:
+		case <-time.After(5 * time.Second):
+			cancel()
+			close(handlerRelease)
+			select {
+			case <-handlerDone:
+				t.Fatalf("request handler never entered")
+			case <-time.After(5 * time.Second):
+				t.Fatalf("request handler never entered or exited after release")
+			}
+		}
+		cancel()
+
+		err := <-errs
+		close(handlerRelease)
+		<-handlerDone
 		if err == nil {
 			t.Fatal("expected error from cancelled context, got nil")
 		}
@@ -482,18 +508,50 @@ func TestDoStreamRequest(t *testing.T) {
 
 	t.Run("context cancellation", func(t *testing.T) {
 		t.Parallel()
+		handlerEntered := make(chan struct{})
+		handlerRelease := make(chan struct{})
+		handlerDone := make(chan struct{})
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(5 * time.Second)
+			defer close(handlerDone)
+			close(handlerEntered)
+			<-handlerRelease
 		}))
 		defer srv.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		result, err := DoStreamRequest(ctx, srv.Client(), RequestConfig{
-			Method: http.MethodPost,
-			URL:    srv.URL,
-		}, map[string]string{})
+		type response struct {
+			result *StreamResult
+			err    error
+		}
+		responses := make(chan response, 1)
+		go func() {
+			result, err := DoStreamRequest(ctx, srv.Client(), RequestConfig{
+				Method: http.MethodPost,
+				URL:    srv.URL,
+			}, map[string]string{})
+			responses <- response{result: result, err: err}
+		}()
+
+		select {
+		case <-handlerEntered:
+		case <-time.After(5 * time.Second):
+			cancel()
+			close(handlerRelease)
+			select {
+			case <-handlerDone:
+				t.Fatalf("stream request handler never entered")
+			case <-time.After(5 * time.Second):
+				t.Fatalf("stream request handler never entered or exited after release")
+			}
+		}
+		cancel()
+
+		outcome := <-responses
+		result, err := outcome.result, outcome.err
+		close(handlerRelease)
+		<-handlerDone
 		if result != nil {
 			t.Error("expected nil result on cancelled context")
 		}
