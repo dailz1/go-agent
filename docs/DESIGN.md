@@ -46,7 +46,7 @@
 |---|---|
 | `llm.Provider` | 接入任意模型供应商 |
 | `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent）；参数 schema 为递归 typed fields 加按名称排序的完整词汇 carrier。`agenttool` 是内核外的 satellite composition surface：固定 `input:string`，每次只 `Run` 一次子 Agent、只回传最终文本，不转发子事件；不改 Tool interface。remote bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；fidelity 限 SDK decode surface，Registry 只作 typed graph structural checks、从不解释 carrier，whole-schema raw escape hatch 禁止。 |
-| `AgentEvent` 事件流 | 观测 / UI / 审计 / 回放的唯一入口 |
+| `AgentEvent` 事件流 | canonical agent 行为的观测入口；观测 / UI / 审计 / 回放的唯一入口 |
 | `Store`（建设中） | 会话持久化与崩溃恢复：内核自动持久化（`WithStore`/`RunThread`），提交点先落库后行动 |
 
 现有事件类型：`text_delta` / `thinking_delta` / `tool_call` / `tool_result` / `retry` / `done` / `compaction`（与 OpenAI Agents SDK 等业界分类一致）。
@@ -98,6 +98,56 @@
 - 并发：每线程非阻塞运行所有权——第二个并发运行在**任何模型调用之前**即得类型化冲突（单纯加锁等待是串行化，不是冲突）；乐观版本号追加 + record_id 幂等重试作为其他写者的后盾。不可变记录批次与 ID 只生成一次，重试逐字节同一内容。
 - 线程 ID：调用方 ID 非空、有界、不规范化（转义后须满足文件名边界）；内核生成 = crypto-random 128 位，走 **rev=0 保留语义**：目标线程已存在即视为保留冲突，换新 ID 重试（绝不污染既有线程），重试仅限该次冲突。`RunResult` 与 `DoneEvent` 暴露 `ThreadID`；无 store 时不生成。显式线程入口（`RunThread` / `ResumeThread` / `RunThreadStream`）要求已配置 Store，否则返回 `ErrNoStore`，不静默降级为非持久运行。head=0 即"新建"，无"线程不存在"语义；调用方 ID 复用即"追加到既有线程"。`RunWithHistory` / `RunStreamWithHistory` 保持非持久（一次性导入语义，不入线程）。运行所有权按（Store 实例, 线程）全局登记，不按 Agent 实例；Store 值必须可比较（指针式实现，两个内置后端均满足），否则所有权登记返回类型化错误而不 panic。
 - 失败、取消与中断默认保留可恢复的未闭合 run，绝不写假的 Done。例外仅限 `maxIter` terminal skip batch：其 preparation 前或 precommit 期间的取消/写入失败仍按默认恢复语义；但 precommit 完整成功后，TC/TR/Done delivery 不再检查 ctx，post-precommit cancellation 不撤销闭合 batch，也不产生可 resume run。
+
+#### 逐轮运行环境上下文（冻结契约）
+
+`WithRoundContextProvider(RoundContextProvider)` 允许宿主在每次直接
+`Provider.ChatStream` 或 `Provider.Chat` 调用前产生当前运行环境快照。
+callback 接收原始 `context.Context` 和 `{Round, Attempt, ThreadID}`：
+Round 为逻辑模型轮（Resume 延续 durable 序号），Attempt 为该轮直接
+Provider method invocation 的一基序号，故不同于只计既有 ChatStream
+retry-loop 的 `RetryInfo.Attempt`。仅 ChatStream **直接返回**的可重试
+error 触发既有 retry；iterator yield 的 error（含零 chunk）不 retry。
+callback 在单次 run 内串行；同一 Agent 的并发 run 由宿主保证 callback
+并发安全。
+
+非空快照以固定来源标识包装为本次 outbound request 末尾的 role=user
+message。它是**瞬态 request overlay**：不进入 canonical history、
+`DoneEvent.History`/`RunResult.History`、AgentEvent、Store 日志或
+checkpoint；不改变 sealed 7-event set。canonical history 的 system 前缀
+是 kernel grammar/checkpoint 冻结契约；Responses 又会把 system 提升为
+单个 instructions，故中途 system 没有统一语义。所有现有 adapter 保留
+trailing user，故它是共同 carrier。每次 callback 返回完整有效快照，内核
+不按内容去重；空字符串表示该次无 overlay。
+
+预算只承诺 `estimateRunes([]llm.Message)` 的 message-rune 启发式，不含
+tool schema、provider wire 映射、reserved output 或真实 tokenizer。启用
+时令 overlayCap 为 window 的 20%，canonicalCap 为其余部分；compaction
+后无条件检查 canonicalCap（包括 nil/error/invalid compactor 路径），超限
+即在 callback 前以 `ErrCompactionBudgetExceeded` 失败。随后以完整 outbound
+candidate 的实际 `estimateRunes` 计入 envelope/JSON 开销；只有 envelope、
+marker、首尾 rune 都可容纳才截断，否则以同一预算错误失败。若 tiny window
+连 envelope 也容不下，同样在 callback 前失败，绝不发送破碎 overlay。
+压缩/checkpoint/`CompactionEvent` 只处理 canonical history；因此 callback
+failure 前可能已有合法 CompactionEvent/checkpoint，但绝无 overlay、
+provider-response 或 Done event。
+
+只要持久 session 已成功确认 `run_started`，`threadSession` 最外层就将
+**所有**向调用方交付的非 nil error 包成可 Unwrap 的
+`RunInterruptedError{ThreadID, Err}`；round-top cancel、Compactor/
+checkpoint、预算、callback、Provider/iterator、工具、commit/Done 都适用，
+既保留 `errors.Is/As` 原因，也让匿名 `Run` 总能 `ResumeThread`。仅
+`openSession` 成功前的错误保持原样；消费者主动 early-break 没有 error，
+不属于本契约。每个 session boundary 均无条件新套当前 session 的
+ThreadID；嵌套 child 的 inner wrapper 因此保留为 cause，而 caller 的
+第一个 `errors.As(*RunInterruptedError)` 始终是可 Resume 的 parent。
+`errors.Is` 仍透过完整链识别 `ErrThreadBusy`、`ErrNothingToResume`、
+`ErrRunIncomplete`；但 generated-thread 的重试只接受**无**
+RunInterruptedError 的 reservation/setup `ErrThreadBusy`，不会把
+post-session cause 误当作安全重建。callback 专有错误则在该外层内部保留
+`RoundContextError{Round, Attempt, Err}`；callback 前取消不伪造该内层。
+Resume 先重放 canonical history，再执行 live callback，故不重放、累积
+或双计旧快照。
 
 ### OpenAI Responses 协议适配器（`llm/openairesponses`，建设中）
 
