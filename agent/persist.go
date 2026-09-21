@@ -63,6 +63,10 @@ func (a *Agent) openSessionLocked(ctx context.Context, st store.Store, thread, i
 	if err != nil {
 		return nil, nil, err
 	}
+	return a.prepareSessionLocked(ctx, st, thread, input, resume, v)
+}
+
+func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread, input string, resume bool, v threadView) (*persistence, []llm.Message, error) {
 	if resume {
 		if !v.runActive {
 			return nil, nil, ErrNothingToResume

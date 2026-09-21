@@ -74,16 +74,89 @@ type roundCommittedPayload struct {
 	Results []llm.Message `json:"results"`
 }
 
+type runCancelledPayload struct {
+	RunID     string        `json:"run_id"`
+	OpenRound *int          `json:"open_round"`
+	Results   []llm.Message `json:"results"`
+}
+
+func decodeRunCancelled(r store.Record) (runCancelledPayload, error) {
+	// Decode concrete wire blocks here: llm.Message's permissive decoder
+	// intentionally ignores unknown fields for provider compatibility.
+	var wire struct {
+		RunID     string          `json:"run_id"`
+		OpenRound json.RawMessage `json:"open_round"`
+		Results   []struct {
+			Role    llm.Role              `json:"role"`
+			Content []llm.ToolResultBlock `json:"content"`
+		} `json:"results"`
+	}
+	if err := strictDecode(r.Payload, &wire); err != nil {
+		return runCancelledPayload{}, incompatible(r, err.Error())
+	}
+	if r.Schema != store.SchemaV2 || wire.RunID == "" || len(wire.OpenRound) == 0 || wire.Results == nil {
+		return runCancelledPayload{}, incompatible(r, "cancellation requires schema 2 and run_id/open_round/results")
+	}
+	p := runCancelledPayload{RunID: wire.RunID, Results: make([]llm.Message, 0, len(wire.Results))}
+	if err := json.Unmarshal(wire.OpenRound, &p.OpenRound); err != nil {
+		return runCancelledPayload{}, incompatible(r, "invalid cancellation round")
+	}
+	for _, res := range wire.Results {
+		if res.Role != llm.RoleTool || len(res.Content) != 1 {
+			return runCancelledPayload{}, incompatible(r, "cancellation results must be single tool-result messages")
+		}
+		p.Results = append(p.Results, llm.Message{Role: res.Role, Content: []llm.ContentBlock{res.Content[0]}})
+	}
+	return p, nil
+}
+
 // agentCheckpoint is the agent-owned checkpoint payload. The checkpoint is
 // a rebuildable accelerator, but the run lifecycle context (whether a run is
 // open, its ID, its highest round) and the thread's system prompt would be
 // hidden behind it on replay, so they travel inside the snapshot.
 type agentCheckpoint struct {
-	History   []llm.Message `json:"history"`
-	System    string        `json:"system"`
-	RunActive bool          `json:"run_active"`
-	RunID     string        `json:"run_id,omitempty"`
-	LastRound int           `json:"last_round"`
+	CodecVersion int           `json:"codec_version,omitempty"`
+	History      []llm.Message `json:"history"`
+	System       string        `json:"system"`
+	RunActive    bool          `json:"run_active"`
+	RunID        string        `json:"run_id,omitempty"`
+	LastRound    int           `json:"last_round"`
+}
+
+// checkpointVersion is checked even when the snapshot is not used. Unknown
+// versions must not disappear behind structural fallback to the full log.
+func checkpointVersion(r store.Record) error {
+	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV2 {
+		return incompatible(r, fmt.Sprintf("checkpoint schema %d", r.Schema))
+	}
+	var version struct {
+		CodecVersion int `json:"codec_version"`
+	}
+	if err := json.Unmarshal(r.Payload, &version); err == nil && version.CodecVersion > store.SchemaV2 {
+		return incompatible(r, fmt.Sprintf("checkpoint codec version %d", version.CodecVersion))
+	}
+	return nil
+}
+
+func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
+	if err := checkpointVersion(r); err != nil {
+		return nil, err
+	}
+	var cp agentCheckpoint
+	if err := strictDecode(r.Payload, &cp); err != nil {
+		return nil, nil // supported but corrupt snapshot: rebuild the log
+	}
+	if (r.Schema == store.SchemaV1 && cp.CodecVersion != 0) ||
+		(r.Schema == store.SchemaV2 && cp.CodecVersion != store.SchemaV2) {
+		return nil, nil
+	}
+	if !cp.RunActive || cp.RunID == "" || cp.LastRound < -1 || cp.History == nil {
+		return nil, nil
+	}
+	if _, err := partitionHistory(cp.History); err != nil || !checkpointSystemMatches(&cp) {
+		return nil, nil
+	}
+	return &cp, nil
 }
 
 // recordID derives a stable record ID. Records are generated exactly once

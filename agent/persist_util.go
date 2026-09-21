@@ -16,17 +16,18 @@ import (
 // position, keeping retries byte-identical.
 func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) error {
 	payload, err := json.Marshal(agentCheckpoint{
-		History:   history,
-		System:    p.system,
-		RunActive: true,
-		RunID:     p.runID,
-		LastRound: p.lastRound,
+		CodecVersion: store.SchemaV2,
+		History:      history,
+		System:       p.system,
+		RunActive:    true,
+		RunID:        p.runID,
+		LastRound:    p.lastRound,
 	})
 	if err != nil {
 		return fmt.Errorf("agent: encode checkpoint: %w", err)
 	}
 	return p.append(ctx, store.Record{
-		Kind: store.KindCheckpoint, Schema: store.SchemaV1,
+		Kind: store.KindCheckpoint, Schema: store.SchemaV2,
 		ID:      fmt.Sprintf("cp-%d", p.head),
 		Payload: payload,
 	})
@@ -70,4 +71,36 @@ func toolUseBlocks(m llm.Message) []llm.ToolUseBlock {
 		}
 	}
 	return out
+}
+
+func (v *threadView) applyCancellation(r store.Record) error {
+	p, err := decodeRunCancelled(r)
+	if err != nil {
+		return err
+	}
+	if !v.runActive || p.RunID != v.runID || r.ID != recordID(v.runID, "-cancel") {
+		return incompatible(r, "cancellation does not identify the active run")
+	}
+	if v.open == nil {
+		if p.OpenRound != nil || len(p.Results) != 0 {
+			return incompatible(r, "cancellation has results without an open declaration")
+		}
+	} else {
+		if p.OpenRound == nil || *p.OpenRound != v.open.round {
+			return incompatible(r, "cancellation does not identify the open round")
+		}
+		want := unknownResults(v.open.declared)
+		if len(p.Results) != len(want) {
+			return incompatible(r, "cancellation result count does not match declaration")
+		}
+		for i, result := range p.Results {
+			if result.Content[0].(llm.ToolResultBlock) != want[i].Content[0].(llm.ToolResultBlock) {
+				return incompatible(r, "cancellation result is not the declared call's canonical unknown outcome")
+			}
+		}
+		v.history = append(v.history, v.open.declared)
+		v.history = append(v.history, p.Results...)
+	}
+	v.open, v.runActive, v.cancelled = nil, false, true
+	return nil
 }

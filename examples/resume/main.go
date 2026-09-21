@@ -1,8 +1,8 @@
 // Command resume shows the minimal persistent-thread recovery flow without a
 // network provider. Run it with `go run ./examples/resume`. Production callers
 // can replace MemoryStore with store.NewJSONL and must retain their thread IDs.
-// A cancelled/incomplete RunThread is continued with ResumeThread, not by
-// appending another input.
+// This example continues an incomplete RunThread with ResumeThread. Explicit
+// SettleThread instead abandons that run and unlocks new input.
 package main
 
 import (
@@ -24,6 +24,10 @@ func main() {
 	result, err := recoverThread()
 	if err != nil {
 		panic(err)
+	}
+	if result.Cancelled {
+		fmt.Println("thread was explicitly cancelled; no model reply")
+		return
 	}
 	fmt.Println(result.Message.Content[0].(llm.TextBlock).Text)
 }

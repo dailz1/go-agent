@@ -82,7 +82,7 @@ func TestRunThreadPersistsRoundLifecycle(t *testing.T) {
 }
 
 // TestRunThreadRejectsNewInputWhileIncomplete pins the dangling-input rule:
-// a run without a terminal record blocks new input and is continued only by
+// a run without a terminal record blocks new input. This branch chooses
 // ResumeThread, which re-asks the model without appending anything.
 func TestRunThreadRejectsNewInputWhileIncomplete(t *testing.T) {
 	ctx := context.Background()

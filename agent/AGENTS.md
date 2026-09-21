@@ -24,7 +24,7 @@ Core autonomous loop: chat → tool calls → results → chat, streaming `Agent
 - Fold contract: initial input + fold(events) = DoneEvent.History; DoneEvent.History is authoritative (ReasoningItemChunk emits no event); stream ending without Done = error.
 - Compaction failure is non-fatal: Warn log, run continues with original history. Unknown provider chunks silently ignored; unknown AgentEvent aborts the fold.
 - ctx checked before each LLM round and each tool execution; history deep-copied (`deepCopyMessages`), never mutate caller slices.
-- Sentinels: `ErrInvalidHistory`, `ErrCompactionBudgetExceeded`; persistence: `ErrRunIncomplete` (persist.go:87 — RunThread must ResumeThread), `ErrNothingToResume` (persist.go:68).
+- Sentinels: `ErrInvalidHistory`, `ErrCompactionBudgetExceeded`; persistence: `ErrRunIncomplete` (choose ResumeThread or explicit SettleThread with the original token), `ErrNothingToResume`, `ErrNothingToSettle`.
 
 ## ANTI-PATTERNS (THIS PACKAGE)
 - Do not retry mid-stream SSE errors anywhere — only pre-stream failures retry.

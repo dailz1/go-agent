@@ -40,6 +40,16 @@ module path 是 `github.com/dailz1/go-agent`，本仓库要求 Go 1.26.1。将�
 - **Event** 暴露文本增量、工具调用/结果、重试、压缩和终态结果，不引入 hook chain。
 - **Store** 为 `RunThread` 和 `ResumeThread` 持久化显式 thread；配置 Store 后，`Run` 会生成 thread ID。
 
+## 停止并改向持久线程
+
+仅取消 context 会保留 incomplete、可恢复的 run。要放弃它，先取消 context，等待调用/iterator 及其 owned tools 退出，再用新的有界 context 调 `SettleThread(ctx, token)`。从 `RunInterruptedError.Settlement` 保存原 `SettlementToken{ThreadID, RunID, ExpectedHead}`；early-break 和匿名 stream 应配置 `WithRunExitFn`。同步退出回调在 **ownership release 之前**运行：仅保存值，不重入线程操作；并发运行时由宿主同步回调。
+
+结算只写一条 `run_cancelled`，把未提交工具调用配成 outcome-unknown 结果，不重跑工具、不产生 Done、不撤销外部副作用。写入结果不确定时使用**同一 token**重试；过期 token 不能取消后继 run。`SettlementTarget` 是崩溃后供**新的显式恢复决策**使用的只读检查，不可用来刷新旧取消请求。
+
+结算后，`ResumeThread` 返回 `Cancelled=true`、独立深拷贝的 canonical `History`、零值 `Message` 与执行统计，不执行、不写日志。正常 Done 仍返回 `ErrNothingToResume`。通过 `RunThread` 或 `RunThreadStream` 提交下一输入；停止与接受输入分别持久确认，不是原子改向。父结算非递归：宿主收集子 token，先结算子再结算父。
+
+升级说明：调用者须检查成功 Resume 的 `RunResult.Cancelled`；`RunInterruptedError` 新增 `Settlement`。自定义 Store 必须支持 Schema 2。新取消记录和 checkpoint 使用 Schema 2（checkpoint 另带 `codec_version:2`）；旧日志无需迁移仍可读取，但旧二进制不能读取新格式。七种事件与非持久 history 入口不变。
+
 ## 可选的工具与审批观察
 
 quickstart 包含一个简单的 echo tool。请明确要求使用它，但将模型的工具选择视为 best-effort 的手工观察。要获得确定性的 allow/reject 行为，请运行：

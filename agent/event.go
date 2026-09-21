@@ -93,7 +93,8 @@ type RetryEvent struct {
 func (RetryEvent) eventType() string { return "retry" }
 
 // DoneEvent signals that the agent execution has completed. Its fields mirror
-// [RunResult] for parity between streaming and non-streaming results.
+// the execution fields of [RunResult]. A cancelled ResumeThread snapshot is
+// not an execution result and never produces a DoneEvent.
 type DoneEvent struct {
 	// Message is the final assistant response.
 	Message llm.Message

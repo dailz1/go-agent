@@ -122,6 +122,7 @@ type Agent struct {
 	store                      store.Store
 	toolConcurrency            int
 	roundContextProvider       RoundContextProvider
+	runExitFn                  func(SettlementToken)
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -223,6 +224,9 @@ func WithRoundContextProvider(provider RoundContextProvider) Option {
 
 // RunResult holds the outcome of a single agent.Run call.
 type RunResult struct {
+	// Cancelled identifies a read-only ResumeThread snapshot of a settled run.
+	// Message and execution statistics are zero in this case.
+	Cancelled bool
 	// Message is the final assistant response.
 	Message llm.Message
 	// History is the full conversation trace including all intermediate

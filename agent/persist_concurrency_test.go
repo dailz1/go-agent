@@ -218,6 +218,14 @@ func TestThreadIDBoundaryValidation(t *testing.T) {
 	if _, err := agent.RunThread(ctx, long, "hi"); !errors.Is(err, ErrInvalidThreadID) {
 		t.Errorf("over-long escaped id error = %v, want ErrInvalidThreadID", err)
 	}
+	for _, id := range []string{"", long} {
+		if err := agent.SettleThread(ctx, SettlementToken{ThreadID: id}); !errors.Is(err, ErrInvalidThreadID) {
+			t.Errorf("SettleThread id %q = %v, want ErrInvalidThreadID", id, err)
+		}
+		if _, err := agent.SettlementTarget(ctx, id); !errors.Is(err, ErrInvalidThreadID) {
+			t.Errorf("SettlementTarget id %q = %v, want ErrInvalidThreadID", id, err)
+		}
+	}
 	if _, err := agent.RunThread(ctx, "valid-thread-1", "hi"); err != nil {
 		t.Errorf("valid id rejected: %v", err)
 	}
@@ -238,5 +246,11 @@ func TestExplicitThreadAPIRequiresStore(t *testing.T) {
 	}
 	if _, err := agent.RunThreadStream(context.Background(), "t", "hi"); !errors.Is(err, ErrNoStore) {
 		t.Errorf("RunThreadStream without store = %v, want ErrNoStore", err)
+	}
+	if err := agent.SettleThread(context.Background(), SettlementToken{ThreadID: "t"}); !errors.Is(err, ErrNoStore) {
+		t.Errorf("SettleThread without store = %v, want ErrNoStore", err)
+	}
+	if _, err := agent.SettlementTarget(context.Background(), "t"); !errors.Is(err, ErrNoStore) {
+		t.Errorf("SettlementTarget without store = %v, want ErrNoStore", err)
 	}
 }

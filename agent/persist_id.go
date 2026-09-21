@@ -24,8 +24,9 @@ var (
 	ErrNoStore         = errors.New("agent: no store configured")
 	ErrInvalidThreadID = errors.New("agent: invalid thread id")
 	ErrThreadBusy      = errors.New("agent: thread has an active run")
-	ErrRunIncomplete   = errors.New("agent: thread has an incomplete run; resume it with ResumeThread")
+	ErrRunIncomplete   = errors.New("agent: thread has an incomplete run; resume it or explicitly settle its original token")
 	ErrNothingToResume = errors.New("agent: thread has no incomplete run to resume")
+	ErrNothingToSettle = errors.New("agent: thread has no incomplete run to settle")
 	// ErrStoreNotComparable guards the global ownership registry: Store
 	// values are used as map keys, so a value whose dynamic type is not
 	// comparable (e.g. a struct with map fields) cannot be registered. Use a

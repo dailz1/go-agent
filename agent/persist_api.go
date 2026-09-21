@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"iter"
+
+	"github.com/dailz1/go-agent/llm"
 )
 
 // RunThread executes the agent loop on a persistent thread: the input is
@@ -11,7 +13,7 @@ import (
 // declaration is committed before any tool executes, and the terminal state
 // is committed before DoneEvent. Calling RunThread on a thread whose last
 // run never reached a terminal state fails with ErrRunIncomplete — resume it
-// with ResumeThread.
+// with ResumeThread or explicitly settle its original token with SettleThread.
 //
 // The first call on an unknown thread creates it; the thread's system prompt
 // is captured on creation and replayed from the log on every later run,
@@ -37,6 +39,8 @@ func (a *Agent) RunThread(ctx context.Context, threadID string, input string) (*
 // declaration, skipped results, commit, and Done are durably precommitted:
 // later delivery interruption cannot reopen it, so ResumeThread returns
 // ErrNothingToResume.
+// A settled cancelled run instead returns a read-only Cancelled snapshot,
+// without executing the model, tools, callbacks, or compaction.
 func (a *Agent) ResumeThread(ctx context.Context, threadID string) (*RunResult, error) {
 	if a.store == nil {
 		return nil, ErrNoStore
@@ -44,7 +48,29 @@ func (a *Agent) ResumeThread(ctx context.Context, threadID string) (*RunResult, 
 	if err := validateThreadID(threadID); err != nil {
 		return nil, err
 	}
-	return a.foldRunStream(a.threadSession(ctx, threadID, "", true, false))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := acquireThread(a.store, threadID); err != nil {
+		return nil, err
+	}
+	defer releaseThread(a.store, threadID)
+	v, err := a.replayThread(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if v.cancelled {
+		return &RunResult{
+			Cancelled: true,
+			ThreadID:  threadID,
+			History:   deepCopyMessages(seededHistory(v.system, v.history)),
+		}, nil
+	}
+	sess, history, err := a.prepareSessionLocked(ctx, a.store, threadID, "", true, v)
+	if err != nil {
+		return nil, err
+	}
+	return a.foldRunStream(a.executeSession(ctx, sess, history))
 }
 
 // RunThreadStream is the streaming form of RunThread. The returned iterator
@@ -74,14 +100,25 @@ func (a *Agent) threadSession(ctx context.Context, threadID string, input string
 			return
 		}
 		defer sess.release()
+		a.executeSession(ctx, sess, history)(yield)
+	}
+}
+
+func (a *Agent) executeSession(ctx context.Context, sess *persistence, history []llm.Message) iter.Seq2[AgentEvent, error] {
+	return func(yield func(AgentEvent, error) bool) {
+		defer func() {
+			if a.runExitFn != nil {
+				a.runExitFn(sess.settlementToken())
+			}
+		}()
 		inner, err := a.runStreamInternal(ctx, history, sess)
 		if err != nil {
-			yield(nil, wrapPersistentRunError(sess.thread, err))
+			yield(nil, wrapPersistentRunError(sess, err))
 			return
 		}
 		inner(func(event AgentEvent, err error) bool {
 			if err != nil {
-				return yield(nil, wrapPersistentRunError(sess.thread, err))
+				return yield(nil, wrapPersistentRunError(sess, err))
 			}
 			return yield(event, nil)
 		})

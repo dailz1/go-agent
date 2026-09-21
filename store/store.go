@@ -28,7 +28,10 @@ import (
 // Envelope schema version of the records written by this package. Bump on
 // incompatible Record or payload changes; readers reject newer versions
 // with ErrUnsupportedSchema.
-const SchemaV1 = 1
+const (
+	SchemaV1 = 1
+	SchemaV2 = 2
+)
 
 // Record kinds. Append rejects unknown kinds so a stale binary cannot write
 // records it does not understand; reading tolerates unknown kinds and passes
@@ -36,6 +39,7 @@ const SchemaV1 = 1
 // agent layer decides which kinds affect state).
 const (
 	KindRunStarted     = "run_started"     // payload: run input and thread system prompt
+	KindRunCancelled   = "run_cancelled"   // payload: run cancellation and unknown round results
 	KindAgentEvent     = "agent_event"     // payload: versioned AgentEvent envelope
 	KindRoundDeclared  = "round_declared"  // payload: the round's full assistant message
 	KindRoundCommitted = "round_committed" // payload: the round's ordered model-visible results
@@ -206,14 +210,17 @@ func planAppend(log []Record, expected int64, batch []Record) (apply []Record, h
 
 func validateRecord(r *Record) error {
 	switch r.Kind {
-	case KindRunStarted, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindError, KindCheckpoint:
+	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindError, KindCheckpoint:
 	default:
 		return ErrUnknownKind
 	}
 	if r.ID == "" {
 		return ErrInvalidRecord
 	}
-	if r.Schema < 0 || r.Schema > SchemaV1 {
+	if r.Schema < 0 || r.Schema > SchemaV2 {
+		return ErrUnsupportedSchema
+	}
+	if r.Kind == KindRunCancelled && r.Schema != SchemaV2 {
 		return ErrUnsupportedSchema
 	}
 	if len(r.Payload) == 0 {

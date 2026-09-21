@@ -7,6 +7,9 @@ import "fmt"
 type RunInterruptedError struct {
 	ThreadID string
 	Err      error
+	// Settlement binds this session before ownership is released. Wait for
+	// the run to exit before using it; an uncertain write can leave it stale.
+	Settlement *SettlementToken
 }
 
 func (e *RunInterruptedError) Error() string {
@@ -15,9 +18,10 @@ func (e *RunInterruptedError) Error() string {
 
 func (e *RunInterruptedError) Unwrap() error { return e.Err }
 
-func wrapPersistentRunError(threadID string, err error) error {
+func wrapPersistentRunError(sess *persistence, err error) error {
 	if err == nil {
 		return nil
 	}
-	return &RunInterruptedError{ThreadID: threadID, Err: err}
+	target := sess.settlementToken()
+	return &RunInterruptedError{ThreadID: sess.thread, Err: err, Settlement: &target}
 }

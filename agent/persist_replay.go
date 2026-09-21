@@ -27,6 +27,7 @@ type threadView struct {
 	history   []llm.Message
 	head      int64
 	runActive bool
+	cancelled bool
 	lastRound int
 	open      *openRound
 }
@@ -38,16 +39,34 @@ type threadView struct {
 // The results are returned so the caller can persist them as the round's
 // commit, which keeps the log canonical without a second synthesis pass.
 func (v *threadView) closeUnknown() []llm.Message {
-	calls := toolUseBlocks(v.open.declared)
+	results := unknownResults(v.open.declared)
+	v.history = append(v.history, v.open.declared)
+	v.history = append(v.history, results...)
+	v.open = nil
+	return results
+}
+
+func unknownResults(declared llm.Message) []llm.Message {
+	calls := toolUseBlocks(declared)
 	results := make([]llm.Message, 0, len(calls))
 	for _, call := range calls {
 		results = append(results, llm.ToolResultMessage(call.ID,
 			tool.NewErrorResult("outcome unknown: the run was interrupted before this tool call's result could be recorded")))
 	}
-	v.history = append(v.history, v.open.declared)
-	v.history = append(v.history, results...)
-	v.open = nil
 	return results
+}
+
+// cancelRecord builds one atomic terminal record without changing the view.
+func (v threadView) cancelRecord() (store.Record, error) {
+	payload := runCancelledPayload{RunID: v.runID, Results: []llm.Message{}}
+	if v.open != nil {
+		round := v.open.round
+		payload.OpenRound = &round
+		payload.Results = unknownResults(v.open.declared)
+	}
+	r, err := encodeRecord(store.KindRunCancelled, recordID(v.runID, "-cancel"), payload)
+	r.Schema = store.SchemaV2
+	return r, err
 }
 
 // incompatible wraps ErrIncompatibleLog with the record's position.
@@ -71,14 +90,14 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 	var base []llm.Message
 	var cpState *agentCheckpoint
 	if state.Checkpoint != nil {
-		var cp agentCheckpoint
-		if err := strictDecode(state.Checkpoint.Payload, &cp); err == nil {
-			if _, perr := partitionHistory(cp.History); perr == nil && checkpointSystemMatches(&cp) {
-				base = cp.History
-				cpState = &cp
-			}
+		cpState, err = decodeCheckpoint(*state.Checkpoint)
+		if err != nil {
+			return threadView{}, err
 		}
-		if base == nil {
+		if cpState != nil {
+			base = cpState.History
+		}
+		if cpState == nil {
 			// Checkpoint unusable: full-log fallback.
 			full, ferr := a.store.History(ctx, thread, 0)
 			if ferr != nil {
@@ -95,13 +114,26 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 		v.system, v.systemSet, v.runActive, v.runID, v.lastRound =
 			cpState.System, true, cpState.RunActive, cpState.RunID, cpState.LastRound
 	}
+	v, err = replayRecords(v, records)
+	v.head = state.Head
+	return v, err
+}
+
+// replayRecords applies a finite log prefix, including lifecycle validation.
+// Checkpoints are accelerators only; callers supply their already-decoded base.
+func replayRecords(v threadView, records []store.Record) (threadView, error) {
+	v.history = deepCopyMessages(v.history)
 	for i := range records {
 		r := records[i]
-		if r.Kind == store.KindCheckpoint {
-			continue // accelerator, never history
-		}
-		if r.Schema > store.SchemaV1 {
+		if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV2 {
 			return v, fmt.Errorf("%w: seq %d schema %d", ErrIncompatibleLog, r.Seq, r.Schema)
+		}
+		if r.Kind == store.KindCheckpoint {
+			if err := checkpointVersion(r); err != nil {
+				return v, err
+			}
+			v.head = r.Seq + 1
+			continue // accelerator, never history
 		}
 		switch r.Kind {
 		case store.KindRunStarted:
@@ -116,6 +148,7 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 				v.system, v.systemSet = p.SystemPrompt, true
 			}
 			v.runID, v.runActive, v.lastRound = p.RunID, true, -1
+			v.cancelled = false
 			v.history = append(v.history, llm.UserMessage(p.Input))
 		case store.KindRoundDeclared:
 			p, err := decodeRoundDeclared(r)
@@ -169,6 +202,10 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 			v.history = append(v.history, v.open.declared)
 			v.history = append(v.history, p.Results...)
 			v.open = nil
+		case store.KindRunCancelled:
+			if err := v.applyCancellation(r); err != nil {
+				return v, err
+			}
 		case store.KindAgentEvent:
 			p, err := decodeAgentEvent(r)
 			if err != nil {
@@ -199,6 +236,7 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 				v.history = append(v.history, p.Message)
 			}
 			v.runActive = false
+			v.cancelled = false
 		case store.KindError:
 			// Terminal failure marker kept for compatibility; agent v1 never
 			// writes it. Its payload has no semantics for this build, but the
@@ -209,9 +247,11 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 			}
 			v.open = nil
 			v.runActive = false
+			v.cancelled = false
 		default:
 			return v, fmt.Errorf("%w: unknown record kind %q at seq %d", ErrIncompatibleLog, r.Kind, r.Seq)
 		}
+		v.head = r.Seq + 1
 	}
 	return v, nil
 }

@@ -141,19 +141,24 @@ func runNew(ctx context.Context, a *agent.Agent, input string) (string, bool) {
 func runOnThread(ctx context.Context, a *agent.Agent, threadID, input string) bool {
 	seq, err := a.RunThreadStream(ctx, threadID, input)
 	if err != nil {
-		if errors.Is(err, agent.ErrRunIncomplete) {
-			fmt.Fprintf(os.Stderr, "[resume] thread %s has an interrupted run; finishing it first\n", threadID)
-			res, rerr := a.ResumeThread(ctx, threadID)
-			if rerr != nil {
-				return roundFailed(rerr)
-			}
-			fmt.Println(messageText(res.Message))
-			return false
-		}
 		return roundFailed(err)
 	}
 	for ev, err := range seq {
 		if err != nil {
+			var interrupted *agent.RunInterruptedError
+			if errors.Is(err, agent.ErrRunIncomplete) && !errors.As(err, &interrupted) {
+				fmt.Fprintf(os.Stderr, "[resume] thread %s has an interrupted run; finishing it first\n", threadID)
+				res, rerr := a.ResumeThread(ctx, threadID)
+				if rerr != nil {
+					return roundFailed(rerr)
+				}
+				if res.Cancelled {
+					fmt.Fprintf(os.Stderr, "[cancelled] thread %s was settled; no model reply\n", threadID)
+				} else {
+					fmt.Println(messageText(res.Message))
+				}
+				return false
+			}
 			return roundFailed(err)
 		}
 		switch e := ev.(type) {

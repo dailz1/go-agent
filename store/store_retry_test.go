@@ -135,9 +135,9 @@ func exerciseRetryContract(t *testing.T, newStore func() Store) {
 	t.Run("unsupported schema versions are rejected at append", func(t *testing.T) {
 		s := newStore()
 		hi := rec("a", KindAgentEvent)
-		hi.Schema = SchemaV1 + 1
+		hi.Schema = SchemaV2 + 1
 		if _, err := s.Append(ctx, "t", 0, hi); !errors.Is(err, ErrUnsupportedSchema) {
-			t.Errorf("schema V1+1 error = %v, want ErrUnsupportedSchema", err)
+			t.Errorf("schema V2+1 error = %v, want ErrUnsupportedSchema", err)
 		}
 		lo := rec("b", KindAgentEvent)
 		lo.Schema = -3

@@ -41,7 +41,7 @@ func (th *jsonlThread) load() error {
 		if err := json.Unmarshal(line, &r); err != nil {
 			return fmt.Errorf("%w: invalid record at byte %d: %v", ErrCorruptLog, complete, err)
 		}
-		if r.Schema > SchemaV1 {
+		if r.Schema > SchemaV2 || (r.Kind == KindRunCancelled && r.Schema != SchemaV2) {
 			return ErrUnsupportedSchema
 		}
 		if r.Schema < 1 || r.ID == "" {
