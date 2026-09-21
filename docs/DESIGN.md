@@ -61,7 +61,7 @@
     - Provider 包装器原样传递 messages/tools/options/usage 与外层、迭代内错误；流式包装器不得预先 range，保持 `iter.Seq2` 惰性与早退安全；限流许可横跨迭代器生命周期（自然结束与早退都要释放）。
     - 日志示例只记元数据（名称、ID、长度）或显式截断/脱敏载荷，不逐字复制 prompt/参数/结果。可运行示例见 `examples/middleware`。
     - `agenttool` 是行为包装器：原样传递 ctx；malformed input、子 Agent 截断或无最终文本是软 `ToolResult`，子 `Run` 的 Go error 必须 `%w` 硬传；外层与子层 approval 各自生效，禁止注入子事件。每个 `New` 返回的 adapter 用 context-aware 单槽 gate 串行其子 `Run`；同一 child 的多个 adapter 不互锁，调用方负责共享 Provider、Compactor、Store、Registry 与子 Tool 的并发安全。
-- **流是原语，同步是衍生物。** 只维护一条执行路径，`Run` 是事件流的归并。
+- **流是执行原语，同步执行是衍生物。** 只维护一条模型/工具执行路径，`Run` 与恢复 active run 的 `ResumeThread` 是事件流的归并。`SettleThread` 是持久生命周期控制操作；`ResumeThread` 在最后一个 run 已 cancelled 时只读取终态快照，不执行循环，不制造 DoneEvent。
 - **默认安全。** 危险工具须审批；工具 panic 不外泄；结果截断；预算可设。
 - **每步可靠胜过整体聪明。** 每步 95% 可靠，连跑 10 步只剩 60%（误差复利）。内核的每一分投入都优先花在"每一步更可靠"上。
 - **内核不变小、不变胖，只变稳。** Tool schema codec 以 nullable null-first、空值归一和 presence state 作确定性投影；`Properties`/`Items`/AP-schema/composition 的 active-stack cycle 失败关闭。carrier 是有序 `SchemaKeyword` 值，保留非 typed keyword，自己的 raw-JSON 路径拒绝重复键，但绝不解释其 JSON Schema 语义；whole-schema raw escape hatch 禁止。adapter 不得静默降级 schema。remote MCP 的 fidelity 限 SDK decode surface（duplicate key、encounter order 和精确 numeric token 已在 SDK 边界丢失），本地 agenttest v2 raw parser 保持 token 严格。
@@ -87,17 +87,71 @@
 ### P1 运行时安全
 - 工具结果截断：按上下文占比设上限（约 30% 规则），掐头留尾，入库前执行（已落地，见 §7）
 - 历史预算管理：`Compactor` 策略接口 + 最简实现；压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）（已落地，见 §7）
-- 会话持久化 `Store`：**内核自动持久化**（`WithStore` 选项 + `RunThread` / `ResumeThread` / `RunThreadStream` 线程入口；未配置零开销：不生成线程 ID、不触碰持久化路径，单一执行路径不变）。数据形状：线程 = 规范记录日志，生命周期记录链每条带稳定 `run_id` / `round_id`：
+- 会话持久化 `Store`：**内核自动持久化**（`WithStore` 选项 + `RunThread` / `ResumeThread` / `RunThreadStream` / `SettleThread` / `SettlementTarget` 线程入口；未配置零开销：不生成线程 ID、不触碰持久化路径，单一执行路径不变）。数据形状：线程 = 规范记录日志，生命周期记录链每条带稳定 `run_id` / `round_id`：
   - `run_started`：运行输入（逐字节保留，不规范化）+ 线程初始系统提示词（回放以落库为准，与重启后 `WithSystemPrompt` 配置无关，防止历史上下文被静默篡改）；
   - `round_declared`：**原子**轮次宣告——完整助手消息（文本/推理 + 全部有序工具调用），先落库再执行任何工具、先于审批回调；
   - `round_committed`：按宣告顺序的全部模型可见结果（含软失败：审批拒绝、未知工具、nil 结果、恢复的 panic）；结果先截断后落库（与内存视图同源）。成功终态（无工具调用的回复、或 maxIter 截断）在 `DoneEvent` 发出前落库；
+  - `run_cancelled`：调用方明确放弃当前未终结 run 的终态，schema=2、固定 RunID 与 record ID。若仍有 open declaration，该单条记录同时保存所有未提交调用的有序 outcome-unknown error 结果；重放原子地追加完整 declaration/results 并关闭 run。没有 open declaration 时只关闭 run。已提交结果不改写；不追加假的 assistant 最终回复、不写 Done、不重执行工具、不回滚外部副作用。普通错误/ctx cancellation 不自动产生本记录。
   - 版本化事件信封：显式 DTO 编解码（sealed 接口直接 JSON 不可逆）；未知记录类型 / 信封版本 → 类型化兼容性错误，不静默忽略；
-  - 检查点：可重建加速器，定位在其自身记录的 Seq；快照同时携带运行生命周期状态与线程系统提示词，避免快路径重放丢失上下文。快照解码或校验失败 → 经 `History(ctx, thread, fromSeq)` 全量回退重建（`Latest` 只返回尾部，故必须提供范围读；记录 Seq 从 0 开始，返回 Seq >= from 的记录）。日志全量保留，v1 不清理。
-- 恢复语义：重放日志重建状态，**不向新流重放历史事件**（新消费者只看本次运行的事件）。中断轮 = 有 `round_declared` 无 `round_committed` → 对每个未提交调用合成一条 role=tool、`IsError=true` 的"结果未知"消息（每调用一条、按宣告顺序，满足 TC/TR 配对与 OpenAI/GLM 转换要求）；maxIter 截断 = **确定未执行** → 合成"因达到迭代上限未执行"软结果（非"未知"）。绝不盲目重执行工具。悬挂输入：活动运行存在时 `RunThread` 拒绝新输入（类型化 `ErrRunIncomplete`）；`ResumeThread` 恢复已落库输入、不追加。崩溃先于终态落库的模型回复可能丢失并在恢复时重新生成（at-least-once，显式记录）；工具副作用完成后、`round_committed` 落库前的崩溃窗口同样如实报"结果未知"（不可避免的副作用窗口）。
-- 消费者中途断开：普通可执行工具轮在 TC/TR delivery 中断时保持 incomplete/resumable，replay 依 durable declaration/results 补未知或继续。唯一例外是已经完整 durable precommit 的 `maxIter` terminal skip batch：它在首个 terminal TC 前已写 declaration、all skipped results、commit、Done；consumer 在 TC 或 TR break 只停止该 consumer 的 delivery，thread 已 closed，`ResumeThread` 返回 `ErrNothingToResume`。
-- 并发：每线程非阻塞运行所有权——第二个并发运行在**任何模型调用之前**即得类型化冲突（单纯加锁等待是串行化，不是冲突）；乐观版本号追加 + record_id 幂等重试作为其他写者的后盾。不可变记录批次与 ID 只生成一次，重试逐字节同一内容。
-- 线程 ID：调用方 ID 非空、有界、不规范化（转义后须满足文件名边界）；内核生成 = crypto-random 128 位，走 **rev=0 保留语义**：目标线程已存在即视为保留冲突，换新 ID 重试（绝不污染既有线程），重试仅限该次冲突。`RunResult` 与 `DoneEvent` 暴露 `ThreadID`；无 store 时不生成。显式线程入口（`RunThread` / `ResumeThread` / `RunThreadStream`）要求已配置 Store，否则返回 `ErrNoStore`，不静默降级为非持久运行。head=0 即"新建"，无"线程不存在"语义；调用方 ID 复用即"追加到既有线程"。`RunWithHistory` / `RunStreamWithHistory` 保持非持久（一次性导入语义，不入线程）。运行所有权按（Store 实例, 线程）全局登记，不按 Agent 实例；Store 值必须可比较（指针式实现，两个内置后端均满足），否则所有权登记返回类型化错误而不 panic。
-- 失败、取消与中断默认保留可恢复的未闭合 run，绝不写假的 Done。例外仅限 `maxIter` terminal skip batch：其 preparation 前或 precommit 期间的取消/写入失败仍按默认恢复语义；但 precommit 完整成功后，TC/TR/Done delivery 不再检查 ctx，post-precommit cancellation 不撤销闭合 batch，也不产生可 resume run。
+  - 检查点是可重建加速器，定位在自身 Seq；携带 canonical history、线程冻结 system、run_active、run_id、last_round。新写 checkpoint 使用 schema=2 与 `codec_version:2`，schema=1 快照仍可读。checkpoint 只在 active 且无 open declaration 的压缩边界写入，不在取消结算后新增快照。读取先校验记录与 payload 版本；未知未来版本返回类型化兼容错误，已支持版本的解码/结构校验失败经 `History(ctx, thread, fromSeq)` 全量回退。版本标记不得让旧 reader 通过新 checkpoint 绕过取消记录。日志仍全量保留，checkpoint 不是生命周期真相，也不承担文件系统回滚。
+- 恢复语义：重放日志重建状态，**不向新流重放历史事件**（新消费者只看本次运行的事件）。中断轮 = 有 `round_declared` 无 `round_committed` → 对每个未提交调用合成一条 role=tool、`IsError=true` 的"结果未知"消息（每调用一条、按宣告顺序，满足 TC/TR 配对与 OpenAI/GLM 转换要求）；maxIter 截断 = **确定未执行** → 合成"因达到迭代上限未执行"软结果（非"未知"）。绝不盲目重执行工具。悬挂输入：日志中未终结 run 存在时，`RunThread` / `RunThreadStream` 仍拒绝新输入（`ErrRunIncomplete`），不得以放宽此保护实现改向。调用方可选择 `ResumeThread` 继续原输入，也可在执行者已收敛后通过 `SettleThread(ctx, target SettlementToken)` 明确结算原 run 为 cancelled，再提交新输入；target 必须在原 session 释放 ownership 前绑定其 ThreadID、RunID 与最后确认的 durable head，不得在释放后从 Latest 选择当前 run。恢复 active run 时仍先修复 unknown 配对、继续旧输入、不追加 user message；恢复最后一个已 cancelled 的 run 时只返回 `RunResult{Cancelled:true, ThreadID, History}` 与 nil error，不调用模型、工具、审批、overlay、退出回调或 compactor，不写日志，不产生事件。该结果 Message 与本次执行统计为零值，不代表旧任务成功或历史费用为零。此快照可重复读取，后续新 run_started 一旦提交便成为新的恢复目标。无记录、最后 run 为正常 Done/maxIter Done/兼容 KindError 时仍返回 `ErrNothingToResume`。崩溃先于终态落库的模型回复可能丢失并在恢复时重新生成（at-least-once，显式记录）；工具副作用完成后、`round_committed` 落库前的崩溃窗口同样如实报"结果未知"（不可避免的副作用窗口）。
+- 消费者中途断开：普通可执行工具轮在 TC/TR delivery 中断时保持 incomplete/resumable，replay 依 durable declaration/results 补未知或继续。唯一例外是已经完整 durable precommit 的 `maxIter` terminal skip batch：它在首个 terminal TC 前已写 declaration、all skipped results、commit、Done；consumer 在 TC 或 TR break 只停止该 consumer 的 delivery，thread 已 closed，`ResumeThread` 返回 `ErrNothingToResume`。普通 early-break 不自动结算，且没有 RunInterruptedError 可交付；配置 WithRunExitFn 后，内核在 iterator unwind 完成且 ownership 尚未释放时同步交付本 session 的 SettlementToken，controller 保存后等 iterator 退出再结算。不增加 AgentEvent，不在 release 后回填 token；无 session/未 range 不回调。未配置回调的 early-break 不承诺交付原 run 身份，ThreadID 本身不能替代结算凭据。匿名持久 stream 同样可用退出回调取得原 token。
+- 并发：每线程非阻塞运行所有权——第二个并发运行在**任何模型调用之前**即得类型化冲突（单纯加锁等待是串行化，不是冲突）；乐观版本号追加 + record_id 幂等重试作为其他写者的后盾。不可变记录批次与 ID 只生成一次，重试逐字节同一内容。SettleThread、SettlementTarget 和 cancelled 快照读取必须使用同一（Store 实例，ThreadID）所有权；仍有执行者时 ErrThreadBusy，不等待、不抢占。结算与随后 RunThread 是两个所有权区间。退出 token 的 RunID/head 在原 session 持有 ownership 时冻结；新写结算必须同时匹配 replay 的 runID 与 current head。revision 或身份不符即 ErrRevisionConflict，不自动刷新。唯一例外是原 ExpectedHead 处已存在同一原 RunID 的合法取消记录，此时只读确认、不追加。即使后继 run 已启动或已 incomplete，迟到请求也不得改变它。
+- 线程 ID：调用方 ID 非空、有界、不规范化（转义后须满足文件名边界）；内核生成 = crypto-random 128 位，走 **rev=0 保留语义**：目标线程已存在即视为保留冲突，换新 ID 重试（绝不污染既有线程），重试仅限该次冲突。`RunResult` 与 `DoneEvent` 暴露 `ThreadID`；无 store 时不生成。显式线程入口（`RunThread` / `ResumeThread` / `RunThreadStream` / `SettleThread` / `SettlementTarget`）要求已配置 Store，否则返回 `ErrNoStore`，不静默降级为非持久运行。head=0 即"新建"，无"线程不存在"语义；调用方 ID 复用即"追加到既有线程"。`RunWithHistory` / `RunStreamWithHistory` 保持非持久（一次性导入语义，不入线程）。运行所有权按（Store 实例, 线程）全局登记，不按 Agent 实例；Store 值必须可比较（指针式实现，两个内置后端均满足），否则所有权登记返回类型化错误而不 panic。SettleThread 不创建线程。目标 RunID/head 匹配且已终结时返回 ErrNothingToSettle；原取消记录的幂等确认除外。无记录或身份/revision 不符的旧 token 返回 ErrRevisionConflict。只读 SettlementTarget 在 ownership 下检查当前 active run 并于释放前形成完整 token；无 active 返回 ErrNothingToSettle。它只用于新的显式恢复决策，不用于把旧“取消 A”请求自动改成取消当前 run。RunWithHistory/RunStreamWithHistory 始终不持久化，不交付退出 token，不能通过结算隐式导入。Store.Delete/重建线程不与运行控制并发，重建后丢弃旧 token。
+- 失败、ctx 取消与消费者中断默认保留可恢复的未闭合 run，绝不写假的 Done。原 session 在释放 ownership 前冻结其 SettlementToken，调用方等合作收敛并释放后，才用新的有效且有界 context 和这个原 token 调 SettleThread。结算不发送取消信号、不调用模型或工具。新的显式恢复决策可针对崩溃或其他错误留下的精确 run，不改写旧错误原因；旧请求不得借恢复检查自动换目标或更新 revision。结算确认前的写入错误可能已落地，保留原 RunID/head 幂等重试；退出前执行写入结果不确定时，最后确认的 head 可能落后，必须冲突失败而不是猜测。结算与下一个 run_started 之间存在独立窗口：旧 run 已取消不等于新 input 已持久接受。maxIter terminal skip 的既有规则不变：preparation 前或 precommit 中的取消/失败仍可恢复或显式结算；已提交 skipped results 原样保留；完整 Done 一旦提交，后续 delivery 的取消/break 不撤销终态，也不能再结算为 cancelled。
+
+#### 取消结算与日志兼容性
+
+`SettlementToken{ThreadID, RunID, ExpectedHead}` 绑定单个 run 与 revision。
+`SettleThread(ctx context.Context, target SettlementToken) error`
+仅在二者都匹配时以单条 `run_cancelled` 完成持久结算。记录包含 `run_id`、
+nullable `open_round` 和有序 `results`；所有键必需，无 open 时为
+null 与空数组。记录 ID 为该 RunID 的固定 `-cancel` 后缀。
+有 open 时，结果必须逐一匹配全部 declared calls 且明确 unknown；
+无 open 时不得携带工具结果。错 run/round、错误配对、额外内容、
+重复 terminal 或非 active run 的取消记录均为 ErrIncompatibleLog。
+
+Store 新增 SchemaV2=2 和 KindRunCancelled，不改变 Store 接口、
+sequence、fsync 与完整内容幂等合同。unset schema 仍规范化为 1；
+旧 kind/payload 保持旧版本，新取消记录必须 schema 2。
+新版 checkpoint 采用 schema 2 与显式 codec_version=2。
+旧日志无需迁移；老二进制不保证读取新取消日志，必须报兼容性错误，
+不得借未知 kind、KindError 或 checkpoint 隐藏新终态。
+JSONL 多记录 Append 不被当作断电事务；R07 的 unknown 修复与
+cancelled 终态放在同一条记录内。
+
+sealed AgentEvent 仍为七种，不增加取消事件，不把取消快照伪装成
+DoneEvent。RunResult 新增 Cancelled，仅 Resume 的终态读取分支
+为 true；实际执行完成的 RunResult 与 DoneEvent 仍保持对应，
+但取消快照不是从事件流归并得到的执行结果。
+
+#### 父子线程的取消结算
+
+SettleThread 非递归，仅结算指定 Agent/Store 中原 token 绑定的 run。
+父结算不关闭或删除子线程；子结算不向父 declaration 提交结果。
+父未提交的 child 工具调用在父结算时仍为 outcome-unknown，
+不根据子成功/取消状态伪造父已提交结果；子悬挂调用由子负责配对。
+
+agenttool 每次 Execute 只调用一次 child.Run，不保有可续跑的子
+session；配置 Store 的 child 会生成独立持久线程。父 ctx 取消
+传给子执行，但不等于父、子 durable run 已结算。宿主必须先等待
+所有 child owned work 和 parent 调用/iterator 退出，保存各自
+退出前捕获的 SettlementToken 与对应 Agent/Store，再从子到父显式
+清理，父结算确认后才开始新输入。任一 child 清理失败不得报告
+整个委派已清理，也不得换用它的最新 run 身份重试。
+
+嵌套 RunInterruptedError 的外层 token 属父、内层属子；不能只取
+一次 errors.As 就假定已经收齐所有 child。并行 child 的完整目标
+集合由宿主接线各自退出观察回调并关联工具调用；回调不递归结算。
+子正常终态不重写；只有子结算时父仍 incomplete，只有父结算时
+子仍可能 incomplete。后续 agenttool 调用新建 child run，不恢复
+旧子线程，但新建不代表旧子线程已清理。
+
+R07 不提供跨 Store 事务、durable 委派关系或匿名 child 的跨崩溃
+发现。进程在 child token 交付前崩溃可能留下无宿主索引的
+incomplete 子日志；宿主必须标记清理未确认并负责后续发现/处理。
+最小 one-shot child 可不配置 Store；承诺持久子线程崩溃清理的
+产品须另行提供 durable 子调用身份索引，不得声称父结算已涵盖。
 
 #### 逐轮运行环境上下文（冻结契约）
 
@@ -148,6 +202,19 @@ post-session cause 误当作安全重建。callback 专有错误则在该外层�
 `RoundContextError{Round, Attempt, Err}`；callback 前取消不伪造该内层。
 Resume 先重放 canonical history，再执行 live callback，故不重放、累积
 或双计旧快照。
+
+RunInterruptedError 保留 ThreadID、Err 与 Unwrap，新增
+Settlement *SettlementToken；执行错误交付前，在原 session 仍持有
+ownership 时捕获其 RunID 与最后确认 head。外层包装必须携带父
+session 的 token，内层 child token 保留在原因链，二者不可替换。
+它不是取消终态，不自动触发 SettleThread，errors.Is/As 保持原义。
+WithRunExitFn(func(SettlementToken)) 在成功建立的 session unwind
+之后、ownership release 之前交付 token，覆盖 early-break 且不造错误
+或事件；callback 仅保存值，不重入线程、不等待持锁操作。
+调用方必须等原调用/iterator 退出后再使用 token。无 session 的 setup
+错误保持无 wrapper；没有原 token 时只能做新的显式恢复检查，不能
+依据 ThreadID 自动认领当前 run。SettlementTarget、SettleThread 与
+cancelled 快照读取都不启动执行，不新增该包装或退出回调。
 
 ### OpenAI Responses 协议适配器（`llm/openairesponses`，建设中）
 
