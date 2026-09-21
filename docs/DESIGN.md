@@ -14,6 +14,8 @@
 - **不绑定模型厂商**：任何 OpenAI 兼容 API、GLM 均可即插即用；
 - **不含入口程序**：内核没有 `package main`；`examples/` 目录下的演示客户端独立于内核，仅供演示与上手，不是库的一部分。
 
+`harness/` 是同仓库、同 module 的交互式编码助手应用卫星，消费内核公开 API，不属于内核；契约见 [harness/DESIGN.md](../harness/DESIGN.md)。依赖仅从 harness 指向内核，终端 UI、审批策略、会话展示缓存和文件快照留在卫星内部。harness 可引入 Bubble Tea 等 UI 依赖，但 `agent`、`llm`、`store`、`tool` 的完整编译闭包仍为 stdlib-only，MCP SDK importer 边界不变；M1 不修改内核 API，恢复展示缺口由应用显式降级。
+
 ## 2. 设计目标
 
 按优先级排列，冲突时后者让位于前者：

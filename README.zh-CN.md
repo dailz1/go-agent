@@ -61,6 +61,12 @@ go test ./examples/approval -count=1
 
 未安装 approval callback 时，带 `RequiresApproval` 的工具会被拒绝。审批不是 sandbox：没有合适的策略边界时，不要把 shell 或文件系统工具复制到生产环境。
 
+## 编码助手 harness
+
+[harness 应用](harness/README.md) 是同 module 的卫星，消费内核公开 API。**当前仅 Stage A：**终端骨架可启动退出，聊天、工具和持久会话尚未接通。运行 `go run ./harness/cmd/go-agent --help`；非 TTY 启动打印帮助后成功退出。终端中指定 `--model YOUR_MODEL`，按 `q`、`Esc` 或 `Ctrl+C` 退出。
+
+[M1 契约](harness/DESIGN.md) 覆盖 Linux-first 流式聊天、代码/shell 工具、审批、持久会话、取消改向和 edit/write 快照。MCP、agenttool、模型切换和全工作区快照延后。UI 依赖不进入 stdlib-only 内核编译闭包。`examples/agentcli` 保留演示身份；应用入口为 `harness/cmd/go-agent`。
+
 ## 示例
 
 gallery 按学习路径排序。所有测试均为确定性且不访问网络；标记为 **manual** 的项目需要其说明的外部依赖。
