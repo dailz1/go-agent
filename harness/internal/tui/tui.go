@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -28,7 +29,7 @@ func IsTerminal(in *os.File, out io.Writer) bool {
 	return ok && term.IsTerminal(in.Fd()) && term.IsTerminal(output.Fd())
 }
 
-// Run starts the Stage A status screen and returns after terminal restoration.
+// Run starts the status screen and returns after terminal restoration.
 func (t Terminal) Run(ctx context.Context, state app.State) error {
 	_, err := tea.NewProgram(
 		newModel(state),
@@ -51,6 +52,9 @@ type model struct {
 func newModel(state app.State) model {
 	v := viewport.New(viewport.WithWidth(80), viewport.WithHeight(18))
 	v.SetContent("Startup skeleton only.\n\nChat, tools and durable sessions are not connected.\nNo task will execute.")
+	if len(state.Startup) > 0 {
+		v.SetContent(strings.Join(state.Startup, "\n") + "\n\nChat and durable sessions are not connected. No task will execute.")
+	}
 	return model{state: state, viewport: v, width: 80}
 }
 
@@ -78,7 +82,7 @@ func (m model) View() tea.View {
 	if !m.state.ApprovalRequired {
 		approval = "APPROVAL BYPASSED (--no-approval)"
 	}
-	header := lipgloss.NewStyle().Bold(true).Width(m.width).Render("go-agent | Stage A")
+	header := lipgloss.NewStyle().Bold(true).Width(m.width).Render("go-agent | Stage B")
 	footer := lipgloss.NewStyle().Width(m.width).Render(approval + "\nq / Esc / Ctrl+C: quit")
 	view := tea.NewView(header + "\n\n" + m.viewport.View() + "\n" + footer)
 	view.AltScreen = true

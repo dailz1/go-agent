@@ -1,7 +1,7 @@
 # Harness M1 设计契约
 
 > 日期：2026-09-21。Owner 已裁决 D1–D3；本文约束 M1 实施。
-> 当前交付为 Stage A：文档、启动配置表面与终端骨架，不代表编码助手已可用。
+> 当前交付为 Stage B：启动配置、规则与文件工具；应用写入 gate 尚未接通，不代表编码助手已可用。
 
 ## 1. 定位与依赖边界
 
@@ -209,9 +209,11 @@ OPENAI_API_KEY / GLM_API_KEY），无 key 值 flag、不写盘。`--no-approval`
 默认 30 轮、15 分钟 run、4096 输出 tokens、8192 保守上下文预算；
 `--context-budget` 是用户设置的启发式预算，不是模型自动识别窗口。
 恢复视为新一次执行预算，不声称跨重启累计费用封顶。
-Stage A 仅解析 provider/model/base-url/api-key-env/no-approval 启动表面，
-不读取秘密、不建立 provider、不加载 JSON/会话，也不执行模型或工具。
-Stage A 非 TTY 打印帮助并退出 0；不是免审批管道模式。
+Stage B 已接通启动 JSON/env/flags、provider 构造、workspace 根封装、静态规则
+和五个文件工具的 Registry。TTY 启动显示来源；不启动模型或持久 controller。
+`tools.WriteGate` 缺失时 edit/write 结构性拒绝，`--no-approval` 不会创建此依赖。
+Stage C 提供有效批准与快照后才调用写入 closure；详细接线见 README。
+非 TTY 打印帮助并退出 0；不是免审批管道模式。
 
 测试使用 stdlib testing；同步信号后触发取消，timeout 只作失败上界，
 不靠 sleep/轮询。Stage A 覆盖帮助、参数解析和骨架启动退出；后续阶段再

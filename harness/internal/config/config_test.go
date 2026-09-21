@@ -61,6 +61,12 @@ func TestParse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			tt.want.Workspace = "."
+			tt.want.Excludes = ".git,node_modules,vendor,build,dist,target"
+			tt.want.MaxIterations = 30
+			tt.want.ContextBudget = 8192
+			tt.want.MaxOutputTokens = 4096
+			tt.want.RunTimeout = "15m"
 			got, err := Parse(tt.args, func(key string) string { return tt.env[key] })
 			if err != nil {
 				t.Fatal(err)

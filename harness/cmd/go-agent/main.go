@@ -46,12 +46,26 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 		fmt.Fprintln(stdio.errOut, err)
 		return 2
 	}
+	startup, err := app.Prepare(cfg, getenv)
+	if err != nil {
+		fmt.Fprintln(stdio.errOut, err)
+		return 2
+	}
+	defer startup.Close()
+	details := []string{
+		"Provider: " + cfg.Provider + " / " + cfg.Model,
+		"Workspace: " + startup.Workspace.Path(),
+		"Writes disabled until approval and snapshots are connected.",
+	}
+	for _, source := range startup.Rules.Snapshot().Sources {
+		details = append(details, "Rules: "+source.Path+" ("+source.Hash+")")
+	}
+	details = append(details, startup.Notices...)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 	var ui app.UI = tui.Terminal{Input: stdio.in, Output: stdio.out}
-	// TODO(B-D): assemble provider, gated tools and durable controller here.
-	// Stage A deliberately starts no worker and accepts no task input.
-	if err := ui.Run(ctx, app.State{ApprovalRequired: !cfg.NoApproval}); err != nil {
+	// TODO(D): consume startup resources in the durable controller.
+	if err := ui.Run(ctx, app.State{ApprovalRequired: !cfg.NoApproval, Startup: details}); err != nil {
 		fmt.Fprintln(stdio.errOut, err)
 		return 1
 	}

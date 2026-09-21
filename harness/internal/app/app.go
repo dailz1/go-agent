@@ -10,6 +10,7 @@ import (
 // State is a non-secret display value. It is not canonical conversation history.
 type State struct {
 	ApprovalRequired bool
+	Startup          []string
 }
 
 // UI owns terminal input and rendering. Run returns after terminal cleanup.
