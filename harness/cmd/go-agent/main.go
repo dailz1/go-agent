@@ -13,6 +13,7 @@ import (
 
 	"github.com/dailz1/go-agent/harness/internal/app"
 	"github.com/dailz1/go-agent/harness/internal/config"
+	"github.com/dailz1/go-agent/harness/internal/session"
 	"github.com/dailz1/go-agent/harness/internal/tui"
 )
 
@@ -52,6 +53,19 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 		return 2
 	}
 	defer startup.Close()
+	manager, err := session.Open(startup.Config.DataDir)
+	if err != nil {
+		fmt.Fprintln(stdio.errOut, err)
+		return 2
+	}
+	defer manager.Close()
+	controller := app.NewController(startup, manager)
+	defer func() { _ = controller.Close(context.Background()) }()
+	sessions, err := controller.ListSessions()
+	if err != nil {
+		fmt.Fprintln(stdio.errOut, err)
+		return 2
+	}
 	details := []string{
 		"Provider: " + cfg.Provider + " / " + cfg.Model,
 		"Workspace: " + startup.Workspace.Path(),
@@ -61,7 +75,8 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 	} else {
 		details = append(details, "Approval: every side effect asks")
 	}
-	details = append(details, "Runs: durable controller arrives in Stage D.")
+	details = append(details, fmt.Sprintf("Sessions: %d persisted under %s", len(sessions), startup.Config.DataDir))
+	details = append(details, "Interactive chat arrives in Stage E; no model is called.")
 	for _, source := range startup.Rules.Snapshot().Sources {
 		details = append(details, "Rules: "+source.Path+" ("+source.Hash+")")
 	}
@@ -69,7 +84,9 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 	var ui app.UI = tui.Terminal{Input: stdio.in, Output: stdio.out}
-	// TODO(D): consume startup resources in the durable controller.
+	// Stage D: the durable controller is wired and owns sessions; the
+	// interactive chat surface itself is Stage E, so startup still makes no
+	// model call.
 	if err := ui.Run(ctx, app.State{ApprovalRequired: !cfg.NoApproval, Startup: details}); err != nil {
 		fmt.Fprintln(stdio.errOut, err)
 		return 1

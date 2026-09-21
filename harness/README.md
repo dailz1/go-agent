@@ -1,8 +1,8 @@
 # go-agent harness
 
 同仓库的交互式编码助手应用卫星，消费 go-agent 公开 API。
-**当前 Stage C：shell 执行器、三种审批模式、快照与恢复已在库层实现并有真实子进程/故障注入测试；
-但交互执行（持久 controller、会话、终端交互）仍是 Stage D/E，终端仍是状态页。**
+**当前 Stage D：持久 controller（会话 meta、Store 接线、原 token 取消结算、继续与改向、view cache、
+七事件 reducer）已实现并有崩溃窗口矩阵与零旧模型调用证明；终端交互视图仍是 Stage E，终端仍是状态页。**
 M1 目标与边界见 [DESIGN.md](DESIGN.md)，不应将契约中的目标能力当成已交付功能。
 
 ## 运行

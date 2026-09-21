@@ -51,9 +51,9 @@ type model struct {
 
 func newModel(state app.State) model {
 	v := viewport.New(viewport.WithWidth(80), viewport.WithHeight(18))
-	v.SetContent("Startup skeleton only.\n\nChat, tools and durable sessions are not connected.\nNo task will execute.")
+	v.SetContent("Durable session controller is wired.\n\nChat, tools and durable sessions execute through the controller; the interactive\nchat surface arrives in Stage E. No task executes from this screen.")
 	if len(state.Startup) > 0 {
-		v.SetContent(strings.Join(state.Startup, "\n") + "\n\nChat and durable sessions are not connected. No task will execute.")
+		v.SetContent(strings.Join(state.Startup, "\n") + "\n\nThe interactive chat surface arrives in Stage E. No task executes from this screen.")
 	}
 	return model{state: state, viewport: v, width: 80}
 }
@@ -82,7 +82,7 @@ func (m model) View() tea.View {
 	if !m.state.ApprovalRequired {
 		approval = "APPROVAL BYPASSED (--no-approval)"
 	}
-	header := lipgloss.NewStyle().Bold(true).Width(m.width).Render("go-agent | Stage B")
+	header := lipgloss.NewStyle().Bold(true).Width(m.width).Render("go-agent | Stage D")
 	footer := lipgloss.NewStyle().Width(m.width).Render(approval + "\nq / Esc / Ctrl+C: quit")
 	view := tea.NewView(header + "\n\n" + m.viewport.View() + "\n" + footer)
 	view.AltScreen = true

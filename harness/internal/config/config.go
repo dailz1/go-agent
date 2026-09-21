@@ -102,7 +102,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 // Help lists the shipped flags without including environment values.
 func Help() string {
 	var text strings.Builder
-	text.WriteString("Usage: go-agent [options]\n\nStage C startup; side-effect gates are implemented, the interactive controller is not connected yet.\n")
+	text.WriteString("Usage: go-agent [options]\n\nStage D startup; the durable session controller is wired (sessions, cancel-and-settle,\nredirect), the interactive chat surface arrives in Stage E and no model is called at startup.\n")
 	text.WriteString("Non-TTY input/output prints help and exits. In a TTY: q, Esc, Ctrl+C quit.\n\n")
 	cfg := defaults()
 	fs := flags(&cfg)
