@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/term"
 
 	"github.com/dailz1/go-agent/harness/internal/app"
@@ -29,62 +26,25 @@ func IsTerminal(in *os.File, out io.Writer) bool {
 	return ok && term.IsTerminal(in.Fd()) && term.IsTerminal(output.Fd())
 }
 
-// Run starts the status screen and returns after terminal restoration.
-func (t Terminal) Run(ctx context.Context, state app.State) error {
-	_, err := tea.NewProgram(
-		newModel(state),
+// Run starts the interactive chat surface. The bridge enforces the
+// worker/UI isolation of harness/DESIGN.md §3: the Bubble Tea update loop
+// only touches memory, every host intent runs on a bridge goroutine, and
+// host results re-enter the program as ordinary messages. When the program
+// exits, the bridge is stopped and joined before Run returns, so terminal
+// exit never abandons an in-flight intent halfway; cancelling the active
+// run itself is main's deferred controller close, not a UI concern.
+func (t Terminal) Run(ctx context.Context, host app.Host, state app.State) error {
+	b := newBridge(host)
+	program := tea.NewProgram(
+		newModel(state, host, b.exec),
 		tea.WithContext(ctx),
 		tea.WithInput(t.Input),
 		tea.WithOutput(t.Output),
-	).Run()
-	if err != nil {
+	)
+	b.start(ctx, program.Send)
+	defer b.stop()
+	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("run terminal: %w", err)
 	}
 	return nil
-}
-
-type model struct {
-	state    app.State
-	viewport viewport.Model
-	width    int
-}
-
-func newModel(state app.State) model {
-	v := viewport.New(viewport.WithWidth(80), viewport.WithHeight(18))
-	v.SetContent("Durable session controller is wired.\n\nChat, tools and durable sessions execute through the controller; the interactive\nchat surface arrives in Stage E. No task executes from this screen.")
-	if len(state.Startup) > 0 {
-		v.SetContent(strings.Join(state.Startup, "\n") + "\n\nThe interactive chat surface arrives in Stage E. No task executes from this screen.")
-	}
-	return model{state: state, viewport: v, width: 80}
-}
-
-func (m model) Init() tea.Cmd { return nil }
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = max(1, msg.Width)
-		m.viewport.SetWidth(m.width)
-		m.viewport.SetHeight(max(1, msg.Height-6))
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			return m, tea.Quit
-		}
-	}
-	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	return m, cmd
-}
-
-func (m model) View() tea.View {
-	approval := "Approval: per call"
-	if !m.state.ApprovalRequired {
-		approval = "APPROVAL BYPASSED (--no-approval)"
-	}
-	header := lipgloss.NewStyle().Bold(true).Width(m.width).Render("go-agent | Stage D")
-	footer := lipgloss.NewStyle().Width(m.width).Render(approval + "\nq / Esc / Ctrl+C: quit")
-	view := tea.NewView(header + "\n\n" + m.viewport.View() + "\n" + footer)
-	view.AltScreen = true
-	return view
 }

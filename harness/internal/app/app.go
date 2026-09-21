@@ -11,9 +11,10 @@ type State struct {
 	Startup          []string
 }
 
-// UI owns terminal input and rendering. Run returns after terminal cleanup.
+// UI owns terminal input and rendering. It renders Host state and sends
+// intents; it never owns agent calls. Run returns after terminal cleanup.
 type UI interface {
-	Run(context.Context, State) error
+	Run(ctx context.Context, host Host, state State) error
 }
 
 // The durable run lifecycle lives in Controller (controller.go): cancel,

@@ -1,8 +1,10 @@
 # go-agent harness
 
 同仓库的交互式编码助手应用卫星，消费 go-agent 公开 API。
-**当前 Stage D：持久 controller（会话 meta、Store 接线、原 token 取消结算、继续与改向、view cache、
-七事件 reducer）已实现并有崩溃窗口矩阵与零旧模型调用证明；终端交互视图仍是 Stage E，终端仍是状态页。**
+**当前 Stage E：交互终端界面已交付——Bubble Tea 聊天面（多行/中文输入、滚动回看、七事件渲染、
+折叠推理、压缩通知、缓存/实时分区）、审批面（逐次批准/拒绝、精确文件集 grant 管理）、
+会话 UX（新建/列表/打开、非流式恢复、取消后同会话改向、快照恢复入口）与 worker/UI 隔离桥。
+Stage D 的持久 controller 与崩溃窗口矩阵不变；真终端人工验收（PTY resize、中文多行粘贴、拒绝/取消/重启实测）属 Stage F。**
 M1 目标与边界见 [DESIGN.md](DESIGN.md)，不应将契约中的目标能力当成已交付功能。
 
 ## 运行
@@ -14,12 +16,51 @@ go run ./harness/cmd/go-agent --help
 go run ./harness/cmd/go-agent --provider openai --model YOUR_MODEL
 ```
 
-TTY 中显示 provider、workspace、规则来源和审批模式，按 `q`、`Esc` 或 `Ctrl+C` 退出。
+TTY 中显示 provider、workspace、规则来源和审批模式后进入聊天界面；键位见下节，
+`q` 是普通字符不再是退出键。
 stdin 或 stdout 非 TTY 时只打印帮助、退出 0，不尝试打开 `/dev/tty`，
 也不执行模型；这不是无人审批的管道模式。帮助无需模型或 API key。
 用 `go build -o /tmp/go-agent ./harness/cmd/go-agent` 构建当前骨架。
 包含 harness 的版本发布后，安装路径为
 `go install github.com/dailz1/go-agent/harness/cmd/go-agent@<version>`。
+
+## 终端界面与键位
+
+聊天界面由 Bubble Tea v2 驱动：输入区支持多行（ctrl+j 换行）与粘贴（含中文），
+滚动回看区按 DESIGN §7 规则渲染七种事件——工具卡片在结果事件到达前只标记“已请求”，
+推理默认折叠（ctrl+r 展开），压缩通知显示策略与前后 runes，缓存打开的历史
+带来源横幅与“缓存落后”缺口说明，恢复中的任务明确标注非流式、不伪造增量。
+审批/授权/会话/恢复各是独立面板，面板打开时按键不会漏进聊天输入。
+应用内 `?`（输入为空时）或 `/help` 显示同样的键位说明。
+
+| 键 | 作用 |
+|---|---|
+| `enter` | 提交输入；首个输入自动创建会话 |
+| `ctrl+j` | 输入区换行（多行输入，粘贴可用） |
+| `esc` | 关闭面板；任务运行中＝停止（cancel → join → settle，结算后原会话接收新输入）；空闲＝退出 |
+| `ctrl+c` | 任务运行中＝停止并在结算完成后退出；停止窗口内再按＝强制退出；空闲＝退出 |
+| `ctrl+r` | 展开/折叠推理区 |
+| `ctrl+g` | 授权面板（精确文件集，20 次/30 分钟） |
+| `pgup` / `pgdown` | 回看翻页；`ctrl+u` / `ctrl+d` 半页 |
+| `?` | 帮助（仅输入为空时） |
+
+| 命令 | 作用 |
+|---|---|
+| `/new` | 新会话 |
+| `/sessions` | 列出持久会话；打开＝只读，不调模型 |
+| `/resume <id>` | 打开指定会话；中断任务先选继续或放弃 |
+| `/stop` | 停止：cancel → join → 原 token 结算（运行中可用） |
+| `/continue` | 继续中断任务（非流式恢复，可取消） |
+| `/abandon` | 放弃旧任务并结算，随后接收新输入 |
+| `/retry` | 重试被阻塞的结算 |
+| `/changes` | 列出可恢复的 edit/write 变更 |
+| `/restore <id>` | 确认后恢复一次文件变更 |
+| `/grant` | 授权面板 |
+| `/help` | 帮助 |
+
+审批面板：`y`/`enter` 批准、`n`/`esc` 拒绝（软拒绝回传模型），完整 diff/命令可滚动；
+运行结束后未答复的请求自动失效，迟到按键不生效。
+授权面板：`enter` 添加路径、`ctrl+x` 移除所选、`ctrl+a` 应用、`ctrl+r` 撤销。
 
 ## 启动配置
 
@@ -112,8 +153,9 @@ prepared 崩溃后不猜成功：当前文件等于 before 视为未应用，等
 `cmd/go-agent` 组装入口；`internal/config` 启动解析；
 `internal/app` 声明 controller/worker/UI 接缝，拥有审批管理器、run 身份、`Gate` 与 `BeginRun` 组装；
 `internal/tui` 独占终端。`internal/tools` 实现六工具与 shell 执行器；`workspace` 负责路径与文件访问，
-`prompt` 固定规则，`snapshot` 持有前后像与恢复协议。`internal/session` 仍是后续阶段的包边界。
-Bubble Tea 类型不穿过 UI 边界；当前没有后台模型 worker。
+`prompt` 固定规则，`snapshot` 持有前后像与恢复协议。`internal/session` 管理持久索引与展示缓存。
+Bubble Tea 类型只在 `internal/tui`；controller 的每次 run 由 worker 消费流，
+UI 经 bridge 的有界队列收发消息（事件可合并、审批不丢、intent 串行），Update 内不做阻塞调用。
 
 ```sh
 go build ./...

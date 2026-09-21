@@ -102,8 +102,8 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 // Help lists the shipped flags without including environment values.
 func Help() string {
 	var text strings.Builder
-	text.WriteString("Usage: go-agent [options]\n\nStage D startup; the durable session controller is wired (sessions, cancel-and-settle,\nredirect), the interactive chat surface arrives in Stage E and no model is called at startup.\n")
-	text.WriteString("Non-TTY input/output prints help and exits. In a TTY: q, Esc, Ctrl+C quit.\n\n")
+	text.WriteString("Usage: go-agent [options]\n\nInteractive coding harness: durable sessions, per-call approval, cancel-and-settle\nredirect and file restore. No model is called at startup.\n")
+	text.WriteString("Non-TTY input/output prints help and exits. In a TTY: Esc stops the running task or quits when idle;\n? in-app shows the full keybinding list.\n\n")
 	cfg := defaults()
 	fs := flags(&cfg)
 	fs.String("config", "", "user JSON configuration (GO_AGENT_CONFIG)")

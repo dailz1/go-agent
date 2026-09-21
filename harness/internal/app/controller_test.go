@@ -185,9 +185,9 @@ func newFixtureWithOptions(t *testing.T, opts fixtureOptions, replies ...stubRep
 	}
 	ctrl := NewController(startup, mgr)
 	views := make(chan ViewModel, 1024)
-	ctrl.Observe(func(v ViewModel) {
+	ctrl.Observe(func(e UIEvent) {
 		select {
-		case views <- v:
+		case views <- e.View:
 		default:
 		}
 	})
@@ -405,15 +405,15 @@ func TestControllerStopDuringCompletionRace(t *testing.T) {
 	gate := make(chan struct{})
 	atGate := make(chan struct{})
 	var once sync.Once
-	f.ctrl.Observe(func(v ViewModel) {
-		if v.Complete {
+	f.ctrl.Observe(func(e UIEvent) {
+		if e.View.Complete {
 			once.Do(func() {
 				atGate <- struct{}{}
 				<-gate // park the worker exactly at the Done-view publish
 			})
 		}
 		select {
-		case f.views <- v:
+		case f.views <- e.View:
 		default:
 		}
 	})

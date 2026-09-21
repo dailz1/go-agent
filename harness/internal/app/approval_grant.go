@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,25 @@ func (a *Approvals) Grant(token string, paths []string) error {
 	if err := r.check(r.ctx); err != nil {
 		return err
 	}
+	return a.grantLocked(r, paths)
+}
+
+// GrantActive mints a grant for the currently active run without exposing
+// run tokens to the UI layer. Same rules as Grant; never answers a request.
+func (a *Approvals) GrantActive(paths []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r := a.active
+	if r == nil {
+		return errors.New("grant has no matching run")
+	}
+	if err := r.check(r.ctx); err != nil {
+		return err
+	}
+	return a.grantLocked(r, paths)
+}
+
+func (a *Approvals) grantLocked(r *RunApproval, paths []string) error {
 	if len(paths) == 0 {
 		return errors.New("grant requires an exact file set")
 	}
@@ -47,6 +67,30 @@ func (a *Approvals) Grant(token string, paths []string) error {
 	}
 	a.record(r, ApprovalRequest{}, "grant")
 	return nil
+}
+
+// GrantInfo reports the read-only grant snapshot for display. Mintable says
+// whether a run is active that could issue a grant; Usable whether the
+// existing grant still answers edit/write calls.
+func (a *Approvals) GrantInfo() GrantInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	info := GrantInfo{Mintable: a.active != nil}
+	g := &a.grant
+	if g.paths == nil {
+		return info
+	}
+	paths := make([]string, 0, len(g.paths))
+	for path := range g.paths {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	info.Active = true
+	info.Usable = g.remaining > 0 && a.now().Before(g.expires)
+	info.Paths = paths
+	info.Remaining = g.remaining
+	info.Expires = g.expires
+	return info
 }
 
 func (a *Approvals) Revoke() {

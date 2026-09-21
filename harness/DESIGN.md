@@ -1,8 +1,9 @@
 # Harness M1 设计契约
 
 > 日期：2026-09-21。Owner 已裁决 D1–D3；本文约束 M1 实施。
-> 当前交付为 Stage D：持久 controller（会话 ID/meta、Store 接线、原 token 取消结算、继续与改向、
-> view cache 与七事件 reducer）已实现并有崩溃窗口矩阵测试；交互视图仍是 Stage E，终端仍是状态页。
+> 当前交付为 Stage E：Stage D 持久 controller 之上，交互终端界面（聊天/审批/授权/会话/恢复面板、
+> worker/UI 隔离桥、README 键位表）已实现并有结构与消息流测试；
+> 真终端人工验收（PTY、resize、中文粘贴）属 Stage F。
 
 ## 1. 定位与依赖边界
 

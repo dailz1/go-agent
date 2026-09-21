@@ -73,9 +73,9 @@ func boot(t *testing.T, workspace, dataDir string, opts fixtureOptions, replies 
 	}
 	ctrl := NewController(startup, mgr)
 	views := make(chan ViewModel, 1024)
-	ctrl.Observe(func(v ViewModel) {
+	ctrl.Observe(func(e UIEvent) {
 		select {
-		case views <- v:
+		case views <- e.View:
 		default:
 		}
 	})
@@ -433,9 +433,9 @@ func TestControllerRedirectAfterCrashZeroOldModelCalls(t *testing.T) {
 	// the run agents read it at build time.
 	base.ctrl = NewController(base.startup, base.mgr)
 	views := make(chan ViewModel, 1024)
-	base.ctrl.Observe(func(v ViewModel) {
+	base.ctrl.Observe(func(e UIEvent) {
 		select {
-		case views <- v:
+		case views <- e.View:
 		default:
 		}
 	})

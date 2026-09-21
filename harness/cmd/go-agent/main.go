@@ -76,7 +76,6 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 		details = append(details, "Approval: every side effect asks")
 	}
 	details = append(details, fmt.Sprintf("Sessions: %d persisted under %s", len(sessions), startup.Config.DataDir))
-	details = append(details, "Interactive chat arrives in Stage E; no model is called.")
 	for _, source := range startup.Rules.Snapshot().Sources {
 		details = append(details, "Rules: "+source.Path+" ("+source.Hash+")")
 	}
@@ -84,10 +83,7 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 	var ui app.UI = tui.Terminal{Input: stdio.in, Output: stdio.out}
-	// Stage D: the durable controller is wired and owns sessions; the
-	// interactive chat surface itself is Stage E, so startup still makes no
-	// model call.
-	if err := ui.Run(ctx, app.State{ApprovalRequired: !cfg.NoApproval, Startup: details}); err != nil {
+	if err := ui.Run(ctx, controller, app.State{ApprovalRequired: !cfg.NoApproval, Startup: details}); err != nil {
 		fmt.Fprintln(stdio.errOut, err)
 		return 1
 	}

@@ -12,15 +12,25 @@ import (
 	"github.com/dailz1/go-agent/harness/internal/app"
 )
 
-func TestSkeletonStartsAndExits(t *testing.T) {
-	for _, key := range []string{"q", "\x1b", "\x03"} {
-		t.Run(key, func(t *testing.T) {
+// The terminal surface must start headless and exit on the idle quit keys.
+// "q" is no longer a quit binding: it is an ordinary input character.
+func TestStartsAndExits(t *testing.T) {
+	keys := []struct {
+		name string
+		raw  string
+	}{
+		{"esc", "\x1b"},
+		{"ctrl+c", "\x03"},
+	}
+	for _, key := range keys {
+		t.Run(key.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
+			m, _ := newTestModel(app.State{ApprovalRequired: true})
 			program := tea.NewProgram(
-				newModel(app.State{ApprovalRequired: true}),
+				m,
 				tea.WithContext(ctx),
-				tea.WithInput(strings.NewReader(key)),
+				tea.WithInput(strings.NewReader(key.raw)),
 				tea.WithOutput(io.Discard),
 				tea.WithEnvironment([]string{"TERM=dumb"}),
 				tea.WithoutRenderer(),

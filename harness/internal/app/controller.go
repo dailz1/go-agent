@@ -105,7 +105,6 @@ type Controller struct {
 	controlAgent  *agent.Agent // read-only/settlement surface; never executes
 	settleTimeout time.Duration
 	runTimeout    time.Duration
-	observe       func(ViewModel)
 
 	mu        sync.Mutex
 	open      session.Meta
@@ -116,6 +115,7 @@ type Controller struct {
 	settleErr error
 	aux       *auxStores
 	idleCh    chan struct{} // closed whenever the controller returns to idle
+	observe   func(UIEvent)
 }
 
 // NewController wires the session manager into the startup resources. No
@@ -137,9 +137,10 @@ func NewController(startup *Startup, mgr *session.Manager) *Controller {
 // SettleTimeout overrides the bounded settlement context (tests).
 func (c *Controller) SettleTimeout(d time.Duration) { c.settleTimeout = d }
 
-// Observe registers the synchronous view sink. It is called from the worker
-// goroutine; stage E adapts it to a bounded UI queue.
-func (c *Controller) Observe(fn func(ViewModel)) {
+// Observe registers the synchronous event sink. It is called from the
+// worker goroutine; the terminal bridge adapts it to a bounded, coalescing
+// queue because each event is a full superseding snapshot.
+func (c *Controller) Observe(fn func(UIEvent)) {
 	c.mu.Lock()
 	c.observe = fn
 	c.mu.Unlock()
@@ -147,12 +148,21 @@ func (c *Controller) Observe(fn func(ViewModel)) {
 
 func (c *Controller) notify(view ViewModel) {
 	c.mu.Lock()
+	ev := UIEvent{
+		View: view, Phase: c.phase, State: c.state, SettleErr: c.settleErr,
+		Session: c.open, Open: c.open.ID != "",
+	}
 	fn := c.observe
 	c.mu.Unlock()
 	if fn != nil {
-		fn(view)
+		fn(ev)
 	}
 }
+
+// notifyCurrent publishes the current view with the controller state. It
+// is used at transition points (submit, continue, open) so the UI sees the
+// new state without waiting for the next worker event.
+func (c *Controller) notifyCurrent() { c.notify(c.View()) }
 
 // Phase reports the open session's decision state.
 func (c *Controller) Phase() SessionPhase {
@@ -227,12 +237,13 @@ func (c *Controller) Session() (session.Meta, error) {
 // against it and makes it the open session.
 func (c *Controller) NewSession(ctx context.Context) (session.Meta, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.state != RunIdle {
+		c.mu.Unlock()
 		return session.Meta{}, ErrRunActive
 	}
 	meta, err := c.mgr.Create(c.startup.Workspace.Path(), c.startup.Config.Provider, c.startup.Config.Model)
 	if err != nil {
+		c.mu.Unlock()
 		return session.Meta{}, err
 	}
 	c.closeAuxLocked()
@@ -240,6 +251,8 @@ func (c *Controller) NewSession(ctx context.Context) (session.Meta, error) {
 	c.phase = PhaseFresh
 	c.settleErr = nil
 	c.view = FromCache(session.Cache{}, false, 0, meta.ID)
+	c.mu.Unlock()
+	c.notifyCurrent()
 	return meta, nil
 }
 
@@ -294,6 +307,7 @@ func (c *Controller) Open(ctx context.Context, id string) (OpenResult, error) {
 	c.settleErr = nil
 	c.view = view
 	c.mu.Unlock()
+	c.notifyCurrent()
 	return OpenResult{Meta: meta, Phase: phase, View: view}, nil
 }
 
@@ -366,6 +380,7 @@ func (c *Controller) Submit(ctx context.Context, input string) error {
 	run := c.activeRunLocked(runCtx, cancel, meta.ID)
 	c.markRunningLocked()
 	c.mu.Unlock()
+	c.notifyCurrent()
 
 	go c.streamWorker(run, meta, aux, input)
 	return nil
@@ -403,6 +418,7 @@ func (c *Controller) Continue(ctx context.Context) error {
 	run := c.activeRunLocked(runCtx, cancel, meta.ID)
 	c.markRunningLocked()
 	c.mu.Unlock()
+	c.notifyCurrent()
 
 	go c.resumeWorker(run, meta, aux)
 	return nil
