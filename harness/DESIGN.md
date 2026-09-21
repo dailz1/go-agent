@@ -1,9 +1,9 @@
 # Harness M1 设计契约
 
 > 日期：2026-09-21。Owner 已裁决 D1–D3；本文约束 M1 实施。
-> 当前交付为 Stage E：Stage D 持久 controller 之上，交互终端界面（聊天/审批/授权/会话/恢复面板、
-> worker/UI 隔离桥、README 键位表）已实现并有结构与消息流测试；
-> 真终端人工验收（PTY、resize、中文粘贴）属 Stage F。
+> 当前交付为 Stage F（M1 完成态）：Stage E 交互终端界面之上，真终端人工验收
+> （PTY、resize、中文粘贴；15/15 与全流程彩排 8/8）与全量电池已通过；
+> MCP、agenttool 与会话中途换模型属 M2。
 
 ## 1. 定位与依赖边界
 

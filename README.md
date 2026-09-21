@@ -63,7 +63,7 @@ Tools with `RequiresApproval` are rejected when no approval callback is installe
 
 ## Coding assistant harness
 
-The [harness application](harness/README.md) is a same-module satellite consuming the public kernel API. **Stage A only:** the terminal skeleton starts and exits; chat, tools, and durable sessions are not connected yet. Run `go run ./harness/cmd/go-agent --help`; non-TTY startup prints help and exits successfully. In a terminal, pass `--model YOUR_MODEL`, then press `q`, `Esc`, or `Ctrl+C` to exit.
+The [harness application](harness/README.md) is a same-module satellite consuming the public kernel API. **M1 complete:** the terminal coding harness is usable end-to-end — streaming chat with visible reasoning, code and shell tools behind per-request approval, durable sessions with cancel-and-redirect, and per-write snapshot restore. Run `go run ./harness/cmd/go-agent --help`; non-TTY startup prints help and exits successfully. In a terminal, pass `--provider`, `--base-url`, `--model`, and `--api-key-env` (see the harness README quickstart); press `Esc` when idle or `Ctrl+C` to exit. MCP bridging, agent-as-tool delegation, and mid-session model switching are deferred to M2.
 
 Its [M1 contract](harness/DESIGN.md) covers Linux-first streaming chat, code/shell tools, approval, persistent sessions, cancel-and-redirect, and edit/write snapshots. MCP, agenttool, model switching, and workspace-wide snapshots are deferred. UI dependencies stay outside the stdlib-only kernel closure. `examples/agentcli` remains a demonstration; the application entry point is `harness/cmd/go-agent`.
 

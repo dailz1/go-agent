@@ -63,7 +63,7 @@ go test ./examples/approval -count=1
 
 ## 编码助手 harness
 
-[harness 应用](harness/README.md) 是同 module 的卫星，消费内核公开 API。**当前仅 Stage A：**终端骨架可启动退出，聊天、工具和持久会话尚未接通。运行 `go run ./harness/cmd/go-agent --help`；非 TTY 启动打印帮助后成功退出。终端中指定 `--model YOUR_MODEL`，按 `q`、`Esc` 或 `Ctrl+C` 退出。
+[harness 应用](harness/README.md) 是同 module 的卫星，消费内核公开 API。**M1 已完成：**终端编码助手可端到端使用——流式聊天（推理可见）、逐次审批的代码/shell 工具、可取消改向的持久会话、逐次写入的快照恢复。运行 `go run ./harness/cmd/go-agent --help`；非 TTY 启动打印帮助后成功退出。终端中按 harness README 快速上手传 `--provider`、`--base-url`、`--model` 与 `--api-key-env`；空闲时按 `Esc` 或 `Ctrl+C` 退出。MCP 桥接、agenttool 委派与会话中途换模型推迟到 M2。
 
 [M1 契约](harness/DESIGN.md) 覆盖 Linux-first 流式聊天、代码/shell 工具、审批、持久会话、取消改向和 edit/write 快照。MCP、agenttool、模型切换和全工作区快照延后。UI 依赖不进入 stdlib-only 内核编译闭包。`examples/agentcli` 保留演示身份；应用入口为 `harness/cmd/go-agent`。
 
