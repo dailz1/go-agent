@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -19,13 +21,12 @@ type Startup struct {
 	Workspace *workspace.Workspace
 	Rules     *prompt.Rules
 	Notices   []string
+	Logger    *slog.Logger
+
+	logFile *os.File
 }
 
 func Prepare(cfg config.Config, getenv func(string) string) (*Startup, error) {
-	provider, notices, err := cfg.NewProvider(getenv)
-	if err != nil {
-		return nil, err
-	}
 	if cfg.DataDir == "" {
 		dir := getenv("XDG_DATA_HOME")
 		if dir == "" {
@@ -37,20 +38,47 @@ func Prepare(cfg config.Config, getenv func(string) string) (*Startup, error) {
 		}
 		cfg.DataDir = filepath.Join(dir, "go-agent")
 	}
+	// The TUI owns the terminal exclusively (DESIGN §2.4): every default
+	// logger — the kernel agent and the provider adapters both resolve
+	// slog.Default() at construction — must write to a file instead of
+	// stderr, or kernel log lines corrupt the rendered screen.
+	logDir := filepath.Join(cfg.DataDir, "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
+	}
+	logFile, err := os.OpenFile(filepath.Join(logDir, "harness.log"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open harness log: %w", err)
+	}
+	logger := slog.New(slog.NewTextHandler(logFile, nil))
+	slog.SetDefault(logger)
+	provider, notices, err := cfg.NewProvider(getenv)
+	if err != nil {
+		_ = logFile.Close()
+		return nil, err
+	}
 	w, err := workspace.Open(cfg.Workspace, cfg.DataDir)
 	if err != nil {
+		_ = logFile.Close()
 		return nil, err
 	}
 	cfg.Workspace = w.Path()
 	rules, err := prompt.Load(w, cfg.UserRules, 8<<10)
 	if err != nil {
-		w.Close()
+		_ = w.Close()
+		_ = logFile.Close()
 		return nil, err
 	}
 	return &Startup{
 		Config: cfg, Provider: provider, Approvals: NewApprovals(cfg.NoApproval),
-		Workspace: w, Rules: rules, Notices: notices,
+		Workspace: w, Rules: rules, Notices: notices, Logger: logger, logFile: logFile,
 	}, nil
 }
 
-func (s *Startup) Close() error { return s.Workspace.Close() }
+func (s *Startup) Close() error {
+	if s.logFile != nil {
+		_ = s.logFile.Close()
+	}
+	return s.Workspace.Close()
+}

@@ -24,6 +24,37 @@ stdin 或 stdout 非 TTY 时只打印帮助、退出 0，不尝试打开 `/dev/t
 包含 harness 的版本发布后，安装路径为
 `go install github.com/dailz1/go-agent/harness/cmd/go-agent@<version>`。
 
+## 快速上手（首个会话）
+
+1. **构建与确认入口**：`go build -o /tmp/go-agent ./harness/cmd/go-agent`，
+   `/tmp/go-agent --help` 无需 key 即可打印参数面。
+2. **最小配置面**：交互启动必须显式给 `--model`；`--provider` 选
+   `openai` / `openai_responses` / `glm`，key 只从环境变量读取（`--api-key-env` 指定名字，
+   默认按 provider）。OpenAI 兼容端点用 `--provider openai --base-url <endpoint>` 搭配，例如：
+
+   ```sh
+   /tmp/go-agent --provider openai --base-url https://api.deepseek.com/v1 \
+     --model deepseek-chat --api-key-env DEEPSEEK_API_KEY --workspace /path/to/proj
+   ```
+
+   启动页显示 provider、workspace、规则来源与审批模式；`--data-dir` 可把私有数据区
+   指到别处（默认 XDG 数据目录）。完整参数表见下文「启动配置」。
+3. **创建与对话**：在聊天面输入任务后 `enter` 提交——首个输入自动创建会话并持久化
+   ThreadID；`ctrl+j` 换行，可直接粘贴中文多行文本。正文逐段流式出现，推理默认折叠
+   （`ctrl+r` 展开）。
+4. **审批**：模型请求 edit/write/shell（或敏感 read）时弹出审批面板，展示完整路径、
+   diff 或完整命令；`y`/`enter` 批准，`n`/`esc` 拒绝（软错误回传模型，它可据此调整）。
+   批准只对这一次请求生效；也可 `ctrl+g` 为一组精确文件建立有限 grant，shell 永不继承。
+5. **停止与改向**：任务运行中按 `esc`（或 `/stop`）：先失效待批请求、取消运行、
+   join 后用原退出 token 结算；结算完成后同会话直接接受新输入（改向，ThreadID 不变，
+   旧任务模型调用数为 0）。
+6. **重启与恢复会话**：退出后再次启动，`/sessions` 列出持久会话；打开仅渲染缓存视图，
+   不调用模型。上次有中断任务时，先选 `/continue`（非流式续跑）或 `/abandon`
+   （结算后改向）才继续。
+7. **文件恢复**：`/changes` 列出本会话可恢复的 edit/write 变更，`/restore <id>`
+   展示 diff 并确认后把该文件恢复到写入前字节（新建文件恢复后删除；用户原有未提交
+   修改保存在前像中）。shell 造成的修改不在恢复范围。
+
 ## 终端界面与键位
 
 聊天界面由 Bubble Tea v2 驱动：输入区支持多行（ctrl+j 换行）与粘贴（含中文），
