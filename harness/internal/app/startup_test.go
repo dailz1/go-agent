@@ -1,35 +1,61 @@
 package app
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/dailz1/go-agent/harness/internal/config"
 )
 
-func TestStartupRegistersOnlyGatedFileTools(t *testing.T) {
-	cfg, err := config.Parse([]string{"--workspace", t.TempDir(), "--model", "test", "--no-approval"}, func(string) string { return "" })
+func prepareStartup(t *testing.T, noApproval bool) *Startup {
+	t.Helper()
+	cfg, err := config.Parse([]string{"--workspace", t.TempDir(), "--model", "test"}, func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.NoApproval = noApproval
 	runtime, err := Prepare(cfg, func(string) string { return "test-key" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
-	if runtime.Provider.Name() != "openai" || len(runtime.Registry.List()) != 5 {
-		t.Fatal("provider or file tools not wired")
+	t.Cleanup(func() { runtime.Close() })
+	return runtime
+}
+
+func TestStartupOwnsApprovalMode(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		noApproval bool
+	}{
+		{name: "per-call default", noApproval: false},
+		{name: "explicit no-approval", noApproval: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := prepareStartup(t, tt.noApproval)
+			if runtime.Approvals == nil || runtime.Approvals.noApproval != tt.noApproval {
+				t.Fatal("approval mode not wired from startup configuration")
+			}
+		})
 	}
-	if _, ok := runtime.Registry.Get("shell"); ok {
-		t.Fatal("Stage B must not register shell")
+}
+
+func TestBeginRunFailsClosedWithoutStageCStores(t *testing.T) {
+	runtime := prepareStartup(t, true)
+	if _, _, err := runtime.BeginRun(t.Context(), "thread", nil, nil); err == nil {
+		t.Fatal("run began without snapshot and output stores")
 	}
-	read, _ := runtime.Registry.Get("read")
-	if _, err := read.Execute(t.Context(), json.RawMessage(`{"path":"new"}`)); err != nil {
+}
+
+func TestBeginRunRegistersGatedTools(t *testing.T) {
+	runtime := prepareStartup(t, true)
+	stores := openStores(t, runtime)
+	run, registry, err := runtime.BeginRun(t.Context(), "thread", stores.snapshots, stores.outputs)
+	if err != nil {
 		t.Fatal(err)
 	}
-	write, _ := runtime.Registry.Get("write")
-	result, err := write.Execute(t.Context(), json.RawMessage(`{"path":"new","text":"forbidden"}`))
-	if err != nil || !result.IsError() {
-		t.Fatalf("no-approval bypassed missing snapshot gate: %v, %v", result, err)
+	defer run.Cancel()
+	for _, name := range []string{"read", "glob", "grep", "edit", "write", "shell"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("tool %s not registered", name)
+		}
 	}
 }

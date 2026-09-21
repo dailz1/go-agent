@@ -20,6 +20,7 @@ func defaults() Config {
 	return Config{
 		Provider: "openai", Workspace: ".", Excludes: ".git,node_modules,vendor,build,dist,target",
 		MaxIterations: 30, ContextBudget: 8192, MaxOutputTokens: 4096, RunTimeout: "15m",
+		SnapshotQuotaMiB: 256,
 	}
 }
 
@@ -69,7 +70,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	}
 	for key, dst := range map[string]*int{
 		"MAX_ITERATIONS": &cfg.MaxIterations, "CONTEXT_BUDGET": &cfg.ContextBudget,
-		"MAX_OUTPUT_TOKENS": &cfg.MaxOutputTokens,
+		"MAX_OUTPUT_TOKENS": &cfg.MaxOutputTokens, "SNAPSHOT_QUOTA": &cfg.SnapshotQuotaMiB,
 	} {
 		if value := getenv("GO_AGENT_" + key); value != "" {
 			n, err := strconv.Atoi(value)
@@ -86,6 +87,9 @@ func (c Config) validateLimits() error {
 	if c.MaxIterations <= 0 || c.ContextBudget <= 0 || c.MaxOutputTokens <= 0 {
 		return errors.New("iteration and token budgets must be positive")
 	}
+	if c.SnapshotQuotaMiB <= 0 {
+		return errors.New("snapshot-quota must be positive")
+	}
 	d, err := time.ParseDuration(c.RunTimeout)
 	if err != nil || d <= 0 {
 		return errors.New("run-timeout must be a positive duration")
@@ -94,6 +98,11 @@ func (c Config) validateLimits() error {
 		return errors.New("workspace must not be empty")
 	}
 	return nil
+}
+
+// SnapshotQuotaBytes converts the startup budget for the session snapshot store.
+func (c Config) SnapshotQuotaBytes() int64 {
+	return int64(c.SnapshotQuotaMiB) << 20
 }
 
 // NewProvider resolves the key once, without storing it in Config or diagnostics.

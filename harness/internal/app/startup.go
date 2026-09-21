@@ -3,14 +3,11 @@ package app
 import (
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/dailz1/go-agent/harness/internal/config"
 	"github.com/dailz1/go-agent/harness/internal/prompt"
-	"github.com/dailz1/go-agent/harness/internal/tools"
 	"github.com/dailz1/go-agent/harness/internal/workspace"
 	"github.com/dailz1/go-agent/llm"
-	"github.com/dailz1/go-agent/tool"
 )
 
 // Startup owns startup-only resources. Stage D will consume these in its worker;
@@ -18,7 +15,7 @@ import (
 type Startup struct {
 	Config    config.Config
 	Provider  llm.Provider
-	Registry  *tool.Registry
+	Approvals *Approvals
 	Workspace *workspace.Workspace
 	Rules     *prompt.Rules
 	Notices   []string
@@ -50,16 +47,9 @@ func Prepare(cfg config.Config, getenv func(string) string) (*Startup, error) {
 		w.Close()
 		return nil, err
 	}
-	registry := tool.NewRegistry()
-	files := tools.New(w, rules, tools.Options{Excludes: strings.Split(cfg.Excludes, ",")})
-	// No WriteGate or ReadApproval is passed, including under --no-approval.
-	// Stage C must supply approval plus durable snapshot ownership together.
-	if err := files.Register(registry); err != nil {
-		w.Close()
-		return nil, err
-	}
 	return &Startup{
-		Config: cfg, Provider: provider, Registry: registry, Workspace: w, Rules: rules, Notices: notices,
+		Config: cfg, Provider: provider, Approvals: NewApprovals(cfg.NoApproval),
+		Workspace: w, Rules: rules, Notices: notices,
 	}, nil
 }
 

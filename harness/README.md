@@ -1,8 +1,8 @@
 # go-agent harness
 
 同仓库的交互式编码助手应用卫星，消费 go-agent 公开 API。
-**当前 Stage B：启动配置、固定项目规则和文件工具已实现；终端仍是状态页，不能聊天或恢复会话。**
-应用没有接入审批与快照依赖，因此 edit/write 始终拒绝执行，包括 `--no-approval`。
+**当前 Stage C：shell 执行器、三种审批模式、快照与恢复已在库层实现并有真实子进程/故障注入测试；
+但交互执行（持久 controller、会话、终端交互）仍是 Stage D/E，终端仍是状态页。**
 M1 目标与边界见 [DESIGN.md](DESIGN.md)，不应将契约中的目标能力当成已交付功能。
 
 ## 运行
@@ -14,7 +14,7 @@ go run ./harness/cmd/go-agent --help
 go run ./harness/cmd/go-agent --provider openai --model YOUR_MODEL
 ```
 
-TTY 中显示 provider、workspace、规则来源和写入禁用状态，按 `q`、`Esc` 或 `Ctrl+C` 退出。
+TTY 中显示 provider、workspace、规则来源和审批模式，按 `q`、`Esc` 或 `Ctrl+C` 退出。
 stdin 或 stdout 非 TTY 时只打印帮助、退出 0，不尝试打开 `/dev/tty`，
 也不执行模型；这不是无人审批的管道模式。帮助无需模型或 API key。
 用 `go build -o /tmp/go-agent ./harness/cmd/go-agent` 构建当前骨架。
@@ -39,6 +39,7 @@ stdin 或 stdout 非 TTY 时只打印帮助、退出 0，不尝试打开 `/dev/t
 | `--context-budget` | `GO_AGENT_CONTEXT_BUDGET`，否则 8192 | 启发式上下文预算 |
 | `--max-output-tokens` | `GO_AGENT_MAX_OUTPUT_TOKENS`，否则 4096 | 输出 token 预算 |
 | `--run-timeout` | `GO_AGENT_RUN_TIMEOUT`，否则 `15m` | 每次执行时间预算 |
+| `--snapshot-quota` | `GO_AGENT_SNAPSHOT_QUOTA`，否则 256 | 每会话快照额度（MiB）；满额拒绝新 edit/write |
 | `--help` / `-h` | 无 | 打印帮助，退出 0 |
 
 优先级为命令行 > 非秘密环境 > 用户 JSON > 默认值。JSON 字段使用 snake_case，
@@ -49,32 +50,51 @@ GLM 含点 key 的 JWT 判定会显示提示。执行预算由后续 controller 
 模型/endpoint 只启动配置；M1 不支持会话中途更换模型。
 未知参数、位置参数、非法 provider/endpoint/环境变量名返回使用错误（退出 2）。
 
-## 文件工具与 Stage C 接线
+## 文件工具、shell 与副作用 gate
 
-已注册 `read/glob/grep/edit/write` 五个文件工具；提案中的第六个工具是 Stage C
-的 shell，不在此阶段注册。观察是 `ToolResult.Content` 中的 JSON：
-read 含行号、完整内容 SHA-256、截断标记和适用规则；搜索含排序路径或
-path/line 命中、规则路径提示、截断原因与下一页 offset。
-分页统一从 1 开始，默认 200、最多 1000 项。read 的单文件读取上限选为
-2 MiB，行文本预算 32 KiB；grep 每行最多 1024 bytes，超大上下文会省略并标记。
-需要完整长行时应直接检查文件；分页不会重建被裁剪的同一行。
-搜索默认排除 `.git,node_modules,vendor,build,dist,target` 与敏感文件；
-不是 `.gitignore` 解释器。默认扫描 100,000 路径、64 MiB、10 秒，触顶明确标记不完整。
+六个工具（read/glob/grep/edit/write/shell）由 `app.Startup.BeginRun(ctx, thread, snapshots, outputs)`
+按次运行组装：它 `Approvals.Begin` 创建携带独立 token 的 run，把每个工具包上运行身份，
+再把 `app.Gate` 作为 `tools.WriteGate` 接入 edit/write、把 `RunApproval` 接入敏感 read 与 shell。
+缺少会话快照/输出存储时 `BeginRun` 直接拒绝，`--no-approval` 不降低此门槛。
+观察是 `ToolResult.Content` 中的 JSON：read 含行号、完整内容 SHA-256、截断标记和适用规则；
+搜索含排序路径或 path/line 命中、规则路径提示、截断原因与下一页 offset。
+分页统一从 1 开始，默认 200、最多 1000 项；read 的单文件读取上限 2 MiB，行文本预算 32 KiB。
+搜索默认排除 `.git,node_modules,vendor,build,dist,target` 与敏感文件；不是 `.gitignore` 解释器。
+默认扫描 100,000 路径、64 MiB、10 秒，触顶明确标记不完整。
 
-`workspace` 通过 `os.Root` 约束访问，拒绝链接、特殊文件、越界路径；
-写入另拒绝多硬链接、`.git` 和私有数据区。新文件不自动创建父目录。
-根 AGENTS.md 与用户指令固定在 `prompt.Snapshot`（来源/hash/组装版本）；
-嵌套 AGENTS.md 由 read 返回，写前必须已读当前版本。根规则变更要求新会话。
-快照保存到会话元数据属于 Stage D，不会把内存固定误称为持久保存。
+### 审批三模式
 
-Stage C 提供 `tools.WriteGate.Commit(ctx, workspace.Change, apply)`：
-确认当前 run 的有效批准，持久保存 before/after 与 prepared 快照，才可同步调用
-`apply` 一次；成功后记录 applied。`apply` 再检查规则、文件存在性/字节/权限与 ctx，
-然后同目录临时文件 fsync、原子替换及目录 fsync。拒绝返回 `tools.ErrDenied`，
-持久性失败保留 Go error。工具元数据仍要求内核审批；Stage C 应关联同一批准凭据，
-而不是把两个独立审批当成一个。应用目前不提供 WriteGate，因此没有放开副作用。
-敏感 read 的 `ReadApproval`、opaque shell 输出的 `OutputReader` 同样留给 Stage C；
-未接入时明确拒绝，不把输出 ID 当宿主路径。
+- 默认逐次：edit/write/shell 与敏感 read 每次都发审批请求，携带 run token、递增请求 ID、
+  工具名与不可变参数副本；批准只对这一请求生效，重复/迟到/错 run 的回复一律拒绝。
+- 精确文件集 grant（`Approvals.Grant`）：仅覆盖选定 edit/write 路径，最多 20 次或 30 分钟；
+  新路径重新询问；shell、敏感文件、项目指令文件、越界路径永不入 grant。切换会话/取消/改向即撤销。
+- `--no-approval`：仅显式命令行，运行时不可切换进入；它跳过询问但不跳过快照。
+
+内核审批回调与工具内检查共享同一张一次性凭据：`WithApprovalFn` 传入 `RunApproval.ApprovalFn`，
+批准后的 permit 只能被同一参数的工具调用消费一次，改一个字符都要重新问。
+取消 run 后迟到的批准被拒绝且零执行（有测试钉住）；进入执行前的最后一刻取消同样拒绝。
+
+### shell 执行器
+
+`tools.NewShell` 以独立进程组启动 `/bin/sh -c`，stdin 为 EOF，cwd 限制在 workspace 内，
+启动前去掉 provider key 所在环境变量。默认 120 秒、最高 600 秒；取消/超时先 TERM、
+2 秒后 KILL，并等主进程、同组后代（含正常退出后遗留的后台子进程）与输出采集全部退出。
+清理无法确认时执行器锁死，拒绝后续命令。输出边落盘边保留 head/tail（inline 预算 8 KiB），
+原始输出上限 64 MiB，触顶清理后返回软失败；输出按 opaque ID 用 read 分页回查。
+本机用户权限执行，不是沙箱；不承诺清理主动逃逸进程组的进程。
+
+### 快照与恢复
+
+`snapshot.Store` 按会话打开（绑定 workspace 与 ThreadID，0700 目录、0600 文件）：
+每次 edit/write 先把 before/after 字节、存在性、权限与 prepared 状态落盘 fsync，
+再由 `Workspace.Replace` 同目录临时文件原子替换，最后标记 applied。
+prepared 崩溃后不猜成功：当前文件等于 before 视为未应用，等于 after 视为可能已应用，
+其余为冲突；`Approvals.Restore`（/restore 命令路径，要求无活动 run）按逆序恢复同路径最新未撤销项，
+恢复前核验当前字节/存在性/权限匹配 after，冲突时拒绝并提供前像，不提供强制覆盖。
+持久化故障经故障注入测试：prepared 阶段任何写入失败都不触发 apply，apply 后的失败保留证据并可重开核验。
+**明确边界：shell 造成的文件修改不在恢复范围内**——shell 从不生成可恢复记录；
+若 shell 恰好改了同一文件，通常表现为恢复时的 after 冲突，由人工处置。
+恢复不回退对话；额度满拒绝新修改，不淘汰已承诺的前像。
 
 ## M1 边界
 
@@ -90,9 +110,9 @@ Stage C 提供 `tools.WriteGate.Commit(ctx, workspace.Change, apply)`：
 ## 布局与验证
 
 `cmd/go-agent` 组装入口；`internal/config` 启动解析；
-`internal/app` 声明 controller/worker/UI 接缝；`internal/tui` 独占终端。
-`internal/tools` 实现文件工具；`workspace` 负责路径与文件访问，`prompt` 固定规则。
-`internal/session`、`snapshot` 暂为后续阶段的包边界。
+`internal/app` 声明 controller/worker/UI 接缝，拥有审批管理器、run 身份、`Gate` 与 `BeginRun` 组装；
+`internal/tui` 独占终端。`internal/tools` 实现六工具与 shell 执行器；`workspace` 负责路径与文件访问，
+`prompt` 固定规则，`snapshot` 持有前后像与恢复协议。`internal/session` 仍是后续阶段的包边界。
 Bubble Tea 类型不穿过 UI 边界；当前没有后台模型 worker。
 
 ```sh

@@ -1,7 +1,8 @@
 # Harness M1 设计契约
 
 > 日期：2026-09-21。Owner 已裁决 D1–D3；本文约束 M1 实施。
-> 当前交付为 Stage B：启动配置、规则与文件工具；应用写入 gate 尚未接通，不代表编码助手已可用。
+> 当前交付为 Stage C：shell 执行器、三种审批模式、edit/write 前后像快照与恢复已实现并有真实子进程/临时目录测试；
+> 持久 controller（会话、取消结算、改向）与交互视图仍是 Stage D/E，终端仍是状态页。
 
 ## 1. 定位与依赖边界
 
@@ -209,10 +210,15 @@ OPENAI_API_KEY / GLM_API_KEY），无 key 值 flag、不写盘。`--no-approval`
 默认 30 轮、15 分钟 run、4096 输出 tokens、8192 保守上下文预算；
 `--context-budget` 是用户设置的启发式预算，不是模型自动识别窗口。
 恢复视为新一次执行预算，不声称跨重启累计费用封顶。
-Stage B 已接通启动 JSON/env/flags、provider 构造、workspace 根封装、静态规则
-和五个文件工具的 Registry。TTY 启动显示来源；不启动模型或持久 controller。
-`tools.WriteGate` 缺失时 edit/write 结构性拒绝，`--no-approval` 不会创建此依赖。
-Stage C 提供有效批准与快照后才调用写入 closure；详细接线见 README。
+Stage B 已接通启动 JSON/env/flags、provider 构造、workspace 根封装与静态规则。
+Stage C 在其上交付：`app.BeginRun` 组装六工具（read/glob/grep/edit/write/shell），
+审批三模式（逐次默认、精确文件集 grant 20 次/30 分钟、显式 `--no-approval`）、
+运行身份绑定（迟到批准拒绝、零执行）、`app.Gate` 把同一张批准凭据交给
+`snapshot.Store` 的 prepared→applied 协议，shell 输出落盘并按 opaque ID 分页。
+`--snapshot-quota` 调整每会话快照额度（默认 256 MiB）。
+缺少快照/输出存储时 `BeginRun` 拒绝开始，`--no-approval` 不降低此门槛。
+取消/超时的进程组清理经真实孙进程测试；清理未确认时执行器拒绝新命令。
+Stage D 的持久 controller 消费这些部件；TTY 启动仍不启动模型。
 非 TTY 打印帮助并退出 0；不是免审批管道模式。
 
 测试使用 stdlib testing；同步信号后触发取消，timeout 只作失败上界，

@@ -14,19 +14,20 @@ import (
 
 // Config contains non-secret startup settings. Credentials are never retained here.
 type Config struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	BaseURL         string `json:"base_url"`
-	APIKeyEnv       string `json:"api_key_env"`
-	Workspace       string `json:"workspace"`
-	UserRules       string `json:"user_rules"`
-	DataDir         string `json:"data_dir"`
-	Excludes        string `json:"excludes"`
-	MaxIterations   int    `json:"max_iterations"`
-	ContextBudget   int    `json:"context_budget"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	RunTimeout      string `json:"run_timeout"`
-	NoApproval      bool   `json:"-"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	BaseURL          string `json:"base_url"`
+	APIKeyEnv        string `json:"api_key_env"`
+	Workspace        string `json:"workspace"`
+	UserRules        string `json:"user_rules"`
+	DataDir          string `json:"data_dir"`
+	Excludes         string `json:"excludes"`
+	MaxIterations    int    `json:"max_iterations"`
+	ContextBudget    int    `json:"context_budget"`
+	MaxOutputTokens  int    `json:"max_output_tokens"`
+	RunTimeout       string `json:"run_timeout"`
+	SnapshotQuotaMiB int    `json:"snapshot_quota"`
+	NoApproval       bool   `json:"-"`
 }
 
 // Parse applies flags over non-secret environment defaults. Missing model and
@@ -101,7 +102,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 // Help lists the shipped flags without including environment values.
 func Help() string {
 	var text strings.Builder
-	text.WriteString("Usage: go-agent [options]\n\nStage B startup; interactive execution is not connected yet.\n")
+	text.WriteString("Usage: go-agent [options]\n\nStage C startup; side-effect gates are implemented, the interactive controller is not connected yet.\n")
 	text.WriteString("Non-TTY input/output prints help and exits. In a TTY: q, Esc, Ctrl+C quit.\n\n")
 	cfg := defaults()
 	fs := flags(&cfg)
@@ -152,6 +153,7 @@ func flags(cfg *Config) *flag.FlagSet {
 	fs.IntVar(&cfg.ContextBudget, "context-budget", cfg.ContextBudget, "heuristic context budget (GO_AGENT_CONTEXT_BUDGET)")
 	fs.IntVar(&cfg.MaxOutputTokens, "max-output-tokens", cfg.MaxOutputTokens, "output token budget (GO_AGENT_MAX_OUTPUT_TOKENS)")
 	fs.StringVar(&cfg.RunTimeout, "run-timeout", cfg.RunTimeout, "run duration (GO_AGENT_RUN_TIMEOUT)")
+	fs.IntVar(&cfg.SnapshotQuotaMiB, "snapshot-quota", cfg.SnapshotQuotaMiB, "per-session snapshot budget in MiB (GO_AGENT_SNAPSHOT_QUOTA)")
 	fs.Usage = func() {}
 	return fs
 }

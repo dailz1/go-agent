@@ -55,8 +55,13 @@ func run(args []string, stdio streams, getenv func(string) string) int {
 	details := []string{
 		"Provider: " + cfg.Provider + " / " + cfg.Model,
 		"Workspace: " + startup.Workspace.Path(),
-		"Writes disabled until approval and snapshots are connected.",
 	}
+	if cfg.NoApproval {
+		details = append(details, "Approval: disabled by --no-approval")
+	} else {
+		details = append(details, "Approval: every side effect asks")
+	}
+	details = append(details, "Runs: durable controller arrives in Stage D.")
 	for _, source := range startup.Rules.Snapshot().Sources {
 		details = append(details, "Rules: "+source.Path+" ("+source.Hash+")")
 	}

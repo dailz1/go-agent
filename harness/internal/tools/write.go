@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/dailz1/go-agent/harness/internal/snapshot"
 	"github.com/dailz1/go-agent/harness/internal/workspace"
 	"github.com/dailz1/go-agent/tool"
 )
@@ -130,7 +131,7 @@ func (f *Files) commit(ctx context.Context, change workspace.Change) (*tool.Tool
 			return nil
 		})
 		if err != nil {
-			if errors.Is(err, ErrDenied) || precondition != nil {
+			if errors.Is(err, ErrDenied) || errors.Is(err, snapshot.ErrConflict) || precondition != nil {
 				return soft(err)
 			}
 			return nil, err

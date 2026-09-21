@@ -57,6 +57,12 @@ func TestParse(t *testing.T) {
 			args: []string{"--no-approval"},
 			want: Config{Provider: "openai", APIKeyEnv: "OPENAI_API_KEY", NoApproval: true},
 		},
+		{
+			name: "snapshot quota flag and env",
+			args: []string{"--snapshot-quota", "64"},
+			env:  map[string]string{"GO_AGENT_SNAPSHOT_QUOTA": "128"},
+			want: Config{Provider: "openai", APIKeyEnv: "OPENAI_API_KEY", SnapshotQuotaMiB: 64},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -67,6 +73,10 @@ func TestParse(t *testing.T) {
 			tt.want.ContextBudget = 8192
 			tt.want.MaxOutputTokens = 4096
 			tt.want.RunTimeout = "15m"
+			tt.want.SnapshotQuotaMiB = 256
+			if tt.name == "snapshot quota flag and env" {
+				tt.want.SnapshotQuotaMiB = 64
+			}
 			got, err := Parse(tt.args, func(key string) string { return tt.env[key] })
 			if err != nil {
 				t.Fatal(err)
@@ -91,6 +101,7 @@ func TestParseRejectsInvalidInput(t *testing.T) {
 		{name: "invalid key variable", args: []string{"--api-key-env", "not=a=name"}},
 		{name: "key value flag forbidden", args: []string{"--api-key", "secret"}},
 		{name: "invalid boolean", args: []string{"--no-approval=perhaps"}},
+		{name: "invalid snapshot quota", args: []string{"--snapshot-quota", "0"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

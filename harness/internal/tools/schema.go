@@ -4,7 +4,13 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
-func (f *Files) Register(registry *tool.Registry) error {
+// Registrar receives the workspace tools; *tool.Registry satisfies it. Hosts
+// may wrap each tool before it reaches the agent-consumed registry.
+type Registrar interface {
+	Register(tool.Tool) error
+}
+
+func (f *Files) Register(registry Registrar) error {
 	pagination := map[string]tool.Property{
 		"offset": tool.Param("integer", "1-based starting line or result; default 1"),
 		"limit":  tool.Param("integer", "Maximum lines or results, 1..1000; default 200"),
