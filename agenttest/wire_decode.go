@@ -22,7 +22,7 @@ func decodeRecording(data []byte) (dtoRecording, error) {
 	if err := wireValue(root, "exchanges", &exchanges); err != nil {
 		return dtoRecording{}, err
 	}
-	if version != 1 && version != recordingVersion {
+	if version != 1 && version != 2 && version != 3 {
 		return dtoRecording{}, incompatiblef("unsupported recording version %d", version)
 	}
 	out := dtoRecording{Version: version, Exchanges: make([]dtoExchange, len(exchanges))}
@@ -50,13 +50,13 @@ func decodeWireExchange(raw json.RawMessage, version int) (dtoExchange, error) {
 	}
 	out := dtoExchange{Method: method, Request: request}
 	if raw := object["chat"]; raw != nil {
-		out.Chat, err = decodeWireChat(raw)
+		out.Chat, err = decodeWireChat(raw, version)
 		if err != nil {
 			return dtoExchange{}, err
 		}
 	}
 	if raw := object["stream"]; raw != nil {
-		out.Stream, err = decodeWireStream(raw)
+		out.Stream, err = decodeWireStream(raw, version)
 		if err != nil {
 			return dtoExchange{}, err
 		}

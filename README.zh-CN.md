@@ -61,6 +61,20 @@ go test ./examples/approval -count=1
 
 未安装 approval callback 时，带 `RequiresApproval` 的工具会被拒绝。审批不是 sandbox：没有合适的策略边界时，不要把 shell 或文件系统工具复制到生产环境。
 
+## Codex 订阅 Provider
+
+`llm/codex` 显式注入 OAuth `auth.Source`；[codexauth](codexauth/README.md)
+提供独立文件存储及浏览器/SSH 转发登录：
+`go run ./examples/codexauth login`。不会写官方 CLI 的
+`~/.codex/auth.json`。originator 默认 `go_agent`，官方兼容标识必须显式
+启用。即使 `WithMaxTokens` 为正数，Codex 也省略输出上限字段，因此
+**不保证输出低于配置值**。不会回退到按 API-key 计费的请求。
+真实服务验收与确定性协议测试分开。
+
+录制 v3 保留 `APIError.NonRetryable` 及 Codex/auth 错误链；新 reader
+继续严格兼容 v1/v2。APIError 新增字段要求外部无字段名的结构体字面量
+同步调整。
+
 ## 编码助手 harness
 
 [harness 应用](harness/README.md) 是同 module 的卫星，消费内核公开 API。**M1 已完成：**终端编码助手可端到端使用——流式聊天（推理可见）、逐次审批的代码/shell 工具、可取消改向的持久会话、逐次写入的快照恢复。运行 `go run ./harness/cmd/go-agent --help`；非 TTY 启动打印帮助后成功退出。终端中按 harness README 快速上手传 `--provider`、`--base-url`、`--model` 与 `--api-key-env`；空闲时按 `Esc` 或 `Ctrl+C` 退出。MCP 桥接、agenttool 委派与会话中途换模型推迟到 M2。

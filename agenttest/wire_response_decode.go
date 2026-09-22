@@ -6,7 +6,7 @@ import (
 	"github.com/dailz1/go-agent/llm"
 )
 
-func decodeWireChat(raw json.RawMessage) (*dtoChat, error) {
+func decodeWireChat(raw json.RawMessage, version int) (*dtoChat, error) {
 	object, err := wireObject(raw, "response", "usage", "error")
 	if err != nil {
 		return nil, err
@@ -39,14 +39,14 @@ func decodeWireChat(raw json.RawMessage) (*dtoChat, error) {
 		out.Usage = &value
 	}
 	if string(recordedErr) != "null" {
-		out.Error, err = decodeWireError(recordedErr)
+		out.Error, err = decodeWireError(recordedErr, version, "")
 		if err != nil {
 			return nil, err
 		}
 	}
 	return out, nil
 }
-func decodeWireStream(raw json.RawMessage) (*dtoStream, error) {
+func decodeWireStream(raw json.RawMessage, version int) (*dtoStream, error) {
 	object, err := wireObject(raw, "chunks", "outer_error", "stream_error", "completion")
 	if err != nil {
 		return nil, err
@@ -75,13 +75,13 @@ func decodeWireStream(raw json.RawMessage) (*dtoStream, error) {
 		return nil, err
 	}
 	if string(outerErr) != "null" {
-		out.OuterError, err = decodeWireError(outerErr)
+		out.OuterError, err = decodeWireError(outerErr, version, "")
 		if err != nil {
 			return nil, err
 		}
 	}
 	if string(streamErr) != "null" {
-		out.StreamError, err = decodeWireError(streamErr)
+		out.StreamError, err = decodeWireError(streamErr, version, "")
 		if err != nil {
 			return nil, err
 		}
@@ -154,38 +154,6 @@ func decodeWireChunk(raw json.RawMessage) (dtoChunk, error) {
 	}
 	if err != nil {
 		return dtoChunk{}, err
-	}
-	return out, nil
-}
-func decodeWireError(raw json.RawMessage) (*dtoError, error) {
-	object, err := wireObject(raw, "kind", "message", "status_code", "retry_after", "body", "errno")
-	if err != nil {
-		return nil, err
-	}
-	var kind string
-	if err = wireValue(object, "kind", &kind); err != nil {
-		return nil, err
-	}
-	allowed := map[string][]string{"context_canceled": {"kind"}, "deadline_exceeded": {"kind"}, "streaming_not_supported": {"kind"}, "api": {"kind", "status_code", "retry_after", "body"}, "network_timeout": {"kind", "message"}, "network_temporary": {"kind", "message"}, "network_url": {"kind", "message"}, "network_errno": {"kind", "errno"}, "generic": {"kind", "message"}}
-	if !wireOnly(object, allowed[kind]) {
-		return nil, incompatiblef("unknown error type or field %q", kind)
-	}
-	out := &dtoError{Kind: kind}
-	switch kind {
-	case "api":
-		if err = wireValue(object, "status_code", &out.StatusCode); err == nil {
-			err = wireValue(object, "retry_after", &out.RetryAfter)
-		}
-		if err == nil {
-			err = wireValue(object, "body", &out.Body)
-		}
-	case "network_timeout", "network_temporary", "network_url", "generic":
-		err = wireValue(object, "message", &out.Message)
-	case "network_errno":
-		err = wireValue(object, "errno", &out.Errno)
-	}
-	if err != nil {
-		return nil, err
 	}
 	return out, nil
 }

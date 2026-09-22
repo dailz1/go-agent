@@ -47,7 +47,7 @@ func (r *Recorder) Chat(ctx context.Context, messages []llm.Message, tools []too
 	r.setRequest(index, requestDTO(canonicalRequest(messages, tools, opts)))
 	response, usage, err := r.next.Chat(ctx, messages, tools, opts...)
 	r.mu.Lock()
-	r.exchanges[index].Chat = &dtoChat{Response: cloneMessagePtr(response), Usage: cloneUsage(usage), Error: encodeError(err)}
+	r.exchanges[index].Chat = &dtoChat{Response: cloneMessagePtr(response), Usage: cloneUsage(usage), Error: r.recordError(err)}
 	r.active--
 	r.mu.Unlock()
 	return response, usage, err
@@ -59,7 +59,7 @@ func (r *Recorder) ChatStream(ctx context.Context, messages []llm.Message, tools
 	sequence, outerErr := r.next.ChatStream(ctx, messages, tools, opts...)
 	if outerErr != nil {
 		r.mu.Lock()
-		r.exchanges[index].Stream.OuterError = encodeError(outerErr)
+		r.exchanges[index].Stream.OuterError = r.recordError(outerErr)
 		r.exchanges[index].Stream.Completion = "outer_error"
 		r.active--
 		r.mu.Unlock()
@@ -95,7 +95,7 @@ func (r *Recorder) recordStream(sequence iter.Seq2[llm.Chunk, error], index int)
 				return
 			}
 			r.exchanges[index].Stream.Completion = status
-			r.exchanges[index].Stream.StreamError = encodeError(streamErr)
+			r.exchanges[index].Stream.StreamError = r.recordError(streamErr)
 			r.active--
 		}
 		sequence(func(chunk llm.Chunk, err error) bool {
@@ -143,7 +143,7 @@ func (r *Recorder) Bytes() ([]byte, error) {
 	return json.Marshal(dtoRecording{Version: recordingVersion, Exchanges: append([]dtoExchange(nil), r.exchanges...)})
 }
 
-const recordingVersion = 2
+const recordingVersion = 3
 
 type dtoRecording struct {
 	Version   int           `json:"version"`
@@ -185,12 +185,20 @@ type dtoChunk struct {
 }
 
 type dtoError struct {
-	Kind       string        `json:"kind"`
-	Message    string        `json:"message,omitempty"`
-	StatusCode int           `json:"status_code,omitempty"`
-	RetryAfter time.Duration `json:"retry_after,omitempty"`
-	Body       string        `json:"body,omitempty"`
-	Errno      string        `json:"errno,omitempty"`
+	Kind          string        `json:"kind"`
+	Message       string        `json:"message,omitempty"`
+	StatusCode    int           `json:"status_code,omitempty"`
+	RetryAfter    time.Duration `json:"retry_after,omitempty"`
+	Body          string        `json:"body,omitempty"`
+	Errno         string        `json:"errno,omitempty"`
+	NonRetryable  bool          `json:"non_retryable"`
+	Category      string        `json:"category"`
+	Code          string        `json:"code"`
+	RetryAt       *time.Time    `json:"retry_at"`
+	Stage         string        `json:"stage"`
+	Temporary     bool          `json:"temporary"`
+	LoginRequired bool          `json:"login_required"`
+	Cause         *dtoError     `json:"cause"`
 }
 
 func requestDTO(request Request) dtoRequest {
@@ -224,7 +232,7 @@ func encodeChunk(chunk llm.Chunk) (dtoChunk, error) {
 	}
 }
 
-func encodeError(err error) *dtoError {
+func encodeLegacyError(err error) *dtoError {
 	if err == nil {
 		return nil
 	}
@@ -239,7 +247,7 @@ func encodeError(err error) *dtoError {
 	}
 	var api *llm.APIError
 	if errors.As(err, &api) && api != nil {
-		return &dtoError{Kind: "api", StatusCode: api.StatusCode, RetryAfter: api.RetryAfter, Body: api.Body}
+		return &dtoError{Kind: "api", StatusCode: api.StatusCode, RetryAfter: api.RetryAfter, Body: api.Body, NonRetryable: api.NonRetryable}
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr != nil && llm.IsNetworkError(err) && (netErr.Timeout() || netErr.Temporary()) {

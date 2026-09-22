@@ -50,7 +50,25 @@ func TestReplayerV2RejectsDuplicateSchemaKeys(t *testing.T) {
 	}
 }
 
-func TestRecorderWritesV2ExtendedSchema(t *testing.T) {
+func TestReplayerV3RetainsV2SchemaGrammar(t *testing.T) {
+	decoded, err := decodeRecording(recordingWithSchema("3", extendedRecordingSchema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(decoded.Exchanges[0].Request.Tools[0].Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != canonicalExtendedRecordingSchema {
+		t.Fatalf("v3 schema = %s", got)
+	}
+	duplicate := `{"type":"object","properties":{"value":{"type":"string"},"value":{"type":"number"}}}`
+	if _, err := NewReplayer(recordingWithSchema("3", duplicate)); !errors.Is(err, ErrIncompatibleRecording) {
+		t.Fatalf("v3 accepted duplicate schema key: %v", err)
+	}
+}
+
+func TestRecorderWritesV3ExtendedSchema(t *testing.T) {
 	var schema tool.ParameterSchema
 	if err := schema.UnmarshalJSON([]byte(extendedRecordingSchema)); err != nil {
 		t.Fatalf("unmarshal schema: %v", err)
@@ -64,7 +82,7 @@ func TestRecorderWritesV2ExtendedSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recording bytes: %v", err)
 	}
-	if !strings.Contains(string(recording), `"version":2`) {
+	if !strings.Contains(string(recording), `"version":3`) {
 		t.Fatalf("recording version = %s", recording)
 	}
 	replay, err := NewReplayer(recording)

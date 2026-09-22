@@ -1,9 +1,21 @@
 package llm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestAPIError_NonRetryable(t *testing.T) {
+	for _, code := range []int{429, 500, 503} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			err := &APIError{StatusCode: code, NonRetryable: true}
+			if err.Retryable() || IsRetryableError(fmt.Errorf("wrapped: %w", err)) {
+				t.Fatal("explicit non-retryable error was retryable")
+			}
+		})
+	}
+}
 
 func TestAPIError_Error(t *testing.T) {
 	t.Parallel()

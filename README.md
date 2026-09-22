@@ -61,6 +61,20 @@ go test ./examples/approval -count=1
 
 Tools with `RequiresApproval` are rejected when no approval callback is installed. Approval is not sandboxing: do not copy a shell or filesystem tool into production without an appropriate policy boundary.
 
+## Codex subscription provider
+
+`llm/codex` accepts an injected OAuth `auth.Source`; [codexauth](codexauth/README.md)
+provides independent file storage and browser/SSH-forwarded login:
+`go run ./examples/codexauth login`. It never writes the official CLI's
+`~/.codex/auth.json`. Default originator is `go_agent`; official compatibility is
+explicit opt-in. Codex omits output-cap fields even for positive `WithMaxTokens`,
+so the configured cap is **not guaranteed**. It does not fall back to paid API-key
+requests. Live service acceptance is separate from deterministic protocol tests.
+
+Recording v3 preserves `APIError.NonRetryable` and Codex/auth error chains; its
+reader remains strictly compatible with v1/v2 recordings. The added APIError
+field requires updating any external unkeyed struct literals.
+
 ## Coding assistant harness
 
 The [harness application](harness/README.md) is a same-module satellite consuming the public kernel API. **M1 complete:** the terminal coding harness is usable end-to-end — streaming chat with visible reasoning, code and shell tools behind per-request approval, durable sessions with cancel-and-redirect, and per-write snapshot restore. Run `go run ./harness/cmd/go-agent --help`; non-TTY startup prints help and exits successfully. In a terminal, pass `--provider`, `--base-url`, `--model`, and `--api-key-env` (see the harness README quickstart); press `Esc` when idle or `Ctrl+C` to exit. MCP bridging, agent-as-tool delegation, and mid-session model switching are deferred to M2.

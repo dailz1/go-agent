@@ -10,6 +10,8 @@ type APIError struct {
 	StatusCode int
 	Body       string
 	RetryAfter time.Duration
+	// NonRetryable overrides the status-code policy, for example for exhausted quota.
+	NonRetryable bool
 }
 
 func (e *APIError) Error() string {
@@ -19,5 +21,5 @@ func (e *APIError) Error() string {
 // Retryable reports whether the request can be retried.
 // Retries are allowed on 429 (rate limit) and 5xx (server error) responses.
 func (e *APIError) Retryable() bool {
-	return e.StatusCode == 429 || (e.StatusCode >= 500 && e.StatusCode < 600)
+	return !e.NonRetryable && (e.StatusCode == 429 || (e.StatusCode >= 500 && e.StatusCode < 600))
 }

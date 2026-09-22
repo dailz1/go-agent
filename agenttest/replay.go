@@ -10,10 +10,12 @@ import (
 	"syscall"
 
 	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/llm/codex"
+	"github.com/dailz1/go-agent/llm/codex/auth"
 	"github.com/dailz1/go-agent/tool"
 )
 
-// Replayer implements llm.Provider from strict v1 and v2 Recorder payloads.
+// Replayer implements llm.Provider from strict v1, v2, and v3 Recorder payloads.
 type Replayer struct{ script *ScriptedProvider }
 
 func NewReplayer(recording []byte) (*Replayer, error) {
@@ -131,7 +133,16 @@ func decodeError(encoded *dtoError) (error, error) {
 	case "streaming_not_supported":
 		return llm.ErrStreamingNotSupported, nil
 	case "api":
-		return &llm.APIError{StatusCode: encoded.StatusCode, RetryAfter: encoded.RetryAfter, Body: encoded.Body}, nil
+		return &llm.APIError{StatusCode: encoded.StatusCode, RetryAfter: encoded.RetryAfter, Body: encoded.Body, NonRetryable: encoded.NonRetryable}, nil
+	case "codex", "codex_auth":
+		cause, err := decodeError(encoded.Cause)
+		if err != nil {
+			return nil, err
+		}
+		if encoded.Kind == "codex" {
+			return &codex.Error{Kind: encoded.Category, Code: encoded.Code, RetryAt: encoded.RetryAt, Cause: cause}, nil
+		}
+		return &auth.Error{Stage: encoded.Stage, Code: encoded.Code, Temporary: encoded.Temporary, LoginRequired: encoded.LoginRequired, Message: encoded.Message, Cause: cause}, nil
 	case "network_timeout":
 		return replayNetError{message: encoded.Message, timeout: true}, nil
 	case "network_temporary":

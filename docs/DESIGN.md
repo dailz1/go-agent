@@ -232,6 +232,118 @@ cancelled 快照读取都不启动执行，不新增该包装或退出回调。
 - v1 不支持：内建工具（web_search/file_search/code_interpreter/computer/MCP）、结构化输出（`text.format`）、`previous_response_id`、WebSocket 模式。ToolInfo 只产 function 定义，内建工具无法被请求。
 - SSE 复用 `llm.DoStreamRequest`/`llm.ScanSSEEvents`；非 2xx 用 `llm.APIError`；Chat（非流式）解析 `output` items 组装最终消息。
 
+### Codex 订阅适配器（`llm/codex`）
+
+`codex.NewProvider(model, codex.WithAuthSource(source))` 实现既有 Provider，
+Name 为 `codex`。仅使用 ChatGPT 订阅 OAuth；API-key 模式使用
+`openairesponses`，不自动发现凭据或切换计费方式。内核只依赖标准库。
+交互登录、文件读写、默认路径与占用锁在 `codexauth` 卫星；
+`llm/codex/auth` 只实现非交互协议与注入式持久化。
+
+#### 认证与凭据归属
+
+`auth.Source` 提供 `Token(context.Context) (Token, error)` 与
+`Refresh(context.Context, *Token) (Token, error)`。Token 含 AccessToken、
+AccountID、ExpiresAt；State 另含 RefreshToken、IDToken、LastRefresh。
+Token 仅复制最近发布的快照，不联网、不保存、不等待刷新；Refresh
+独占到期判断、401 恢复、single-flight 和持久化。Refresh(nil) 在剩余
+有效期大于 60 秒时直接返回，否则主动刷新；Refresh(&used) 只使相同
+AccessToken+AccountID 的当前代失效，迟到旧 401 不强制刷新新代。
+
+刷新锁不跨 I/O。首个调用者的 ctx 控制刷新，等待者可独立取消；同批
+等待者共享成功或失败结果，不逐个重试。账户固定，刷新不得偷偷换账户。
+新凭据先 Persist 后发布；保存失败保留 pending State，后续 Refresh
+只重试保存，Token 仍返回旧快照。已发送刷新但结果不确定时要求重新登录，
+不能盲目复用可能已经轮换的 refresh token。invalid_grant、撤销与
+账户改变匹配 ErrLoginRequired；失败后不得放行已拒绝的旧 token。
+
+固定 PKCE profile（Codex CLI 0.155.1 二进制取证，2026-09-22）：
+issuer `https://auth.openai.com`，client_id
+`app_69a1d78e929881919bba0dbda1f6436d`，redirect
+`http://localhost:1455/auth/callback`，scope 原文
+`openid profile email offline_access api.connectors.read api.connectors.invoke`。
+使用 `/oauth/authorize`、`/oauth/token`、S256 与随机 state/verifier。
+先绑定 loopback，再展示 URL；自动浏览器启动仅在 main。无头模式采用
+`ssh -L 1455:127.0.0.1:1455 user@server`，不自动换端口或提供 device flow。
+真实登录、refresh、go_agent 请求与独立授权并存仍需真实服务验收；
+发现 profile 漂移停止报告，不自行改参数或冒充官方客户端。
+
+默认独立文件 `~/.go-agent/codex/auth.json`，版本化 envelope 保存
+auth_mode、tokens、expires_at、last_refresh；目录 0700、文件 0600，
+同目录临时文件 sync/rename 后同步目录。FileSource 用 O_EXCL 占用锁，
+记录随机 owner 与 PID，Close 校验 owner 后释放；不按时间抢遗留锁。
+同进程共享一个 Source；不承诺跨进程 broker。官方 auth.json 只允许
+显式 access-only 读取，永不写入、永不使用其 refresh token；临期、
+未知到期或 401 均要求登录。API-key 文件明确提示使用 openairesponses。
+
+#### 传输、映射与流
+
+默认地址 `https://chatgpt.com/backend-api/codex/responses`，POST
+完整 typed input、store:false、stream:true，include
+reasoning.encrypted_content；Chat 归并同一 SSE 路径。请求和认证均在
+首次 range 后才发生，提前 break/取消关闭响应体。默认推理超时 120 秒，
+OAuth 30 秒；自定义 client 也通过副本禁止 redirect。
+
+system 只接受文本，按声明顺序用空行合并 instructions（无 system
+也发送空字符串），这与旧 openairesponses 最后覆盖策略有意不同。
+user 文本/图片映射 input_text/input_image；assistant 文本映射
+output_text，ReasoningItem 原样保留 id/encrypted_content/summary，
+ReasoningBlock 不回传；function_call 的 call_id 使用 ToolUse.ID，
+function_call_output 的 call_id 使用 ToolResult.ToolUseID。多结果逐项
+映射，软错误 Content 原样保留，IsError 仅留本地历史。值与指针形式
+都支持，nil/非法角色组合拒绝。工具使用扁平 function、strict:false，
+ParameterSchema codec 原样传递递归结构和扩展字段，不修剪 schema。
+
+SSE 按 output_index 跟踪文本、refusal、工具参数与 reasoning。
+工具 start 恰好一次且使用 call_id，不使用 item id；delta 必须在 start
+之后，done 与已有 delta 核对，无 delta 时只补全一次。completed 校验
+status 与最终 output，补齐未交付项，再发唯一 DoneChunk。缺终态、
+incomplete、failed、未知有内容的 item、矛盾终态或非法 JSON 参数
+均是 protocol 错误，无 Done，不重试半条流。行上限 1 MiB、单项累计
+及完成响应上限 10 MiB。Usage 保留 nil/零区别，reasoning_tokens
+已计入 output_tokens，不重复加总。所有工具只在完整成功回复后执行。
+
+#### 错误、配置与输出限制
+
+`llm.APIError.NonRetryable` 默认 false，Retryable 先检查该标记再按
+429/5xx 判断，仍为 leaf；新增公开字段会影响外部 unkeyed literal。
+`codex.Error{Kind, Code, RetryAt, Cause}` 保留错误链，Kind 区分
+auth/quota/capability/protocol；quota 使用真实 HTTP 状态且
+NonRetryable=true，未知 429 仍可重试。OAuth 不伪造推理 APIError。
+`auth.Error{Stage, Code, Temporary, LoginRequired, Message, Cause}`
+保留脱敏原因与 errors.Is(ErrLoginRequired)/context 身份。
+首次 HTTP 401 关闭响应后 Refresh(&used) 并最多重发一次；其他网络、
+429/5xx 不在 adapter 重试。惰性迭代内错误不会触发现有 agent 的
+外层 pre-stream RetryEvent；不能承诺自动恢复。
+
+WithAuthSource 必填；WithBaseURL 校验地址无 userinfo/query/fragment，
+默认 HTTPS，允许显式 loopback HTTP。WithHTTPClient、WithLogger、
+WithOriginator 可配置；originator 默认 go_agent，User-Agent 为
+go-agent/codex，codex_cli_rs 仅显式 opt-in，不根据 403 自动切换。
+model 原样透传，空 model/source 在本地准备阶段报错。
+Temperature/Stop 不支持；MaxTokens 接受零或正数，但请求结构完全
+不含 max_tokens/max_output_tokens，负数报错。首次消费正数上限时
+每个 Provider 最多一次结构化 warning：
+configured_max_output_tokens 与 output_limit_mode=server_default。
+消费端启动通知也必须披露配置不是远端硬上限，保持全局正数校验，
+不引入 sentinel。需要强制硬上限的业务不能选择此模式。
+
+#### agenttest 录制 v3
+
+新 writer 写 v3，reader 明确接受 1/2/3。v1/v2 grammar 与旧 fixture
+保持不变，旧 APIError 的 NonRetryable=false；v3 继承 v2 schema。
+v3 api error 必填布尔 non_retryable；codex error 必填 category、
+code、retry_at（RFC3339Nano 或 null）、cause；codex_auth 必填
+stage（token/refresh/persist）、code、temporary、login_required、
+message、cause。wrapper 优先于 API/context 扁平化识别，保留
+errors.As/Is 和 Retryable/IsRetryableError，覆盖 chat/outer/stream
+三种错误位置。直接 ErrLoginRequired 编为 stage=token 的 codex_auth。
+仅允许 codex→api/auth/既有叶/null、auth→既有叶/null，最多三层；
+循环、过深、不能忠实编码的 wrapper 使 Recorder.Bytes 明确失败。
+逐版本严格校验白名单、必填、类型、枚举和层级；旧版本偷带新字段
+仍拒绝，旧 reader 不承诺读取 v3。旧录制丢失的分类不从 body 猜回。
+agenttest 可依赖 llm/codex/auth 和 llm/codex，内核不得反向依赖。
+
 ### P2 扩展面
 - `Tool` / `Provider` 中间件（包装器模式）——已落地（P2-1，docs+example，见 `examples/middleware`；不加内核类型或链式 API）
 - 工具并行执行（默认串行保证确定性；历史按调用顺序追加，完成可乱序靠 ID 配对）——已落地（P2-2，冻结契约见下）
@@ -265,7 +377,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 
 `ToolFunc` 直接暴露 `Definition tool.ToolInfo` 与 `ExecuteFunc func(context.Context, json.RawMessage) (*tool.ToolResult, error)`；每次 Execute 先深拷贝记录 args，`Calls` 返回受 mutex 保护的深拷贝快照。nil handler 返回普通 Go error，panic 原样透传，便于测试 Agent 的既有边界。
 
-录制 bytes 是显式版本化契约：既有 **v1** 录制继续按上述冻结 grammar 读取；**v2** 由 Recorder 写入，Replayer 读取 v1/v2。v2 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。
+录制 bytes 是显式版本化契约：既有 **v1/v2** 录制继续按各自冻结 grammar 读取；Recorder 写 **v3**，Replayer 读取 v1/v2/v3（错误扩展见 Codex 节）。v2/v3 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。
 
 ### P3 生态
 - MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 在调用方提供的 fresh、未发布且完全静止的 Registry 中分页发现并一次性注册 wrapper；调用方只可在成功后发布 Registry。不会 refresh/unregister；stale tool 的 protocol error 是硬错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。

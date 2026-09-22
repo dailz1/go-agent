@@ -3,6 +3,7 @@ package agenttest
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/dailz1/go-agent/llm"
 )
@@ -55,11 +56,30 @@ func (e dtoError) MarshalJSON() ([]byte, error) {
 	switch e.Kind {
 	case "api":
 		return json.Marshal(struct {
-			Kind       string `json:"kind"`
-			StatusCode int    `json:"status_code"`
-			RetryAfter int64  `json:"retry_after"`
-			Body       string `json:"body"`
-		}{e.Kind, e.StatusCode, int64(e.RetryAfter), e.Body})
+			Kind         string `json:"kind"`
+			StatusCode   int    `json:"status_code"`
+			RetryAfter   int64  `json:"retry_after"`
+			Body         string `json:"body"`
+			NonRetryable bool   `json:"non_retryable"`
+		}{e.Kind, e.StatusCode, int64(e.RetryAfter), e.Body, e.NonRetryable})
+	case "codex":
+		return json.Marshal(struct {
+			Kind     string     `json:"kind"`
+			Category string     `json:"category"`
+			Code     string     `json:"code"`
+			RetryAt  *time.Time `json:"retry_at"`
+			Cause    *dtoError  `json:"cause"`
+		}{e.Kind, e.Category, e.Code, e.RetryAt, e.Cause})
+	case "codex_auth":
+		return json.Marshal(struct {
+			Kind          string    `json:"kind"`
+			Stage         string    `json:"stage"`
+			Code          string    `json:"code"`
+			Temporary     bool      `json:"temporary"`
+			LoginRequired bool      `json:"login_required"`
+			Message       string    `json:"message"`
+			Cause         *dtoError `json:"cause"`
+		}{e.Kind, e.Stage, e.Code, e.Temporary, e.LoginRequired, e.Message, e.Cause})
 	case "network_timeout", "network_temporary", "network_url", "generic":
 		return json.Marshal(struct {
 			Kind    string `json:"kind"`

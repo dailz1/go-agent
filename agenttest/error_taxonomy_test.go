@@ -59,8 +59,12 @@ func TestErrorTaxonomyPersistsThroughReplay(t *testing.T) {
 }
 
 func TestNetworkErrorPrecedence(t *testing.T) {
-	if got := encodeError(&url.Error{Err: timeoutError{}}).Kind; got != "network_timeout" {
-		t.Fatalf("overlapping network error encoded as %q", got)
+	got, err := encodeError(&url.Error{Err: timeoutError{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "network_timeout" {
+		t.Fatalf("overlapping network error encoded as %q", got.Kind)
 	}
 }
 

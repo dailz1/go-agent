@@ -214,7 +214,7 @@ func TestRecorderRejectsPointerAndActiveStream(t *testing.T) {
 }
 
 func TestReplayerRejectsUnknownVersionAndVerifiesOrder(t *testing.T) {
-	if _, err := NewReplayer([]byte(`{"version":3,"exchanges":[]}`)); !errors.Is(err, ErrIncompatibleRecording) {
+	if _, err := NewReplayer([]byte(`{"version":4,"exchanges":[]}`)); !errors.Is(err, ErrIncompatibleRecording) {
 		t.Fatalf("version error = %v", err)
 	}
 	request := Request{Messages: []llm.Message{llm.UserMessage("x")}}
