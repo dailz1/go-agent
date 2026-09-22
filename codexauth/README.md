@@ -6,15 +6,33 @@ requests. Neither kernel package reads your home directory or starts a browser.
 
 ## Login
 
+Run these commands from the repository root:
+
 ```sh
 go run ./examples/codexauth login
 go run ./examples/codexauth status
 ```
 
-Login listens on `127.0.0.1:1455`, prints an authorization URL, and attempts to
-open a browser. If that fails, open the printed URL manually. The registered
-redirect is `http://localhost:1455/auth/callback`; a busy port is an error, not a
-reason to choose another port. Ctrl+C cancels login and closes the listener.
+When stdin is a TTY, `login` first asks you to choose an authorization method:
+
+1. **Open the default browser** (the default when you press Enter). If opening
+   the browser fails, open the printed authorization URL manually.
+2. **Copy the authorization URL and open it manually**, including from a personal
+   computer for remote/SSH use. This choice never attempts to open a browser.
+
+`login --headless` skips the chooser and always uses manual URL authorization.
+With non-TTY stdin, `login` also defaults to manual authorization, prints a
+notice, and does not prompt or attempt to open a browser.
+
+After the choice or override, login binds `127.0.0.1:1455` before printing the
+authorization URL. The registered redirect is
+`http://localhost:1455/auth/callback`; a busy port is an error, not a reason to
+choose another port. Ctrl+C cancels login and closes any active listener.
+
+`status` reads the local store without refreshing credentials or making network
+requests. It prints JSON containing the masked `account`, `expires_at`, and
+`needs_login`; successful login prints the same status fields. Authorization
+URLs and instructions go to stderr, while status JSON goes to stdout.
 
 For a remote machine, forward the port **before** starting login:
 
@@ -29,8 +47,9 @@ Open the printed URL in your personal computer's browser. Its localhost callback
 travels through SSH to the remote listener. Device flow and manually pasting a
 callback URL/code are not supported.
 
-The default store is `~/.go-agent/codex/auth.json`. Use `--store /absolute/path`
-for a different independent store. Login and runtime use an exclusive `.lock`
+The default store is `~/.go-agent/codex/auth.json`. Both `login` and `status`
+accept `--store /absolute/path` after the subcommand for a different independent
+store. Login and runtime use an exclusive `.lock`
 file. If a process crashes, confirm the PID in that file has stopped before
 manually removing the lock; the library never steals it based on age.
 
