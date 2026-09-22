@@ -21,9 +21,7 @@ import (
 )
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -65,11 +63,27 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 		}
 		return printStatus(out, state)
 	}
-	cfg := codexauth.LoginConfig{Path: *path, Output: stderr, Headless: *headless}
-	if !*headless {
-		cfg.OnAuthorize = openBrowser
+	manual := *headless
+	if !manual {
+		var err error
+		manual, err = chooseManualAuthorization(authorizationInput, stderr, terminalInput())
+		if err != nil {
+			return err
+		}
 	}
-	state, err := codexauth.Login(ctx, cfg)
+	if manual {
+		if _, err := fmt.Fprintln(stderr, "Open the URL below in your local browser; for a remote host, first forward port 1455 over SSH."); err != nil {
+			return err
+		}
+	}
+	cfg := codexauth.LoginConfig{Path: *path, Output: stderr, Headless: manual}
+	if !manual {
+		cfg.OnAuthorize = launchBrowser
+	}
+	// Before login owns resources, Ctrl+C can exit a blocked terminal prompt.
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+	defer cancel()
+	state, err := login(ctx, cfg)
 	if err != nil {
 		return err
 	}

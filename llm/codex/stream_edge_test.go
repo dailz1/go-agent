@@ -58,10 +58,6 @@ func TestStreamRejectsContradictions(t *testing.T) {
 			`{"type":"response.output_text.done","output_index":0,"content_index":1,"item_id":"m","text":"hidden"}`,
 			`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"m","role":"assistant","content":[{"type":"output_text","text":"x"}]}]}}`,
 		},
-		"final omitted observed item": {
-			`{"type":"response.output_text.delta","output_index":1,"content_index":0,"item_id":"m","delta":"x"}`,
-			emptyCompletion,
-		},
 		"duplicate call id": {
 			`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"a","call_id":"same","name":"f","arguments":"{}"},{"type":"function_call","id":"b","call_id":"same","name":"f","arguments":"{}"}]}}`,
 		},

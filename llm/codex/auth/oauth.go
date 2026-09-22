@@ -35,7 +35,10 @@ func AuthorizationURL(pkce PKCE) string {
 	query := url.Values{
 		"response_type": {"code"}, "client_id": {ClientID}, "redirect_uri": {RedirectURI},
 		"scope": {Scopes}, "state": {pkce.State}, "code_challenge": {pkce.Challenge},
-		"code_challenge_method": {"S256"},
+		"code_challenge_method":      {"S256"},
+		"id_token_add_organizations": {"true"},
+		"codex_cli_simplified_flow":  {"true"},
+		"originator":                 {"go_agent"},
 	}
 	return Issuer + "/oauth/authorize?" + query.Encode()
 }

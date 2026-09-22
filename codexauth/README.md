@@ -34,12 +34,20 @@ for a different independent store. Login and runtime use an exclusive `.lock`
 file. If a process crashes, confirm the PID in that file has stopped before
 manually removing the lock; the library never steals it based on age.
 
-The fixed OAuth profile was extracted from Codex CLI 0.155.1 on 2026-09-22:
+The owner corrected this profile on 2026-09-22 after a live `invalid_client`
+response, cross-checking an independent implementation and the Codex CLI binary.
+The previous client ID and connector scopes belonged to another context.
 
 - Issuer: `https://auth.openai.com`
-- Client ID: `app_69a1d78e929881919bba0dbda1f6436d`
+- Client ID: `app_EMoamEEZ73f0CkXaXp7hrann`
 - Redirect: `http://localhost:1455/auth/callback`
-- Scope: `openid profile email offline_access api.connectors.read api.connectors.invoke`
+- Scope: `openid profile email offline_access`
+- Extra authorization parameters: `id_token_add_organizations=true`,
+  `codex_cli_simplified_flow=true`, `originator=go_agent`
+
+Inference sends the mandatory `chatgpt-account-id` header from the access-token
+JWT's `https://api.openai.com/auth` → `chatgpt_account_id` claim. Returned refresh
+tokens replace the previous value and are persisted before use.
 
 Binary evidence is not a claim of completed live acceptance. Real login,
 refresh, inference with `originator: go_agent`, and coexistence with a separate

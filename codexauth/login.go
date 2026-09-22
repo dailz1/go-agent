@@ -14,6 +14,8 @@ import (
 	"github.com/dailz1/go-agent/llm/codex/auth"
 )
 
+var listenCallback = net.Listen
+
 // LoginConfig configures interaction, not the fixed OAuth authorization profile.
 type LoginConfig struct {
 	Path        string
@@ -37,7 +39,7 @@ func Login(ctx context.Context, cfg LoginConfig) (state auth.State, err error) {
 		return auth.State{}, err
 	}
 	defer func() { err = errors.Join(err, lock.close()) }()
-	listener, err := net.Listen("tcp4", "127.0.0.1:1455")
+	listener, err := listenCallback("tcp4", "127.0.0.1:1455")
 	if err != nil {
 		return auth.State{}, fmt.Errorf("bind codex callback port 1455: %w", err)
 	}

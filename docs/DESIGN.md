@@ -257,11 +257,15 @@ AccessToken+AccountID 的当前代失效，迟到旧 401 不强制刷新新代�
 不能盲目复用可能已经轮换的 refresh token。invalid_grant、撤销与
 账户改变匹配 ErrLoginRequired；失败后不得放行已拒绝的旧 token。
 
-固定 PKCE profile（Codex CLI 0.155.1 二进制取证，2026-09-22）：
+固定 PKCE profile（2026-09-22 Owner 根据 invalid_client 实测纠正，
+并以独立实现与 Codex CLI 二进制交叉核对；原 client/scope 来自其他上下文）：
 issuer `https://auth.openai.com`，client_id
-`app_69a1d78e929881919bba0dbda1f6436d`，redirect
+`app_EMoamEEZ73f0CkXaXp7hrann`，redirect
 `http://localhost:1455/auth/callback`，scope 原文
-`openid profile email offline_access api.connectors.read api.connectors.invoke`。
+`openid profile email offline_access`。授权 URL 另含
+`id_token_add_organizations=true`、`codex_cli_simplified_flow=true`、
+`originator=go_agent`。推理必须发送 `chatgpt-account-id`，
+来自 access-token JWT 的 `https://api.openai.com/auth.chatgpt_account_id`。
 使用 `/oauth/authorize`、`/oauth/token`、S256 与随机 state/verifier。
 先绑定 loopback，再展示 URL；自动浏览器启动仅在 main。无头模式采用
 `ssh -L 1455:127.0.0.1:1455 user@server`，不自动换端口或提供 device flow。
@@ -297,7 +301,13 @@ ParameterSchema codec 原样传递递归结构和扩展字段，不修剪 schema
 SSE 按 output_index 跟踪文本、refusal、工具参数与 reasoning。
 工具 start 恰好一次且使用 call_id，不使用 item id；delta 必须在 start
 之后，done 与已有 delta 核对，无 delta 时只补全一次。completed 校验
-status 与最终 output，补齐未交付项，再发唯一 DoneChunk。缺终态、
+status；终态 output 可以省略、为空或只重述部分已流式交付的项。
+以已累积的 output_index/items 为基础，按 item id 核对终态提供的项，
+从已收到的文本、refusal、参数、reasoning 中补足缺项或缺失字段，
+只交付尚未发出的内容，再发唯一 DoneChunk。不得重复追加 delta，
+不得用终态的稀疏数组位置重排已有 item。相互矛盾的内容或身份、
+消息内无法补齐的内容索引空洞、非法完整工具参数仍是协议错误；
+已观测的 output_index 可不连续，原值与相对顺序必须保留。缺终态、
 incomplete、failed、未知有内容的 item、矛盾终态或非法 JSON 参数
 均是 protocol 错误，无 Done，不重试半条流。行上限 1 MiB、单项累计
 及完成响应上限 10 MiB。Usage 保留 nil/零区别，reasoning_tokens

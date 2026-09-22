@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	ClientID    = "app_69a1d78e929881919bba0dbda1f6436d"
+	ClientID    = "app_EMoamEEZ73f0CkXaXp7hrann"
 	Issuer      = "https://auth.openai.com"
 	RedirectURI = "http://localhost:1455/auth/callback"
-	Scopes      = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+	Scopes      = "openid profile email offline_access"
 )
 
 // Token is a value snapshot. ExpiresAt is a scheduling hint, not verified identity.

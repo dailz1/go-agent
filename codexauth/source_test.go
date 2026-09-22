@@ -82,6 +82,10 @@ func TestFileSourceRotationSurvivesRestart(t *testing.T) {
 		if r.Form.Get("refresh_token") != want {
 			t.Errorf("refresh credential = %q, want %q", r.Form.Get("refresh_token"), want)
 		}
+		if r.Form.Get("client_id") != "app_EMoamEEZ73f0CkXaXp7hrann" ||
+			r.Form.Get("grant_type") != "refresh_token" {
+			t.Error("refresh profile mismatch")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600}`)
 	}))

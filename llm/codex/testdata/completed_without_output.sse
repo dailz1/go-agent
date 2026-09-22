@@ -1,0 +1,10 @@
+: Owner-reported live terminal shape (empty output); identifiers and text are synthetic.
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_sparse","role":"assistant","status":"in_progress","content":[]}}
+
+data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_sparse","delta":"streamed "}
+
+data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_sparse","delta":"answer"}
+
+data: {"type":"response.completed","response":{"id":"resp_sparse","status":"completed","output":[],"usage":{"input_tokens":11,"output_tokens":3,"output_tokens_details":{"reasoning_tokens":1}}}}
+

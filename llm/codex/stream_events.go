@@ -9,23 +9,12 @@ import (
 func (s *streamState) event(ev streamEvent) ([]llm.Chunk, bool, error) {
 	switch ev.Type {
 	case "response.completed":
-		if ev.Response == nil || ev.Response.Status != "completed" || ev.Response.Output == nil || ev.Response.Error != nil {
+		if ev.Response == nil || ev.Response.Status != "completed" || ev.Response.Error != nil {
 			return nil, false, protocolError("invalid completed response")
 		}
-		var chunks []llm.Chunk
-		finish := "stop"
-		for index, output := range ev.Response.Output {
-			part, err := s.finishItem(index, output)
-			if err != nil {
-				return nil, false, err
-			}
-			chunks = append(chunks, part...)
-			if output.Type == "function_call" {
-				finish = "tool_calls"
-			}
-		}
-		if len(s.items) != len(ev.Response.Output) {
-			return nil, false, protocolError("completed output omitted items")
+		chunks, finish, err := s.complete(ev.Response.Output)
+		if err != nil {
+			return nil, false, err
 		}
 		var usage *llm.Usage
 		if u := ev.Response.Usage; u != nil {

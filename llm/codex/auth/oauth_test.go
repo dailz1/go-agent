@@ -36,9 +36,14 @@ func TestPKCEAndAuthorizationProfile(t *testing.T) {
 	}
 	q := u.Query()
 	for key, want := range map[string]string{
-		"client_id": ClientID, "redirect_uri": RedirectURI, "scope": Scopes,
+		"client_id":     "app_EMoamEEZ73f0CkXaXp7hrann",
+		"redirect_uri":  "http://localhost:1455/auth/callback",
+		"scope":         "openid profile email offline_access",
 		"response_type": "code", "state": first.State, "code_challenge": first.Challenge,
-		"code_challenge_method": "S256",
+		"code_challenge_method":      "S256",
+		"id_token_add_organizations": "true",
+		"codex_cli_simplified_flow":  "true",
+		"originator":                 "go_agent",
 	} {
 		if q.Get(key) != want {
 			t.Errorf("%s = %q, want %q", key, q.Get(key), want)

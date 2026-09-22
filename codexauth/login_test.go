@@ -36,11 +36,41 @@ func (r routeTokenTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return r.transport.RoundTrip(copy)
 }
 
-func callback(t *testing.T, query url.Values, want int) {
+func useCallbackListener(t *testing.T, bind string) *string {
+	t.Helper()
+	original := listenCallback
+	var bound string
+	attempted := false
+	listenCallback = func(network, address string) (net.Listener, error) {
+		attempted = true
+		if network != "tcp4" || address != "127.0.0.1:1455" {
+			t.Errorf("callback listen = %s %s", network, address)
+		}
+		listener, err := net.Listen(network, bind)
+		if err == nil {
+			bound = listener.Addr().String()
+		}
+		return listener, err
+	}
+	t.Cleanup(func() {
+		listenCallback = original
+		if !attempted {
+			t.Error("callback listener was not requested")
+		}
+	})
+	return &bound
+}
+
+func callback(t *testing.T, address string, query url.Values, want int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, auth.RedirectURI+"?"+query.Encode(), nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"http://"+address+"/auth/callback?"+query.Encode(),
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +85,7 @@ func callback(t *testing.T, query url.Values, want int) {
 }
 
 func TestLoginPKCECallbackAndRestart(t *testing.T) {
+	bound := useCallbackListener(t, "127.0.0.1:0")
 	path := filepath.Join(t.TempDir(), "credentials", "auth.json")
 	var calls atomic.Int32
 	var challenge string
@@ -67,7 +98,7 @@ func TestLoginPKCECallbackAndRestart(t *testing.T) {
 		}
 		sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
 		valid := r.Form.Get("code") == "one-time-code" &&
-			r.Form.Get("client_id") == auth.ClientID &&
+			r.Form.Get("client_id") == "app_EMoamEEZ73f0CkXaXp7hrann" &&
 			r.Form.Get("redirect_uri") == auth.RedirectURI &&
 			r.Form.Get("grant_type") == "authorization_code" &&
 			base64.RawURLEncoding.EncodeToString(sum[:]) == challenge
@@ -95,16 +126,40 @@ func TestLoginPKCECallbackAndRestart(t *testing.T) {
 				return err
 			}
 			q := u.Query()
-			if q.Get("scope") != auth.Scopes || q.Get("redirect_uri") != auth.RedirectURI {
-				t.Error("authorization profile mismatch")
+			for key, want := range map[string]string{
+				"client_id":                  "app_EMoamEEZ73f0CkXaXp7hrann",
+				"scope":                      "openid profile email offline_access",
+				"redirect_uri":               "http://localhost:1455/auth/callback",
+				"id_token_add_organizations": "true",
+				"codex_cli_simplified_flow":  "true",
+				"originator":                 "go_agent",
+			} {
+				if q.Get(key) != want {
+					t.Errorf("authorization %s = %q, want %q", key, q.Get(key), want)
+				}
 			}
 			challenge = q.Get("code_challenge")
 			if _, err := OpenFileSource(path, auth.RefreshConfig{}); !errors.Is(err, ErrBusy) {
 				t.Errorf("login did not own store: %v", err)
 			}
-			callback(t, url.Values{"state": {"wrong"}, "code": {"one-time-code"}}, http.StatusBadRequest)
-			callback(t, url.Values{"state": {q.Get("state")}, "code": {"one-time-code"}}, http.StatusOK)
-			callback(t, url.Values{"state": {q.Get("state")}, "code": {"one-time-code"}}, http.StatusConflict)
+			callback(
+				t,
+				*bound,
+				url.Values{"state": {"wrong"}, "code": {"one-time-code"}},
+				http.StatusBadRequest,
+			)
+			callback(
+				t,
+				*bound,
+				url.Values{"state": {q.Get("state")}, "code": {"one-time-code"}},
+				http.StatusOK,
+			)
+			callback(
+				t,
+				*bound,
+				url.Values{"state": {q.Get("state")}, "code": {"one-time-code"}},
+				http.StatusConflict,
+			)
 			return nil
 		},
 	})
@@ -126,6 +181,7 @@ func TestLoginPKCECallbackAndRestart(t *testing.T) {
 }
 
 func TestLoginCanceledClosesListenerAndReleasesLock(t *testing.T) {
+	bound := useCallbackListener(t, "127.0.0.1:0")
 	ctx, cancel := context.WithCancel(t.Context())
 	path := filepath.Join(t.TempDir(), "auth.json")
 	_, err := Login(ctx, LoginConfig{
@@ -138,7 +194,7 @@ func TestLoginCanceledClosesListenerAndReleasesLock(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("login = %v", err)
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:1455")
+	listener, err := net.Listen("tcp4", *bound)
 	if err != nil {
 		t.Fatalf("listener leaked: %v", err)
 	}
@@ -153,11 +209,12 @@ func TestLoginCanceledClosesListenerAndReleasesLock(t *testing.T) {
 }
 
 func TestLoginPortOccupied(t *testing.T) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:1455")
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	useCallbackListener(t, listener.Addr().String())
 	called := false
 	_, err = Login(t.Context(), LoginConfig{
 		Path: filepath.Join(t.TempDir(), "auth.json"), Output: io.Discard,
@@ -172,6 +229,7 @@ func TestLoginPortOccupied(t *testing.T) {
 }
 
 func TestLoginCallbackErrorIsRedacted(t *testing.T) {
+	bound := useCallbackListener(t, "127.0.0.1:0")
 	_, err := Login(t.Context(), LoginConfig{
 		Path: filepath.Join(t.TempDir(), "auth.json"), Output: io.Discard,
 		OnAuthorize: func(ctx context.Context, address string) error {
@@ -179,11 +237,16 @@ func TestLoginCallbackErrorIsRedacted(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			callback(t, url.Values{
-				"state":             {u.Query().Get("state")},
-				"error":             {"denied-secret-value"},
-				"error_description": {"private-callback-data"},
-			}, http.StatusOK)
+			callback(
+				t,
+				*bound,
+				url.Values{
+					"state":             {u.Query().Get("state")},
+					"error":             {"denied-secret-value"},
+					"error_description": {"private-callback-data"},
+				},
+				http.StatusOK,
+			)
 			return nil
 		},
 	})
