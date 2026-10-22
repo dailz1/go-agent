@@ -155,6 +155,12 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		RequestID:   p.requestID,
 		UserID:      p.userID,
 	}
+	// Call-level thinking overrides the constructor-level setting; when the
+	// call does not set one, the constructor config (including ClearThinking)
+	// applies unchanged.
+	if o.Thinking != "" {
+		reqBody.Thinking = &thinkingConfig{Type: o.Thinking}
+	}
 
 	// Map Stop, truncating to 1 item max (GLM maxItems: 1)
 	if len(o.Stop) > 0 {
@@ -269,8 +275,11 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		reqBody.ToolStream = true
 	}
 
-	// Set Thinking when enabled
-	if p.thinking != nil {
+	// Set Thinking: call-level override wins; constructor config preserved
+	// (including ClearThinking) when the call does not set one.
+	if o.Thinking != "" {
+		reqBody.Thinking = &thinkingConfig{Type: o.Thinking}
+	} else if p.thinking != nil {
 		reqBody.Thinking = p.thinking
 	}
 

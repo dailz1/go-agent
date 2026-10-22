@@ -91,6 +91,12 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		Temperature: o.Temperature,
 		Stop:        o.Stop,
 	}
+	if o.Thinking != "" {
+		reqBody.Thinking = &thinkingConfig{Type: o.Thinking}
+	}
+	if o.JSONMode {
+		reqBody.ResponseFormat = &responseFormat{Type: "json_object"}
+	}
 
 	reqMessages, err := convertMessages(messages)
 	if err != nil {
@@ -173,6 +179,12 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		Stop:          o.Stop,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
+	}
+	if o.Thinking != "" {
+		reqBody.Thinking = &thinkingConfig{Type: o.Thinking}
+	}
+	if o.JSONMode {
+		reqBody.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
 
 	reqMessages, err := convertMessages(messages)

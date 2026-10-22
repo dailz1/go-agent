@@ -102,7 +102,7 @@ func decodeWireRequest(raw json.RawMessage, version int) (dtoRequest, error) {
 	return out, nil
 }
 func decodeWireOptions(raw json.RawMessage) (llm.Options, error) {
-	object, err := wireObject(raw, "Model", "MaxTokens", "Temperature", "Stop")
+	object, err := wireObject(raw, "Model", "MaxTokens", "Temperature", "Stop", "Thinking", "JSONMode")
 	if err != nil {
 		return llm.Options{}, err
 	}
@@ -117,6 +117,12 @@ func decodeWireOptions(raw json.RawMessage) (llm.Options, error) {
 		return out, err
 	}
 	if err = wireValue(object, "Stop", &out.Stop); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "Thinking", &out.Thinking); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "JSONMode", &out.JSONMode); err != nil {
 		return out, err
 	}
 	return out, nil

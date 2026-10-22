@@ -9,6 +9,12 @@ type chatRequest struct {
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	Stop        []string      `json:"stop,omitempty"`
+	// Thinking carries the GLM-style thinking configuration (OpenAI-compatible
+	// endpoints such as GLM accept it); nil omits the field entirely.
+	Thinking *thinkingConfig `json:"thinking,omitempty"`
+	// ResponseFormat requests structured output (e.g. json_object mode); nil
+	// omits the field entirely.
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	// Stream enables SSE streaming when set to true. The response is then
 	// consumed via [llm.ScanSSEEvents] instead of being parsed as a single JSON
 	// object.
@@ -135,4 +141,16 @@ type completionTokensDetails struct {
 
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// thinkingConfig mirrors the thinking field accepted by OpenAI-compatible
+// endpoints (GLM). Type is "enabled" or "disabled".
+type thinkingConfig struct {
+	Type string `json:"type"`
+}
+
+// responseFormat mirrors the OpenAI response_format field. Type is e.g.
+// "json_object".
+type responseFormat struct {
+	Type string `json:"type"`
 }

@@ -37,6 +37,13 @@ type Options struct {
 	MaxTokens   int
 	Temperature *float64
 	Stop        []string
+	// Thinking is passed through as the "type" of the request's thinking
+	// configuration (e.g. "enabled", "disabled"). Adapters that do not
+	// support a thinking wire field ignore it.
+	Thinking string
+	// JSONMode requests JSON-object output via response_format on adapters
+	// that support it.
+	JSONMode bool
 }
 
 func WithModel(model string) Option {
@@ -53,6 +60,18 @@ func WithTemperature(t float64) Option {
 
 func WithStop(stop ...string) Option {
 	return func(o *Options) { o.Stop = stop }
+}
+
+// WithThinking sets the thinking mode for the call (e.g. "enabled",
+// "disabled"). It overrides a constructor-level thinking setting on
+// adapters that support both.
+func WithThinking(t string) Option {
+	return func(o *Options) { o.Thinking = t }
+}
+
+// WithJSONMode requests JSON-object output from the model.
+func WithJSONMode() Option {
+	return func(o *Options) { o.JSONMode = true }
 }
 
 func ApplyOptions(opts []Option) Options {
