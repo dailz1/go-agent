@@ -81,6 +81,8 @@ The [harness application](harness/README.md) is a same-module satellite consumin
 
 Its [M1 contract](harness/DESIGN.md) covers Linux-first streaming chat, code/shell tools, approval, persistent sessions, cancel-and-redirect, and edit/write snapshots. MCP, agenttool, model switching, and workspace-wide snapshots are deferred. UI dependencies stay outside the stdlib-only kernel closure. `examples/agentcli` remains a demonstration; the application entry point is `harness/cmd/go-agent`.
 
+The [skills satellite](skills/README.md) is a stdlib-only loader that turns a skill directory (one subdir per `SKILL.md`) into a single distributor Tool — the model sees the catalog in the tool description and loads a skill body on demand via `skills.Load` + `Set.Tool()`; refresh is re-`Load` + `Registry.Replace`.
+
 ## Examples
 
 The gallery is ordered as a learning path. All tests are deterministic and make no network calls; entries marked **manual** require their stated external dependency.

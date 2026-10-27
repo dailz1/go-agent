@@ -1,0 +1,1 @@
+A plain file at the root is not a skill and produces no issue.

@@ -435,6 +435,8 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 ### 扩展包（内核之外，独立演进的卫星包）
 记忆包（情景/语义记忆）、自进化包（程序记忆：从轨迹总结经验、改进提示词、学新工具）、工具集包。验收标准：这些包落地时内核 diff 为零。
 
+`skills/`（已落地）：stdlib-only 技能加载卫星——目录扫描 + SKILL.md 扁平 frontmatter 子集 + opencode 形态分发工具；契约见 skills/README.md；内核 diff 零。
+
 ## 6. 关键调研结论（2026-09-09）
 
 - 事件分类、只读事件 + 包装器扩展，均与业界共识一致（OpenAI Agents SDK / Vercel AI SDK / PydanticAI）。

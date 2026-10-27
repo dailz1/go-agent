@@ -17,6 +17,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 ├── tool/                 # Tool iface, soft-error ToolResult, Registry, recursive ParameterSchema
 ├── agenttest/            # public deterministic test doubles (scripted provider, record/replay)
 ├── agenttool/            # wraps a child Agent as a Tool
+├── skills/               # skill-directory loader → distributor Tool (SKILL.md, stdlib-only)
 ├── mcp/                  # MCP client bridge — package name is mcpbridge; only SDK importer
 ├── examples/             # 8 runnable mains (quickstart, agentcli, resume, parallel, ...)
 └── scripts/              # CI guards: kernel-closure-guard.sh, check-readme-contract.sh
@@ -34,6 +35,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 | Test doubles | agenttest/ | scripted provider, record/replay — NOT agent.MockProvider (unexported types) |
 | MCP bridge | mcp/bridge.go:24 + mcp/README.md | package `mcpbridge`; tools-line only |
 | Agent-as-tool | agenttool/agenttool.go:42 | stateless child Run per call |
+| Skill directory → Tool | skills/skills.go (`Load`/`Set.Tool`) | scan + SKILL.md frontmatter subset + distributor; immutable Set |
 | Real-API integration test | agent/agent_e2e_test.go | `//go:build e2e`; needs OPENAI_API_KEY |
 
 ## CODE MAP
@@ -50,6 +52,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 | llm.Provider / Message / Chunk | ifaces | llm/provider.go:19 / llm/message.go:22 / llm/chunk.go:20 | provider seam; sealed unions |
 | llm.APIError | type | llm/errors.go:9 | leaf error; Retryable() drives retry |
 | mcpbridge.Connect | func | mcp/bridge.go:24 | remote MCP tools → Registry |
+| skills.Load / Set.Tool | func/method | skills/skills.go:72 / :109 | skill-directory scan → catalog distributor Tool |
 | agenttest.ScriptedProvider | type | agenttest/scripted_provider.go:77 | deterministic public test double |
 
 ## CONVENTIONS
@@ -92,4 +95,4 @@ go test -tags e2e ./...                     # real API; OPENAI_API_KEY required
 - GLM auth sniffing: an API key containing `.` selects JWT mode — a bearer key with a dot will misauthenticate.
 - Bounded I/O: response bodies 10MB, SSE lines 1MB, HTTP timeout 120s, MCP result envelope 1 MiB.
 - `dir mcp` holds package `mcpbridge` — import path ends /mcp, symbol name differs.
-- Subdirectory AGENTS.md: agent/, llm/, store/, tool/, agenttest/, mcp/. Anchors were grep-verified at f064c63; re-verify after structural refactors (they drift).
+- Subdirectory AGENTS.md: agent/, llm/, store/, tool/, agenttest/, mcp/, skills/. Anchors were grep-verified at f064c63; re-verify after structural refactors (they drift).

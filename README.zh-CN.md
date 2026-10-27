@@ -81,6 +81,8 @@ go test ./examples/approval -count=1
 
 [M1 契约](harness/DESIGN.md) 覆盖 Linux-first 流式聊天、代码/shell 工具、审批、持久会话、取消改向和 edit/write 快照。MCP、agenttool、模型切换和全工作区快照延后。UI 依赖不进入 stdlib-only 内核编译闭包。`examples/agentcli` 保留演示身份；应用入口为 `harness/cmd/go-agent`。
 
+[skills 卫星](skills/README.md) 是 stdlib-only 的技能目录加载器：把技能目录（每个子目录一个 `SKILL.md`）变成单个分发工具——模型在工具描述里看到目录，按需通过 `skills.Load` + `Set.Tool()` 加载技能正文；刷新 = 重新 `Load` + `Registry.Replace`。
+
 ## 示例
 
 gallery 按学习路径排序。所有测试均为确定性且不访问网络；标记为 **manual** 的项目需要其说明的外部依赖。
