@@ -362,7 +362,7 @@ agenttest 可依赖 llm/codex/auth 和 llm/codex，内核不得反向依赖。
 
 `WithToolConcurrency(n int)` 设置同一模型回复内的工具执行并发度；`agent.New` 将 `n <= 0` 归一为 `1`，默认也是 `1`。`n=1` 保持今天的可观察行为：逐调用、live `Get -> approval -> Execute`，且现有 panic 仍按原路径逃逸。`n>1` 是显式 opt-in，工具的同轮副作用可重叠。
 
-所有并发度下，模型可见的 tools 都是一次 run 开始时 `registry.List()` 取得的快照，后续模型轮不得刷新该列表。仅 `n>1` 在每个工具轮规划时冻结执行 handle 和 `Info`；规划后 `Register` 的工具不影响本轮，虽可由之后工具轮的 live `Get` 找到（模型广播仍是 run-start 快照）。
+默认（未开 `WithDynamicTools`）所有并发度下，模型可见的 tools 都是一次 run 开始时 `registry.List()` 取得的快照，后续模型轮不得刷新该列表。开启 `WithDynamicTools()` 后，该快照改为每轮迭代顶部（compaction 之前）重新获取；同轮内的全部 provider attempt 复用同一快照，单次请求进行中永不刷新。执行解析与并发度无关：`n=1` 逐调用 live `Get`，`n>1` 在每个工具轮规划时冻结执行 handle 和 `Info`；规划后注册/替换/移除的工具不影响本轮，后续工具轮的 live `Get` 按注册表现势解析。Registry 的 `Unregister`/`Replace`/`Apply` 与执行并发安全：在飞 Execute 自然跑完、结果如实入史，变更在下一个解析点生效；对已消失名字的调用是软错误 ToolResult，不是 Go error。
 
 `n>1` 在任何 dispatch 前按声明顺序完成 handle/`Info` 规划和整批 approval。unknown tool、无 callback 与拒绝是对应声明槽位的软结果；callback 或 planner `Info()` panic 在该边界 recover 为 hardError，停止后续规划和全部 Execute。`n=1` 的 approval/`Info` panic 行为不变。
 
@@ -389,20 +389,29 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 
 录制 bytes 是显式版本化契约：既有 **v1/v2** 录制继续按各自冻结 grammar 读取；Recorder 写 **v3**，Replayer 读取 v1/v2/v3（错误扩展见 Codex 节）。v2/v3 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。
 
+#### 工具热变更（P2-4，已裁决后生效）
+
+- `Registry.Unregister(name string) bool`：按名移除，幂等，返回是否发生移除；运行期变更不提供 Must 变体。
+- `Registry.Replace(t Tool) error`：同名严格换实现；校验与 `Register` 相同；名字不存在时报错（不做 upsert）；单锁内完成，观察者看不到名字缺席的中间态。
+- `Registry.Apply(removed []string, added []Tool) error`：批量原子应用；先全量校验（schema、added 内部重名、added 与未被 removed 排除的现存名重名）再统一写入，任一失败零变更；removed 中未知名静默忽略。
+- 可见性：默认 run 级广播快照 + 执行层下一解析点；`WithDynamicTools()` 开启后广播与执行统一在每轮迭代顶部（ctx 检查与 compaction 之间）生效，**取代 run 起点快照，含第 0 轮**。三个方法可在任意 goroutine、工具 `Execute`、审批回调、RoundContextProvider 回调中调用；Registry 从不回调用户代码、从不等待在飞执行、不新增 goroutine。
+- Registry 是进程级共享状态：变更影响共享它的全部 Agent/线程；per-agent 工具子集属未来策略层。
+- 历史与 Store：工具调用记录只含名字/参数/ID 配对，永不因变更改写；重放/Resume 不要求历史中的工具仍注册，再次点名已消失名字得到软错误 ToolResult。
+
 ### P3 生态
-- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 在调用方提供的 fresh、未发布且完全静止的 Registry 中分页发现并一次性注册 wrapper；调用方只可在成功后发布 Registry。不会 refresh/unregister；stale tool 的 protocol error 是硬错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。
+- MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 分页发现并一次性注册 wrapper；变更前置由「Registry fresh、未发布且完全静止」放宽为「Connect/Refresh 期间不得有并发的外部 Registry 变更作用于同一 namespace」（文档语言，不加锁强制；越界操作由 `Apply` 查重兜底报错）。不自动订阅 list-changed：`Refresh(ctx)` 手动重新分页并对账**自有集合**（新增注册、消失反注册、变化 Replace，一次 `Registry.Apply` 原子落地并同步改写自有集合）；拉取或 Apply 失败时注册表与自有集合双双保旧。非自有 `ns__` 前缀名（`Register` 只拒绝完全重名、前缀不设防）永不触碰：撞名列入 Refresh 摘要冲突清单、该名不落地、其余照常。未 Refresh 窗口内 stale tool 的 protocol error 是硬错误；Refresh 后注册表未命中走内核软错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。
 
   `mcp.WithApprovalRequired(true)` 默认要求全部 bridge tools 审批；显式 false 时，也只有 `annotations != nil && annotations.ReadOnlyHint && (annotations.DestructiveHint == nil || !*annotations.DestructiveHint)` 的可证明只读工具可免审批，其他 annotation 组合仍要求审批。参数 schema 采用 recursive typed fields 与 name-sorted carrier：bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；仅 decoded-object root、命名、marshal/projection structural error fail closed 且零注册，provider 接受度独立。
 
   Execute 对非法 JSON、null、数组或标量参数返回软错误且不发 RPC；MCP `IsError` 和 `NeedsInput` 是软错误，protocol、transport、context、wire/decode 与 marshal 错误是保留 `%w` 的硬错误。文本 content 按顺序以换行 join；image/audio、resource link、embedded resource 生成已转义的单行 placeholder，并在 `ToolResult.Data` 生成带原 content index 的 `{"mcp_content":[...]}` envelope；embedded text 仍在 Content。StructuredContent 紧凑 JSON 为最后一个片段；未知已解码 dynamic content 或 nil embedded resource 为整项软错误。placeholder 对 `\\`、`"`、CR、LF、`]` 分别转义为 `\\\\`、`\\"`、`\\r`、`\\n`、`\\]`。`WithResultDataLimit` 默认 1 MiB，非正值在 Connect 前拒绝；每个 entry 按最终累计 JSON 大小预检，恰好上限接受，超限以 omitted placeholder 代替，且全部省略时 Data 为 nil。
 
-  工具 `OutputSchema`、top-level Title/Icons、content Annotations、ResourceLink Icons 及所有 `_meta` 均丢弃；progress notification 静默丢弃。Close 的公开前置是调用方先取消并以精确 join 信号等待所有 in-flight Execute 返回；不支持 Close 与 Execute 并发，Bridge 直接委托 SDK session Close。`mcp/README.md` 记录这些边界、Data 仅供 live `ToolResultEvent`（history/Store 只有 Content）和静态生命周期。
+  工具 `OutputSchema`、top-level Title/Icons、content Annotations、ResourceLink Icons 及所有 `_meta` 均丢弃；progress notification 静默丢弃。Close 的公开前置是调用方先取消并以精确 join 信号等待所有 in-flight Execute 返回；不支持 Close 与 Execute 并发。Close 先反注册自有集合中当前注册体仍是本桥 wrapper 的名字（被 `Replace` 过的所有权已转移、不动），再委托 SDK session Close；Connect 失败路径清理已注册部分。`mcp/README.md` 记录这些边界、Data 仅供 live `ToolResultEvent`（history/Store 只有 Content）和静态生命周期。
 
 #### MCP client bridge（P3-3 冻结契约）
 
 | MCP 输入或结果 | bridge 映射 |
 |---|---|
-| static discovery | 仅连接时分页 `tools/list`；不订阅 list-changed、不 refresh/unregister。已删除 remote tool 的 protocol/transport error 是 Go hard error。 |
+| static discovery + 手动对账 | 连接时分页 `tools/list`；不自动订阅 list-changed。`Refresh(ctx)` 手动重新分页并对账自有集合（新增注册、消失反注册、变化 Replace，经一次 `Registry.Apply` 原子落地并同步改写自有集合；拉取或 Apply 失败时注册表与自有集合双双保旧）；非自有前缀名永不触碰，撞名列入摘要冲突清单、该名不落地、其余照常。`Close` 先反注册自有集合中当前注册体仍是本桥 wrapper 的名字（被 `Replace` 过的所有权已转移、不动），再关 session；Connect 失败路径清理已注册部分。已删除 remote tool 的 protocol/transport error 在未 Refresh 窗口内仍是 Go hard error；Refresh 后 Get 未命中走内核软错误。 |
 | request args | 只接受 JSON object（`{}` 合法）；invalid JSON、null、array、scalar 为 soft result，零 RPC。原 ctx 传给 `CallTool`；bridge 不 retry/redial。 |
 | `IsError` / `NeedsInput` | 都是 soft ToolResult；后者内容固定为“v1 不支持 MCP input-required continuation”，并因 `MultiRoundTrip.Disabled:true` 精确一次 call。protocol、transport、ctx、nil result、SDK wire/decode 与 structured marshal error 都保留 `%w` 为 hard error。 |
 | text | 保持 content 原顺序并以 `\n` join；不写 Data entry。 |
@@ -447,6 +456,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
 - 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
 - P3-1 已扩展 `tool.ParameterSchema`/`Property`：typed recursive schema、nullable canonical codec、carrier、presence state 与 marshal/Registry cycle safety 均已落地；旧公开模型构造值的 JSON 保持 byte-exact。
+- 工具热变更（P2-4）已裁决并落地：Registry Unregister/Replace/Apply、Agent `WithDynamicTools()` 轮级刷新、Bridge Close 反注册与手动 `Refresh`；P2-2 广播快照默认行为不变，P3-3 静态发现条款按手动对账语义修订。
 
 ## 8. 状态更新（2026-09-20）
 

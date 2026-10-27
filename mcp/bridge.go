@@ -11,16 +11,25 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Bridge owns one MCP client session. The registry passed to Connect must be
-// fresh, unpublished, and quiescent until Connect returns successfully.
+// Bridge owns one MCP client session and the set of registry names it
+// registered (the owned set). During Connect and Refresh, no concurrent
+// external registry mutation may touch the same namespace. Callers must
+// cancel and join every Execute before Close; Close concurrent with Execute
+// is unsupported.
 type Bridge struct {
-	session *sdk.ClientSession
-	names   []string
+	session          *sdk.ClientSession
+	registry         *tool.Registry
+	namespace        string
+	approvalRequired bool
+	dataLimit        int64
+	owned            map[string]*remoteTool
 }
 
 // Connect discovers every paginated MCP tool and registers static wrappers.
-// It does not refresh tools. Callers must cancel and join every Execute before
-// Close; Close concurrent with Execute is unsupported.
+// It does not auto-subscribe to list-changed; reconcile later changes with
+// Refresh. A failed Connect unregisters whatever it already registered.
+// Callers must cancel and join every Execute before Close; Close concurrent
+// with Execute is unsupported.
 func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transport, cfg Config, opts ...Option) (*Bridge, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("mcp registry is nil")
@@ -45,8 +54,10 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 		return nil, fmt.Errorf("connect MCP client: %w", err)
 	}
 	closeOnError := true
+	owned := make(map[string]*remoteTool)
 	defer func() {
 		if closeOnError {
+			unregisterOwned(registry, owned)
 			_ = session.Close()
 		}
 	}()
@@ -64,14 +75,17 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 		if err := registry.Register(wrapper); err != nil {
 			return nil, fmt.Errorf("register MCP tool %q: %w", wrapper.info.Name, err)
 		}
+		owned[wrapper.info.Name] = wrapper
 	}
-	names := make([]string, len(wrappers))
-	for i, wrapper := range wrappers {
-		names[i] = wrapper.info.Name
-	}
-	sort.Strings(names)
 	closeOnError = false
-	return &Bridge{session: session, names: names}, nil
+	return &Bridge{
+		session:          session,
+		registry:         registry,
+		namespace:        cfg.Namespace,
+		approvalRequired: options.approvalRequired,
+		dataLimit:        options.resultDataLimit,
+		owned:            owned,
+	}, nil
 }
 
 func listTools(ctx context.Context, session *sdk.ClientSession) ([]*sdk.Tool, error) {
@@ -135,21 +149,47 @@ func prepareTools(remote []*sdk.Tool, namespace string, approvalRequired bool, d
 	return wrappers, nil
 }
 
-// Names returns sorted copies of final registered names.
+// Names returns sorted copies of the names in the bridge's owned set whose
+// registry entry is still this bridge's wrapper (names a user took over with
+// Replace are excluded, matching what Close would remove).
 func (b *Bridge) Names() []string {
-	if b == nil {
+	if b == nil || len(b.owned) == 0 {
 		return nil
 	}
-	return append([]string(nil), b.names...)
+	names := make([]string, 0, len(b.owned))
+	for name, wrapper := range b.owned {
+		if current, ok := b.registry.Get(name); ok && current == tool.Tool(wrapper) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
-// Close delegates to the SDK session. The caller must first cancel and join
-// all in-flight Execute calls; Close concurrent with Execute is unsupported.
+// Close unregisters every still-owned name whose current registry entry is
+// still this bridge's wrapper (names taken over by a user Replace are left
+// in place), then delegates to the SDK session. Only the session error is
+// reported. The caller must first cancel and join all in-flight Execute
+// calls; Close concurrent with Execute is unsupported.
 func (b *Bridge) Close() error {
 	if b == nil || b.session == nil {
 		return nil
 	}
+	unregisterOwned(b.registry, b.owned)
 	return b.session.Close()
+}
+
+// unregisterOwned removes every owned name whose current registry entry is
+// still the owning bridge's wrapper. Names replaced or freed by the user
+// are not owned anymore and stay untouched. Comparing the *remoteTool
+// pointers through the Tool interface is safe: differing dynamic types
+// compare unequal without panicking.
+func unregisterOwned(registry *tool.Registry, owned map[string]*remoteTool) {
+	for name, wrapper := range owned {
+		if current, ok := registry.Get(name); ok && current == tool.Tool(wrapper) {
+			registry.Unregister(name)
+		}
+	}
 }
 
 type remoteTool struct {

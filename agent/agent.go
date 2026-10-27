@@ -121,6 +121,7 @@ type Agent struct {
 	retryCfgSet                bool
 	store                      store.Store
 	toolConcurrency            int
+	dynamicTools               bool
 	roundContextProvider       RoundContextProvider
 	runExitFn                  func(SettlementToken)
 }
@@ -190,6 +191,15 @@ func WithApprovalFn(fn ApprovalFunc) Option {
 // The default is one, preserving serial execution semantics.
 func WithToolConcurrency(n int) Option {
 	return func(a *Agent) { a.toolConcurrency = n }
+}
+
+// WithDynamicTools refreshes the advertised tool snapshot at the top of every
+// iteration, between the context check and compaction, including iteration
+// zero; the same snapshot serves every retry attempt and the streaming of one
+// iteration. Without this option the snapshot stays fixed at run start for
+// the whole run, per the P2-2 contract. See docs/DESIGN.md (P2-4).
+func WithDynamicTools() Option {
+	return func(a *Agent) { a.dynamicTools = true }
 }
 
 // WithLogger sets the structured logger. Defaults to slog.Default().
@@ -379,6 +389,9 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				yield(nil, ctx.Err())
 				return
 			default:
+			}
+			if a.dynamicTools {
+				tools = a.registry.List()
 			}
 			var ok bool
 			history, ok = a.compactHistoryRound(ctx, history, yield, sess)
