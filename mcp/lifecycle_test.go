@@ -58,8 +58,14 @@ func TestApprovalAnnotationsAndCloseAfterJoin(t *testing.T) {
 	if err := bridge.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
-	if _, err := block.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
-		t.Fatal("Execute after Close returned no hard error")
+	// Graceful drain contract: after Close the gate answers stale handles
+	// with a soft ToolResult error, never a Go error.
+	res, err := block.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute after Close returned hard error: %v", err)
+	}
+	if res == nil || !res.IsError() {
+		t.Fatalf("Execute after Close not a soft error: %+v", res)
 	}
 }
 

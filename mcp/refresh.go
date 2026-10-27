@@ -38,7 +38,7 @@ func (b *Bridge) Refresh(ctx context.Context) (*RefreshSummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list MCP tools: %w", err)
 	}
-	fresh, err := projectRemoteTools(remote, b.namespace, b.approvalRequired, b.dataLimit, b.session)
+	fresh, err := projectRemoteTools(remote, b.namespace, b.approvalRequired, b.dataLimit, b.session, b.lc)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (b *Bridge) Refresh(ctx context.Context) (*RefreshSummary, error) {
 // projectRemoteTools builds one wrapper per representable remote tool keyed
 // by its projected name. Unrepresentable names, duplicate projected names,
 // and unprojectable schemas fail the whole set, mirroring Connect.
-func projectRemoteTools(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, session *sdk.ClientSession) (map[string]*remoteTool, error) {
+func projectRemoteTools(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, session *sdk.ClientSession, lc *lifecycle) (map[string]*remoteTool, error) {
 	var errs []error
 	fresh := make(map[string]*remoteTool, len(remote))
 	for _, item := range remote {
@@ -118,6 +118,7 @@ func projectRemoteTools(remote []*sdk.Tool, namespace string, approvalRequired b
 			wrapper := newRemoteTool(item, name, schema, approvalRequired)
 			wrapper.dataLimit = dataLimit
 			wrapper.session = session
+			wrapper.lc = lc
 			fresh[name] = wrapper
 		}
 	}

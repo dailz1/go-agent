@@ -13,7 +13,7 @@ Client-only MCP bridge: discovers remote MCP tools over a caller-provided transp
 
 ## CONVENTIONS (differs from parent)
 - Package name is `mcpbridge`, SDK is aliased `sdk` (bridge.go:1,10-11) — import path ends in /mcp, symbol differs.
-- Connect preconditions: registry fresh / unpublished / quiescent; `Close` concurrent with `Execute` is unsupported (bridge.go:11-18).
+- Connect preconditions: registry fresh / unpublished / quiescent; `Close` is a graceful drain — new `Execute` calls fail softly, in-flight calls finish before the session closes (hung remotes delay Close; cancel their ctx).
 - Namespace regex `^[A-Za-z0-9_-]{1,64}$` without `__` (bridge.go:26-28).
 - Soft/hard split: mapper failures (result shaping) are soft; protocol/transport errors are hard (bridge.go:164-190). No retries in the bridge.
 

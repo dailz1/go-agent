@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"github.com/dailz1/go-agent/tool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,9 +15,12 @@ import (
 
 // Bridge owns one MCP client session and the set of registry names it
 // registered (the owned set). During Connect and Refresh, no concurrent
-// external registry mutation may touch the same namespace. Callers must
-// cancel and join every Execute before Close; Close concurrent with Execute
-// is unsupported.
+// external registry mutation may touch the same namespace.
+//
+// Close is a graceful drain: it first rejects new Execute calls with a soft
+// error, then waits for in-flight Execute calls to finish before
+// unregistering and closing the session. Execute blocked on a hung remote
+// call delays Close; cancel the call's context to break it.
 type Bridge struct {
 	session          *sdk.ClientSession
 	registry         *tool.Registry
@@ -23,13 +28,22 @@ type Bridge struct {
 	approvalRequired bool
 	dataLimit        int64
 	owned            map[string]*remoteTool
+	lc               *lifecycle
+}
+
+// lifecycle gates Execute against Close. closing is published atomically
+// before draining so new Execute calls reject immediately even while Close
+// waits on a hung in-flight call; mu only counts admitted calls — Execute
+// holds its read lock for the whole call, Close's write lock returns once
+// every admitted call has finished.
+type lifecycle struct {
+	mu      sync.RWMutex
+	closing atomic.Bool
 }
 
 // Connect discovers every paginated MCP tool and registers static wrappers.
 // It does not auto-subscribe to list-changed; reconcile later changes with
 // Refresh. A failed Connect unregisters whatever it already registered.
-// Callers must cancel and join every Execute before Close; Close concurrent
-// with Execute is unsupported.
 func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transport, cfg Config, opts ...Option) (*Bridge, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("mcp registry is nil")
@@ -53,6 +67,7 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 	if err != nil {
 		return nil, fmt.Errorf("connect MCP client: %w", err)
 	}
+	lc := &lifecycle{}
 	closeOnError := true
 	owned := make(map[string]*remoteTool)
 	defer func() {
@@ -72,6 +87,7 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 	}
 	for _, wrapper := range wrappers {
 		wrapper.session = session
+		wrapper.lc = lc
 		if err := registry.Register(wrapper); err != nil {
 			return nil, fmt.Errorf("register MCP tool %q: %w", wrapper.info.Name, err)
 		}
@@ -85,6 +101,7 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 		approvalRequired: options.approvalRequired,
 		dataLimit:        options.resultDataLimit,
 		owned:            owned,
+		lc:               lc,
 	}, nil
 }
 
@@ -166,15 +183,20 @@ func (b *Bridge) Names() []string {
 	return names
 }
 
-// Close unregisters every still-owned name whose current registry entry is
-// still this bridge's wrapper (names taken over by a user Replace are left
-// in place), then delegates to the SDK session. Only the session error is
-// reported. The caller must first cancel and join all in-flight Execute
-// calls; Close concurrent with Execute is unsupported.
+// Close drains and tears the bridge down. It first sets the closing gate so
+// new Execute calls fail softly, then waits for in-flight Execute calls to
+// return — Execute blocked on a hung remote call delays Close, so cancel the
+// call's context to break it. Once drained it unregisters every still-owned
+// name whose current registry entry is still this bridge's wrapper (names
+// taken over by a user Replace are left in place) and delegates to the SDK
+// session, reporting only the session error.
 func (b *Bridge) Close() error {
 	if b == nil || b.session == nil {
 		return nil
 	}
+	b.lc.closing.Store(true)
+	b.lc.mu.Lock()
+	b.lc.mu.Unlock()
 	unregisterOwned(b.registry, b.owned)
 	return b.session.Close()
 }
@@ -194,6 +216,7 @@ func unregisterOwned(registry *tool.Registry, owned map[string]*remoteTool) {
 
 type remoteTool struct {
 	session    *sdk.ClientSession
+	lc         *lifecycle
 	remoteName string
 	info       tool.ToolInfo
 	dataLimit  int64
@@ -202,6 +225,20 @@ type remoteTool struct {
 func (t *remoteTool) Info() tool.ToolInfo { return t.info }
 
 func (t *remoteTool) Execute(ctx context.Context, raw json.RawMessage) (*tool.ToolResult, error) {
+	// Fast rejection before the lock: after Close publishes the gate, new
+	// calls must fail softly immediately instead of queueing behind the
+	// drain (a writer-waiting RWMutex would block them for the whole drain).
+	if t.lc.closing.Load() {
+		return tool.NewErrorResult("MCP tool %q is shutting down", t.remoteName), nil
+	}
+	t.lc.mu.RLock()
+	defer t.lc.mu.RUnlock()
+	// Re-check under the lock: Close may have published the gate between the
+	// fast check and admission, then be draining; this call must not proceed
+	// into a session that Close is about to tear down.
+	if t.lc.closing.Load() {
+		return tool.NewErrorResult("MCP tool %q is shutting down", t.remoteName), nil
+	}
 	var args map[string]any
 	if err := json.Unmarshal(raw, &args); err != nil || args == nil {
 		return tool.NewErrorResult("MCP tool arguments must be a JSON object"), nil
