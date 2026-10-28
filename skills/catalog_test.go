@@ -59,6 +59,21 @@ func TestCatalogEmptySetIsHeaderOnly(t *testing.T) {
 	}
 }
 
+func TestFrontmatterZooFeedsTheCatalog(t *testing.T) {
+	set, err := Load("testdata/zoo")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if issues := set.Issues(); len(issues) != 0 {
+		t.Fatalf("Issues() = %#v, want none", issues)
+	}
+	want := catalogHeader + "\n" +
+		"<skill><name>frontmatter-zoo</name><description>Parses across metadata maps and tool lists.</description></skill>"
+	if got := set.Tool().Info().Description; got != want {
+		t.Errorf("catalog =\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestCatalogLimitBoundary(t *testing.T) {
 	root := writeSkillDir(t, "one", "---\nname: one\ndescription: d\n---\nbody")
 	set, err := Load(root)

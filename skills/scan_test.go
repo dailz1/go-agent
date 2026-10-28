@@ -47,8 +47,18 @@ func TestLoadScanRoots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if len(set.Issues()) != 0 {
-			t.Fatalf("Issues() = %#v, want none for a plain root file", set.Issues())
+		issues := set.Issues()
+		wantProblems := []string{
+			`name "zzz" does not match directory "Alpha-dir"`,
+			`name "aaa" does not match directory "gamma-dir"`,
+		}
+		if len(issues) != 2 {
+			t.Fatalf("Issues() = %#v, want exactly two name-mismatch findings", issues)
+		}
+		for i, want := range wantProblems {
+			if !strings.Contains(issues[i].Problem, want) {
+				t.Fatalf("Issues()[%d] = %#v, want containing %q", i, issues[i], want)
+			}
 		}
 		skills := set.Skills()
 		if len(skills) != 2 {
@@ -101,8 +111,12 @@ func TestLoadDuplicateNames(t *testing.T) {
 		t.Errorf("Skills() = %#v, want %#v", skills, want)
 	}
 	issues := set.Issues()
-	if len(issues) != 1 || issues[0].Dir != "beta" || issues[0].Skill != "shared-name" ||
-		!strings.Contains(issues[0].Problem, `shadowed by "alpha"`) {
-		t.Errorf("Issues() = %#v, want beta shadowed by alpha", issues)
+	// alpha carries a name-mismatch issue; beta loses the collision and only
+	// the shadowed issue survives (its own issues are dropped at the continue).
+	if len(issues) != 2 || issues[0].Dir != "alpha" || issues[0].Skill != "shared-name" ||
+		!strings.Contains(issues[0].Problem, `does not match directory "alpha"`) ||
+		issues[1].Dir != "beta" || issues[1].Skill != "shared-name" ||
+		!strings.Contains(issues[1].Problem, `shadowed by "alpha"`) {
+		t.Errorf("Issues() = %#v, want alpha mismatch then beta shadowed by alpha", issues)
 	}
 }

@@ -14,14 +14,39 @@ Contract:
   are scanned, in sorted order; a subdirectory without `SKILL.md` is skipped
   and reported as an Issue; non-directory entries are ignored; a root-level
   `SKILL.md` is not a skill; no recursion.
-- Frontmatter: a flat `key: value` subset between `---` fences. Recognized
-  keys: `name` (optional — defaults to the directory name; must match
-  `^[a-z0-9]+(-[a-z0-9]+)*$` and be ≤64 chars) and `description` (required;
-  whitespace collapsed; truncated at 1024 runes with an ellipsis and an
-  Issue). Unknown keys are ignored. Duplicate keys, block/folded scalars
-  (`|`/`>`), malformed lines, or a missing closing fence invalidate the
-  skill. Bodies are the verbatim remainder, trimmed; empty bodies are
-  invalid. Files are capped at 1 MiB.
+- Frontmatter: an agentskills.io-aligned YAML subset between `---` fences,
+  read by an indent-aware line scanner. Recognized keys: `name` and
+  `description`. `name` is optional — omitting it falls back to the
+  directory name, an intentional leniency beyond the spec's required field;
+  an explicit name must match `^[a-z0-9]+(-[a-z0-9]+)*$` and be ≤64 chars,
+  and one that differs from its directory loads with a warning Issue (the
+  spec requires them to match; body file references resolve against the
+  directory). `description` is required; whitespace collapsed; truncated at
+  1024 runes with an ellipsis and an Issue. Recognized-key values may be
+  plain scalars with folded continuation lines (a `description:` empty value
+  takes its first indented line as content, classified like any value),
+  same-line quoted scalars (`"` with `"`, `\\`, `\n`, `\t` escapes; `'` with
+  `''`; text after the closing quote on the same line is ignored leniently —
+  strict YAML rejects it), or block scalars (`|` newline-joined, `>` space-joined; header
+  trailing content becomes the first line — a lenient extension, strict YAML
+  rejects it). Hard errors on the recognized keys: duplicate keys,
+  missing/empty description, unterminated quotes, flow collections (`[`/`{`),
+  missing closing fence, empty body. Unknown keys — `license`,
+  `compatibility`, `metadata`, `allowed-tools`, or any future field — are
+  skipped together with their entire indented block (nested maps, lists,
+  block scalars); unknown-key duplicates are not detected. Blank lines inside
+  the frontmatter are tolerated; they close only a recognized key's
+  plain-family value (the folded value is kept). Anchors/aliases (`&`/`*`),
+  tags (`!!`), and a second `---` inside the body are not parsed: they are
+  accepted as plain text (a body `---` is just a line in the body). Genuine
+  hard errors: no colon or an empty key on a top-level line, duplicate
+  recognized keys, missing/empty description, unterminated quotes, flow
+  collections (`[`/`{`) on a recognized key, a missing closing
+  fence, an empty body, and files over the cap. Bodies are the verbatim
+  remainder, trimmed; empty bodies are invalid. Files are capped at 1 MiB.
+- Escalation trigger: if skills ever need parsed unknown-field content
+  (metadata maps, allowed-tools list semantics), replace the subset scanner
+  with a YAML library (e.g. gopkg.in/yaml.v3) rather than growing it.
 - Invalid skills never fail Load: they are skipped and recorded in
   `Set.Issues()`. Load fails only on configuration errors: unreadable root,
   invalid option values, or a catalog over budget.
@@ -62,5 +87,5 @@ Contract:
 Frozen v1 non-goals: allowed-tools permission trimming, slash-command
 expansion, file watchers / hot reload / a skills-side Refresh API,
 marketplaces, recursive or multi-root scanning, loading bundled non-SKILL.md
-files, full YAML support (block scalars, lists, nesting), and an approval
-option.
+files, parsing the nested content of unknown fields (they are skipped whole;
+recognized keys do support block scalars), and an approval option.

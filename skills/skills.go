@@ -5,11 +5,14 @@
 //
 // Import github.com/dailz1/go-agent/skills. The package depends only on the
 // tool seam and the standard library. Load scans one level of subdirectories;
-// each skill is a subdirectory holding a SKILL.md with a flat "key: value"
-// frontmatter subset (recognized keys: name, description). Invalid skills
-// never fail Load — they are skipped and recorded in Set.Issues. Load fails
-// only on configuration errors: an unreadable root, invalid option values,
-// or an assembled catalog over its rune budget.
+// each skill is a subdirectory holding a SKILL.md whose frontmatter follows
+// an agentskills.io-aligned YAML subset: recognized keys (name, description)
+// accept plain scalars with folded continuations, same-line quoted scalars
+// with escapes, and block scalars; unknown keys are skipped with their whole
+// indented block. Invalid skills never fail Load — they are skipped and
+// recorded in Set.Issues. Load fails only on configuration errors: an
+// unreadable root, invalid option values, or an assembled catalog over its
+// rune budget.
 //
 // A Set is immutable and safe for concurrent use. The binding contract is
 // skills/README.md.
@@ -49,7 +52,8 @@ type Skill struct {
 	Dir string
 }
 
-// Issue records one skipped or truncated skill and why.
+// Issue records one skipped skill, or one finding on a loaded skill
+// (name not matching its directory, description truncation), and why.
 type Issue struct {
 	Dir     string // subdirectory name; "" for root-level findings
 	Skill   string // best-effort skill name; "" when none was resolvable
