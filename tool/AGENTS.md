@@ -8,13 +8,13 @@ Tool seam: Tool interface + soft-error ToolResult, thread-safe Registry, recursi
 |------|----------|
 | Tool contract | tool.go:14 — `Info()` + `Execute()`; `ToolInfo` :33, `ToolResult` :93 |
 | Soft vs hard errors | tool.go:25-35 — `ToolResult{Status: ResultError}` is fed back to the LLM; a Go error aborts the loop; `NewErrorResult` :101 |
-| Registry | registry.go:10 — `NewRegistry` :15, `Register` :21 (validates schema, errors on duplicate), `Get`/`List` :52/:59 (sorted), `MustRegister` :73 (panics) |
+| Registry | registry.go:22 — `NewRegistry` :36, `Register` :82 (freezes info, errors on duplicate), `Get` :101 / `List` :113 (sorted frozen deep copies), `MustRegister` :147 (panics), `Unregister` :158, `Replace` :176, `Apply` :200 |
 | Parameter schema | tool.go:49 — recursive model; `Property` :66 (`Items *Property`, unexported presence flags :55,:73) |
 | Schema codec | schema_unmarshal.go:9 / schema_marshal.go:10 — semantic-fidelity round-trip, ordered keyword carriers |
 | Schema validation | schema_validate.go — composition cycles fail closed (:59,:157) |
 
 ## CONVENTIONS (differs from parent)
-- Registry is `sync.RWMutex` (registry.go:11) — safe to mutate while an agent runs.
+- Registry is `sync.RWMutex` (registry.go:27) — safe to mutate while an agent runs. `Info()` is frozen at registration (P2-5 in docs/DESIGN.md); `List` never calls user code and returns deep copies.
 - Schema codec preserves typed recursive fields + ordered `SchemaKeyword` carriers; JSON null normalization is null-first; marshal/unmarshal share an active-stack cycle detector (encoding/json cannot protect custom MarshalJSON).
 - External construction semantics: pointer non-nil = present, Ref non-empty = present, empty Ref = absent (validated uniformly for all externally constructible values).
 

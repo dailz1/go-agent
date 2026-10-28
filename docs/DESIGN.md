@@ -47,7 +47,7 @@
 | 契约 | 作用 |
 |---|---|
 | `llm.Provider` | 接入任意模型供应商 |
-| `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent）；参数 schema 为递归 typed fields 加按名称排序的完整词汇 carrier。`agenttool` 是内核外的 satellite composition surface：固定 `input:string`，每次只 `Run` 一次子 Agent、只回传最终文本，不转发子事件；不改 Tool interface。remote bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；fidelity 限 SDK decode surface，Registry 只作 typed graph structural checks、从不解释 carrier，whole-schema raw escape hatch 禁止。 |
+| `tool.Tool` | 注入任意能力（自研函数、MCP 工具、子 agent）；参数 schema 为递归 typed fields 加按名称排序的完整词汇 carrier。`agenttool` 是内核外的 satellite composition surface：固定 `input:string`，每次只 `Run` 一次子 Agent、只回传最终文本，不转发子事件；不改 Tool interface。remote bridge 将 SDK `map[string]any` canonical-marshal 后交 `ParameterSchema.UnmarshalJSON` 重建 presence state；fidelity 限 SDK decode surface，Registry 只作 typed graph structural checks、从不解释 carrier，whole-schema raw escape hatch 禁止。`Info()` 按注册时刻冻结入注册表（见 P2-5），`List` 只返回冻结副本，不再回调用户代码。 |
 | `AgentEvent` 事件流 | canonical agent 行为的观测入口；观测 / UI / 审计 / 回放的唯一入口 |
 | `Store`（建设中） | 会话持久化与崩溃恢复：内核自动持久化（`WithStore`/`RunThread`），提交点先落库后行动 |
 
@@ -397,6 +397,22 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 可见性：默认 run 级广播快照 + 执行层下一解析点；`WithDynamicTools()` 开启后广播与执行统一在每轮迭代顶部（ctx 检查与 compaction 之间）生效，**取代 run 起点快照，含第 0 轮**。三个方法可在任意 goroutine、工具 `Execute`、审批回调、RoundContextProvider 回调中调用；Registry 从不回调用户代码、从不等待在飞执行、不新增 goroutine。
 - Registry 是进程级共享状态：变更影响共享它的全部 Agent/线程；per-agent 工具子集属未来策略层。
 - 历史与 Store：工具调用记录只含名字/参数/ID 配对，永不因变更改写；重放/Resume 不要求历史中的工具仍注册，再次点名已消失名字得到软错误 ToolResult。
+
+#### Registry Info 冻结与读缓存（P2-5，已裁决 2026-10-28：2a + D3）
+
+- `Info()` 按注册时刻不可变处理（业界共识语义，经外部调研裁决）：`Register`/`Replace`/`Apply`
+  在取锁前调用一次 `Info()` 完成全部校验，随后深拷贝冻结为注册表内部 canonical，并把冻结
+  schema 的序列化字节缓存于条目内。注册后工具实现修改自身状态、或 `Info()` 返回漂移值
+  （含改名），均不影响已注册视图；需要刷新元数据时用 `Replace` 整体换实现（原子重算缓存）。
+- `List()` 不再调用任何用户代码：返回排序快照的逐调用深拷贝（嵌套 map/slice/指针不与注册表
+  共享），排序、空切片语义不变；`Get` 不变。Registry 任何方法在持锁期间不执行用户代码、
+  不执行 schema 序列化；慢 `Info()` 不再阻塞写者，`Info()` 重入 `List` 或写方法不再死锁。
+- 两层缓存：条目层（tool + 冻结 info + 序列化字节，插入后不可变）；聚合层（排序快照，写路径
+  在同一临界区置脏，`List` 惰性重建，批量 `Apply` 折叠为一次重建）。重建只做排序与装配，
+  深拷贝与 marshal 都在锁外。条目内序列化字节与 `List` 交付值的序列化逐字节一致；本轮无包外
+  消费者，为后续适配器请求装配快路径预置。
+- 注册时序列化失败即注册失败、零变更：现有校验严格覆盖序列化前置条件，该分支正常不可达，
+  属防御性前置——把理论上可能的请求期失败移到注册期带工具名显式失败。
 
 ### P3 生态
 - MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 分页发现并一次性注册 wrapper；变更前置由「Registry fresh、未发布且完全静止」放宽为「Connect/Refresh 期间不得有并发的外部 Registry 变更作用于同一 namespace」（文档语言，不加锁强制；越界操作由 `Apply` 查重兜底报错）。不自动订阅 list-changed：`Refresh(ctx)` 手动重新分页并对账**自有集合**（新增注册、消失反注册、变化 Replace，一次 `Registry.Apply` 原子落地并同步改写自有集合）；拉取或 Apply 失败时注册表与自有集合双双保旧。非自有 `ns__` 前缀名（`Register` 只拒绝完全重名、前缀不设防）永不触碰：撞名列入 Refresh 摘要冲突清单、该名不落地、其余照常。未 Refresh 窗口内 stale tool 的 protocol error 是硬错误；Refresh 后注册表未命中走内核软错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。
