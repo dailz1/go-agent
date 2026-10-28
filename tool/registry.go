@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"sync/atomic"
 )
 
 // registryEntry is the immutable per-tool record. All three fields are
@@ -26,12 +25,10 @@ type Registry struct {
 	// (invariant I10). Built by whole-array replacement, never in-place
 	// edits (invariant I5).
 	snapshot []ToolInfo
+	// rebuilds counts snapshot rebuilds; test seam read under RLock,
+	// incremented only where the write lock is held.
+	rebuilds int
 }
-
-// snapshotRebuilds counts snapshot rebuilds; test seam, package-level like
-// the other seams in this repo. Atomic: rebuilds of distinct registries run
-// concurrently under -race.
-var snapshotRebuilds atomic.Int64
 
 func NewRegistry() *Registry {
 	return &Registry{
@@ -135,7 +132,7 @@ func (r *Registry) List() []ToolInfo {
 // snapshot. Sort and assembly only — no codec, no user code. Callers must
 // hold the write lock.
 func (r *Registry) rebuildSnapshotLocked() {
-	snapshotRebuilds.Add(1)
+	r.rebuilds++
 	snap := make([]ToolInfo, 0, len(r.tools))
 	for _, entry := range r.tools {
 		snap = append(snap, entry.info)

@@ -51,6 +51,14 @@ func mustSchema(t *testing.T, raw string) ParameterSchema {
 
 func bytesEqual(a, b []byte) bool { return string(a) == string(b) }
 
+// rebuildCount reads the registry's snapshot rebuild counter for the
+// snapshot-lifecycle assertions.
+func rebuildCount(r *Registry) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.rebuilds
+}
+
 func TestListNoUserCodeUnderLock(t *testing.T) {
 	r := NewRegistry()
 	var reentrant atomic.Bool
@@ -204,9 +212,9 @@ func TestListSnapshotLifecycle(t *testing.T) {
 	if len(r.snapshot) != 0 {
 		t.Fatalf("empty registry snapshot has %d entries, want 0", len(r.snapshot))
 	}
-	rebuilds := snapshotRebuilds.Load()
+	rebuilds := rebuildCount(r)
 	r.List()
-	if snapshotRebuilds.Load() != rebuilds {
+	if rebuildCount(r) != rebuilds {
 		t.Fatal("second List on empty registry rebuilt the snapshot")
 	}
 
@@ -220,9 +228,9 @@ func TestListSnapshotLifecycle(t *testing.T) {
 	if r.snapshot == nil {
 		t.Fatal("snapshot not rebuilt after List")
 	}
-	rebuilds = snapshotRebuilds.Load()
+	rebuilds = rebuildCount(r)
 	r.List()
-	if snapshotRebuilds.Load() != rebuilds {
+	if rebuildCount(r) != rebuilds {
 		t.Fatal("steady-state List rebuilt the snapshot")
 	}
 
@@ -237,9 +245,9 @@ func TestListSnapshotLifecycle(t *testing.T) {
 		t.Fatal("snapshot not dropped after Apply")
 	}
 	r.List()
-	rebuilds = snapshotRebuilds.Load()
+	rebuilds = rebuildCount(r)
 	r.List()
-	if snapshotRebuilds.Load() != rebuilds {
+	if rebuildCount(r) != rebuilds {
 		t.Fatal("second List after batch Apply rebuilt the snapshot; batch must fold into one rebuild")
 	}
 
