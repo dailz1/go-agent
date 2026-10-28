@@ -123,6 +123,7 @@ type Agent struct {
 	toolConcurrency            int
 	dynamicTools               bool
 	roundContextProvider       RoundContextProvider
+	finishRound                func(ctx context.Context, fc FinishRoundContext) (FinishRoundDecision, error)
 	runExitFn                  func(SettlementToken)
 }
 
@@ -394,9 +395,33 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				tools = a.registry.List()
 			}
 			var ok bool
+			// Per-round fixed order: read config → compact → drain → budget → request.
+			var opts []llm.Option
+			if sess != nil {
+				if err := sess.refreshConfig(ctx); err != nil {
+					yield(nil, err)
+					return
+				}
+				opts = sess.cfg.apply(a.llmOpts)
+			} else {
+				opts = a.llmOpts
+			}
 			history, ok = a.compactHistoryRound(ctx, history, yield, sess)
 			if !ok {
 				return
+			}
+			if sess != nil {
+				// D1 drain: queued steering inputs inject here, after
+				// compaction, so they ride into this round's request. The
+				// drain consumes only what fits the hard limit; the rest
+				// stays queued for the next round.
+				available := a.steeringAdmissionRunes() - estimateRunes(history)
+				injected, err := sess.drainInputs(ctx, available)
+				if err != nil {
+					yield(nil, err)
+					return
+				}
+				history = append(history, injected...)
 			}
 			if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCap() {
 				yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
@@ -415,6 +440,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					Round:    i + sessionRoundBase(sess),
 					ThreadID: threadID,
 				},
+				opts,
 				yield,
 				&streamRetries,
 			)
@@ -466,11 +492,46 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				return
 			}
 			history = append(history, assistantMsg)
+			isLast := i == a.maxIter-1
+			finishEnd := false
+			declaredText := false
 
-			// Terminal condition: no tool calls were accumulated from the stream.
-			// This mirrors Run's logic (which checks len(toolUseCalls) == 0)
-			// and avoids depending on finishReason correctness from the provider.
+			// Terminal condition: no tool calls were accumulated from the
+			// stream — unless a FinishRound Continue keeps the run alive,
+			// in which case the turn is durably declared as terminal_text
+			// before the hook is consulted (D8a).
 			if len(toolBlocks) == 0 {
+				if a.finishRound != nil && !isLast {
+					if sess != nil {
+						if err := sess.declareTerminalRound(ctx, i, assistantMsg); err != nil {
+							yield(nil, err)
+							return
+						}
+					}
+					declaredText = true
+					decision, ferr := a.callFinishRound(ctx, FinishRoundContext{
+						ThreadID:  threadID,
+						Round:     i + sessionRoundBase(sess),
+						Assistant: copyMessage(assistantMsg),
+					})
+					if ferr != nil {
+						yield(nil, ferr)
+						return
+					}
+					if decision.Action == FinishRoundContinue {
+						// The declaration is durable; the loop continues so
+						// the queued steering inputs (if any) ride into the
+						// guaranteed next request.
+						continue
+					}
+					if decision.Action == FinishRoundEnd {
+						finishEnd = true
+					}
+					// Default with a hook configured: the declaration is
+					// already durable, so the natural done below closes via
+					// run_closed instead of re-carrying the message.
+				}
+
 				a.logger.Info("agent runstream completed",
 					"iterations", i+1,
 					"tool_calls", totalToolCalls,
@@ -480,9 +541,16 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				if u := accum.usage(); u != nil {
 					lastUsage = *u
 				}
-				// Terminal state is durable before the event may be delivered.
 				if sess != nil {
-					if err := sess.finishRun(ctx, assistantMsg, totalToolCalls, false, lastUsage, totalUsage); err != nil {
+					if declaredText || finishEnd {
+						// The declared terminal_text turn already carries the
+						// assistant message; run_closed closes the run the
+						// cooperative way without re-carrying it.
+						if err := sess.closeRun(ctx, totalToolCalls, lastUsage, totalUsage); err != nil {
+							yield(nil, err)
+							return
+						}
+					} else if err := sess.finishRun(ctx, assistantMsg, totalToolCalls, false, lastUsage, totalUsage); err != nil {
 						yield(nil, err)
 						return
 					}
@@ -578,9 +646,75 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			if !a.executeToolRound(ctx, i, toolBlocks, &history, sess, yield) {
 				return
 			}
+			// FinishRound runs after the round's results are committed, with
+			// the trailing tool results visible in history.
+			if a.finishRound != nil {
+				decision, ferr := a.callFinishRound(ctx, FinishRoundContext{
+					ThreadID:  threadID,
+					Round:     i + sessionRoundBase(sess),
+					Assistant: copyMessage(assistantMsg),
+					Results:   trailingToolResults(history),
+				})
+				if ferr != nil {
+					yield(nil, ferr)
+					return
+				}
+				if decision.Action == FinishRoundEnd {
+					// D7: close via run_closed — the declared assistant and
+					// its results are already durable, no message is invented.
+					a.logger.Info("agent runstream cooperatively closed",
+						"iterations", i+1,
+					)
+					var lastUsage llm.Usage
+					if u := accum.usage(); u != nil {
+						lastUsage = *u
+					}
+					if sess != nil {
+						if err := sess.closeRun(ctx, totalToolCalls, lastUsage, totalUsage); err != nil {
+							yield(nil, err)
+							return
+						}
+					}
+					yield(DoneEvent{
+						Message:    assistantMsg,
+						History:    copyMessages(history),
+						ToolCalls:  totalToolCalls,
+						Retries:    streamRetries,
+						Usage:      lastUsage,
+						TotalUsage: totalUsage,
+						ThreadID:   threadID,
+					}, nil)
+					return
+				}
+				// Continue adds nothing here: a tool round always continues.
+			}
 			accum.reset()
 		}
 	}, nil
+}
+
+// roundTargetRunes is the compaction target for the current configuration:
+// the same expression compactHistoryRound uses, extracted so steering
+// admission and drain budgeting share one number.
+func (a *Agent) roundTargetRunes() int {
+	target := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
+		(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
+	if a.roundContextProvider != nil && target > a.canonicalContextCap() {
+		target = a.canonicalContextCap()
+	}
+	return target
+}
+
+// steeringAdmissionRunes is the hard history limit an enqueued steering
+// input can never exceed, measured serialized like every other budget:
+// the window, or the canonical cap under a runtime-context overlay (whose
+// reservation must survive steering injection). Fit at the actual drain
+// point is enforced by deferral, not by admission.
+func (a *Agent) steeringAdmissionRunes() int {
+	if a.roundContextProvider != nil {
+		return a.canonicalContextCap()
+	}
+	return a.contextWindowTokens
 }
 
 // compactHistoryRound enforces the history budget at the top of each round and reports via events.
@@ -641,7 +775,14 @@ func (a *Agent) compactHistoryRound(
 				return history, false
 			default:
 			}
-			if a.roundContextProvider == nil && estimateRunes(history) > targetRunes {
+			// Carry tolerance: steering injected by the previous round's
+			// drain legitimately pushed history past the target; compaction
+			// has just run and may not be able to shrink further.
+			carry := 0
+			if sess != nil {
+				carry = sess.carry
+			}
+			if a.roundContextProvider == nil && estimateRunes(history) > targetRunes+carry {
 				yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
 				return history, false
 			}

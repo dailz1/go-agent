@@ -59,7 +59,7 @@ func TestSettleCodecCheckpointCannotMasqueradeAsV1(t *testing.T) {
 	if err := json.Unmarshal(state.Checkpoint.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if state.Checkpoint.Schema <= store.SchemaV1 || string(payload["codec_version"]) != "2" {
+	if state.Checkpoint.Schema <= store.SchemaV1 || string(payload["codec_version"]) != "3" {
 		t.Fatalf("legacy version guards cannot reject checkpoint: %+v", state.Checkpoint)
 	}
 }

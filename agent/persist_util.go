@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -15,22 +16,48 @@ import (
 // context the tail replay needs. The ID is bound to the record's future
 // position, keeping retries byte-identical.
 func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) error {
-	payload, err := json.Marshal(agentCheckpoint{
-		CodecVersion: store.SchemaV2,
-		History:      history,
-		System:       p.system,
-		RunActive:    true,
-		RunID:        p.runID,
-		LastRound:    p.lastRound,
-	})
-	if err != nil {
-		return fmt.Errorf("agent: encode checkpoint: %w", err)
+	const maxAttempts = 4
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			if aerr := p.absorbTail(ctx, p.head, true); aerr != nil {
+				return fmt.Errorf("agent: persist checkpoint on thread %q: %w", p.thread, aerr)
+			}
+		}
+		// The payload is re-serialized from the live projection on every
+		// attempt: a rebase across a control-plane write must carry the
+		// absorbed config, not the one snapshotted before the conflict.
+		payload, merr := json.Marshal(agentCheckpoint{
+			CodecVersion: store.SchemaV3,
+			History:      history,
+			System:       p.system,
+			RunActive:    true,
+			RunID:        p.runID,
+			LastRound:    p.lastRound,
+			Config:       &p.cfg,
+			Queue:        p.queue,
+		})
+		if merr != nil {
+			return fmt.Errorf("agent: encode checkpoint: %w", merr)
+		}
+		var head int64
+		head, err = p.a.store.Append(ctx, p.thread, p.head, store.Record{
+			Kind: store.KindCheckpoint, Schema: store.SchemaV3,
+			ID:      fmt.Sprintf("cp-%d", p.head),
+			Payload: payload,
+		})
+		if err == nil {
+			p.head = head
+			if head > p.cfgRead {
+				p.cfgRead = head
+			}
+			return nil
+		}
+		if !errors.Is(err, store.ErrRevisionConflict) {
+			break
+		}
 	}
-	return p.append(ctx, store.Record{
-		Kind: store.KindCheckpoint, Schema: store.SchemaV2,
-		ID:      fmt.Sprintf("cp-%d", p.head),
-		Payload: payload,
-	})
+	return fmt.Errorf("agent: persist checkpoint on thread %q: %w", p.thread, err)
 }
 
 // release gives up thread ownership. Safe to call once per session.

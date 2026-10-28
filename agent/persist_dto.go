@@ -62,7 +62,15 @@ type roundDeclaredPayload struct {
 	RunID   string      `json:"run_id"`
 	Round   int         `json:"round"`
 	Message llm.Message `json:"message"`
+	// Kind generalizes the declaration: "" is the legacy tool-round form
+	// (tool calls must follow), "terminal_text" declares a tool-free
+	// assistant turn persisted for a FinishRound-Continue decision.
+	Kind string `json:"kind,omitempty"`
 }
+
+// terminalTextDeclaration marks a tool-free declaration persisted for a
+// FinishRound-Continue decision.
+const terminalTextDeclaration = "terminal_text"
 
 // roundCommittedPayload closes a declaration with the round's ordered
 // model-visible results: one role=tool message per declared call, in
@@ -110,6 +118,80 @@ func decodeRunCancelled(r store.Record) (runCancelledPayload, error) {
 	return p, nil
 }
 
+// configChangedPayload is the runtime config override carried by one
+// config_changed record. Nil means "unchanged"; non-nil overwrites the
+// field for every subsequent provider request in the thread.
+type configChangedPayload struct {
+	Model    *string `json:"model"`
+	Thinking *string `json:"thinking"`
+}
+
+func decodeConfigChanged(r store.Record) (configChangedPayload, error) {
+	var p configChangedPayload
+	if err := strictDecode(r.Payload, &p); err != nil {
+		return configChangedPayload{}, incompatible(r, "invalid config_changed payload")
+	}
+	return p, nil
+}
+
+func decodeInputQueued(r store.Record) (inputQueuedPayload, error) {
+	if r.Schema != store.SchemaV2 {
+		return inputQueuedPayload{}, incompatible(r, fmt.Sprintf("input_queued schema %d", r.Schema))
+	}
+	var p inputQueuedPayload
+	if err := strictDecode(r.Payload, &p); err != nil {
+		return inputQueuedPayload{}, incompatible(r, "invalid input_queued payload")
+	}
+	return p, nil
+}
+
+func decodeInputConsumed(r store.Record) (inputConsumedPayload, error) {
+	if r.Schema != store.SchemaV2 {
+		return inputConsumedPayload{}, incompatible(r, fmt.Sprintf("input_consumed schema %d", r.Schema))
+	}
+	var p inputConsumedPayload
+	if err := strictDecode(r.Payload, &p); err != nil {
+		return inputConsumedPayload{}, incompatible(r, "invalid input_consumed payload")
+	}
+	for _, e := range p.Inputs {
+		if e.ID == "" || e.Input == "" {
+			return inputConsumedPayload{}, incompatible(r, "consumed input entry must carry id and input")
+		}
+	}
+	return p, nil
+}
+
+// configState is the folded effective config of a thread. It starts from the
+// Agent's WithLLMOptions defaults and is overridden field-by-field by each
+// config_changed record in replay order (last write wins).
+type configState struct {
+	Model    *string `json:"model,omitempty"`
+	Thinking *string `json:"thinking,omitempty"`
+}
+
+func (c *configState) fold(p configChangedPayload) {
+	if p.Model != nil {
+		c.Model = p.Model
+	}
+	if p.Thinking != nil {
+		c.Thinking = p.Thinking
+	}
+}
+
+// apply returns a fresh option slice: the base options with the effective
+// overrides appended after them, so the override wins field-by-field.
+func (c configState) apply(base []llm.Option) []llm.Option {
+	out := make([]llm.Option, 0, len(base)+2)
+	out = append(out, base...)
+	if c.Model != nil {
+		out = append(out, llm.WithModel(*c.Model))
+	}
+	if c.Thinking != nil {
+		out = append(out, llm.WithThinking(*c.Thinking))
+	}
+	return out
+}
+
 // agentCheckpoint is the agent-owned checkpoint payload. The checkpoint is
 // a rebuildable accelerator, but the run lifecycle context (whether a run is
 // open, its ID, its highest round) and the thread's system prompt would be
@@ -121,18 +203,20 @@ type agentCheckpoint struct {
 	RunActive    bool          `json:"run_active"`
 	RunID        string        `json:"run_id,omitempty"`
 	LastRound    int           `json:"last_round"`
+	Config       *configState  `json:"config,omitempty"`
+	Queue        []queueEntry  `json:"queue,omitempty"`
 }
 
 // checkpointVersion is checked even when the snapshot is not used. Unknown
 // versions must not disappear behind structural fallback to the full log.
 func checkpointVersion(r store.Record) error {
-	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV2 {
+	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV3 {
 		return incompatible(r, fmt.Sprintf("checkpoint schema %d", r.Schema))
 	}
 	var version struct {
 		CodecVersion int `json:"codec_version"`
 	}
-	if err := json.Unmarshal(r.Payload, &version); err == nil && version.CodecVersion > store.SchemaV2 {
+	if err := json.Unmarshal(r.Payload, &version); err == nil && version.CodecVersion > store.SchemaV3 {
 		return incompatible(r, fmt.Sprintf("checkpoint codec version %d", version.CodecVersion))
 	}
 	return nil
@@ -147,7 +231,8 @@ func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
 		return nil, nil // supported but corrupt snapshot: rebuild the log
 	}
 	if (r.Schema == store.SchemaV1 && cp.CodecVersion != 0) ||
-		(r.Schema == store.SchemaV2 && cp.CodecVersion != store.SchemaV2) {
+		(r.Schema == store.SchemaV2 && cp.CodecVersion != store.SchemaV2) ||
+		(r.Schema == store.SchemaV3 && cp.CodecVersion != store.SchemaV3) {
 		return nil, nil
 	}
 	if !cp.RunActive || cp.RunID == "" || cp.LastRound < -1 || cp.History == nil {
@@ -202,6 +287,34 @@ func decodeRoundDeclared(r store.Record) (roundDeclaredPayload, error) {
 	var p roundDeclaredPayload
 	if err := strictDecode(r.Payload, &p); err != nil {
 		return roundDeclaredPayload{}, fmt.Errorf("%w: round_declared seq %d: %v", ErrIncompatibleLog, r.Seq, err)
+	}
+	if p.Kind != "" && p.Kind != terminalTextDeclaration {
+		return roundDeclaredPayload{}, fmt.Errorf("%w: round_declared seq %d: unknown declaration kind %q",
+			ErrIncompatibleLog, r.Seq, p.Kind)
+	}
+	return p, nil
+}
+
+// runClosedPayload cooperatively closes a run at a FinishRound-End: the
+// declared assistant message and results are already in history, so no
+// message is re-carried. Replay derives the terminal view from the log.
+type runClosedPayload struct {
+	RunID      string    `json:"run_id"`
+	ToolCalls  int       `json:"tool_calls"`
+	Usage      llm.Usage `json:"usage"`
+	TotalUsage llm.Usage `json:"total_usage"`
+}
+
+func decodeRunClosed(r store.Record) (runClosedPayload, error) {
+	if r.Schema != store.SchemaV2 {
+		return runClosedPayload{}, fmt.Errorf("%w: run_closed schema %d", ErrIncompatibleLog, r.Schema)
+	}
+	var p runClosedPayload
+	if err := strictDecode(r.Payload, &p); err != nil {
+		return runClosedPayload{}, fmt.Errorf("%w: run_closed seq %d: %v", ErrIncompatibleLog, r.Seq, err)
+	}
+	if p.RunID == "" {
+		return runClosedPayload{}, fmt.Errorf("%w: run_closed without a run id", ErrIncompatibleLog)
 	}
 	return p, nil
 }

@@ -21,9 +21,13 @@ type persistence struct {
 	runID     string
 	system    string
 	head      int64
-	roundBase int // round index offset for resumed runs
-	lastRound int // highest durable round index of this run
-	open      int // round index of the open declaration, -1 when none
+	roundBase int          // round index offset for resumed runs
+	lastRound int          // highest durable round index of this run
+	open      int          // round index of the open declaration, -1 when none
+	cfg       configState  // effective runtime config, folded from replay + absorbed tails
+	queue     []queueEntry // pending steering inputs, FIFO from replay + absorbed tails
+	carry     int          // runes the last drain injected past the compaction target
+	cfgRead   int64        // next seq to scan for control records at round tops
 }
 
 // openSession validates, acquires, replays, and prepares the initial
@@ -79,12 +83,13 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 			if err != nil {
 				return nil, nil, err
 			}
-			if _, err := st.Append(ctx, thread, v.head, rec); err != nil {
+			head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.queue, rec)
+			if err != nil {
 				return nil, nil, fmt.Errorf("agent: persist recovery commit: %w", err)
 			}
-			v.head++
+			v.head = head
 		}
-		sess := &persistence{a: a, thread: thread, runID: v.runID, system: v.system, head: v.head, roundBase: v.lastRound + 1, lastRound: v.lastRound, open: -1}
+		sess := &persistence{a: a, thread: thread, runID: v.runID, system: v.system, head: v.head, roundBase: v.lastRound + 1, lastRound: v.lastRound, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: v.head}
 		return sess, seededHistory(v.system, v.history), nil
 	}
 	if v.runActive {
@@ -103,10 +108,11 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, err := st.Append(ctx, thread, v.head, rec); err != nil {
+	head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.queue, rec)
+	if err != nil {
 		return nil, nil, fmt.Errorf("agent: persist run start on thread %q: %w", thread, err)
 	}
-	sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: v.head + 1, roundBase: 0, lastRound: -1, open: -1}
+	sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: head, roundBase: 0, lastRound: -1, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: head}
 	return sess, seededHistory(system, append(v.history, llm.UserMessage(input))), nil
 }
 
@@ -157,20 +163,137 @@ func (a *Agent) reserveGeneratedThread(ctx context.Context, st store.Store, thre
 			lastErr = err
 			continue
 		}
-		sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: 1, roundBase: 0, lastRound: -1, open: -1}
+		sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: 1, roundBase: 0, lastRound: -1, open: -1, cfgRead: 1}
 		return sess, seededHistory(system, []llm.Message{llm.UserMessage(input)}), nil
 	}
 	return nil, nil, fmt.Errorf("agent: reserve run on thread %q inconclusive after retries (run %s may be active; resume it): %w", thread, runID, lastErr)
 }
 
-// append stores records at the session's expected revision.
+// append stores records at the session's expected revision. On a revision
+// conflict an external control-plane writer (config_changed) has advanced
+// the log: the tail is re-read from the last known head, control records
+// are folded into the session projection, and the append retries at the
+// true head — the D6(a) absorb protocol. Any non-control record in the gap
+// is unabsorbable and fails loudly.
 func (p *persistence) append(ctx context.Context, records ...store.Record) error {
-	head, err := p.a.store.Append(ctx, p.thread, p.head, records...)
-	if err != nil {
-		return fmt.Errorf("agent: persist %s on thread %q: %w", records[0].Kind, p.thread, err)
+	const maxAttempts = 4
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			if aerr := p.absorbTail(ctx, p.head, true); aerr != nil {
+				return fmt.Errorf("agent: persist %s on thread %q: %w", records[0].Kind, p.thread, aerr)
+			}
+		}
+		var head int64
+		head, err = p.a.store.Append(ctx, p.thread, p.head, records...)
+		if err == nil {
+			p.head = head
+			if head > p.cfgRead {
+				p.cfgRead = head
+			}
+			return nil
+		}
+		if !errors.Is(err, store.ErrRevisionConflict) {
+			break
+		}
 	}
-	p.head = head
+	return fmt.Errorf("agent: persist %s on thread %q: %w", records[0].Kind, p.thread, err)
+}
+
+// refreshConfig folds any config_changed records appended since the last
+// scan into the session's effective config. Called at each round top.
+func (p *persistence) refreshConfig(ctx context.Context) error {
+	return p.absorbTail(ctx, p.cfgRead, false)
+}
+
+// absorbTail reads the log from seq and folds config_changed records into
+// the session projection. In strict mode (write-point conflict) any other
+// record in the gap is a hard error; in scan mode (round top) the gap holds
+// this session's own lifecycle records and only config records are folded.
+func (p *persistence) absorbTail(ctx context.Context, from int64, strict bool) error {
+	recs, err := p.a.store.History(ctx, p.thread, from)
+	if err != nil {
+		return fmt.Errorf("agent: absorb control records on thread %q: %w", p.thread, err)
+	}
+	high := from
+	for _, r := range recs {
+		switch {
+		case r.Kind == store.KindConfigChanged:
+			cp, derr := decodeConfigChanged(r)
+			if derr != nil {
+				return derr
+			}
+			p.cfg.fold(cp)
+		case r.Kind == store.KindInputQueued:
+			qp, derr := decodeInputQueued(r)
+			if derr != nil {
+				return derr
+			}
+			p.queue = append(p.queue, queueEntry{ID: r.ID, Input: qp.Input})
+		case strict:
+			return fmt.Errorf("agent: unabsorbable record %s at seq %d on thread %q: %w", r.Kind, r.Seq, p.thread, store.ErrRevisionConflict)
+		}
+		if r.Seq+1 > high {
+			high = r.Seq + 1
+		}
+	}
+	if high > p.cfgRead {
+		p.cfgRead = high
+	}
+	if high > p.head {
+		p.head = high
+	}
 	return nil
+}
+
+// appendRebaseable appends fresh records at head, rebasing across external
+// control-plane writes by folding config_changed records into cfg. The
+// records must carry fresh IDs and content that does not depend on the log
+// position; lifecycle-position-bound payloads (checkpoints) use their own
+// re-serializing loops instead.
+func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread string, head int64, cfg *configState, queue *[]queueEntry, records ...store.Record) (int64, error) {
+	const maxAttempts = 4
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			recs, rerr := st.History(ctx, thread, head)
+			if rerr != nil {
+				return 0, fmt.Errorf("agent: absorb control records on thread %q: %w", thread, rerr)
+			}
+			high := head
+			for _, r := range recs {
+				switch r.Kind {
+				case store.KindConfigChanged:
+					cp, derr := decodeConfigChanged(r)
+					if derr != nil {
+						return 0, derr
+					}
+					cfg.fold(cp)
+				case store.KindInputQueued:
+					qp, derr := decodeInputQueued(r)
+					if derr != nil {
+						return 0, derr
+					}
+					*queue = append(*queue, queueEntry{ID: r.ID, Input: qp.Input})
+				default:
+					return 0, fmt.Errorf("agent: unabsorbable record %s at seq %d on thread %q: %w", r.Kind, r.Seq, thread, store.ErrRevisionConflict)
+				}
+				if r.Seq+1 > high {
+					high = r.Seq + 1
+				}
+			}
+			head = high
+		}
+		var applied int64
+		applied, err = st.Append(ctx, thread, head, records...)
+		if err == nil {
+			return applied, nil
+		}
+		if !errors.Is(err, store.ErrRevisionConflict) {
+			break
+		}
+	}
+	return 0, fmt.Errorf("agent: append on thread %q: %w", thread, err)
 }
 
 // declareRound durably records the round's complete assistant message before
@@ -190,6 +313,40 @@ func (p *persistence) declareRound(ctx context.Context, round int, msg llm.Messa
 		p.lastRound = r
 	}
 	return nil
+}
+
+// declareTerminalRound durably records a tool-free assistant turn that a
+// FinishRound-Continue decision keeps the run alive after: without this
+// record a crash before the next round would lose the assistant turn, since
+// the natural-done path would have closed the run. The declaration carries
+// the terminal_text kind so replay accepts it without tool calls and never
+// treats it as an open declaration.
+func (p *persistence) declareTerminalRound(ctx context.Context, round int, msg llm.Message) error {
+	r := p.roundBase + round
+	rec, err := encodeRecord(store.KindRoundDeclared, recordID(p.runID, "-d"+strconv.Itoa(r)),
+		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg, Kind: "terminal_text"})
+	if err != nil {
+		return err
+	}
+	if err := p.append(ctx, rec); err != nil {
+		return err
+	}
+	if r > p.lastRound {
+		p.lastRound = r
+	}
+	return nil
+}
+
+// closeRun durably closes a FinishRound-End run: the round's declaration
+// and commit are already durable, so no message is re-carried. Replay
+// derives the terminal view from the log, exactly as it does for the
+// natural-done path.
+func (p *persistence) closeRun(ctx context.Context, toolCalls int, usage, total llm.Usage) error {
+	rec, err := runClosedFor(p.runID, toolCalls, usage, total)
+	if err != nil {
+		return err
+	}
+	return p.append(ctx, rec)
 }
 
 // commitRound durably closes the round with its ordered results.

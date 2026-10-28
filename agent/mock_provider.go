@@ -16,6 +16,7 @@ type MockProvider struct {
 	index        int
 	LastMessages []llm.Message
 	LastTools    []tool.ToolInfo
+	LastOptions  []llm.Option
 	failBefore   int   // fail this many times with failErr before using responses
 	failErr      error // error to return for failures
 	failCount    int   // tracks how many times we've failed
@@ -45,9 +46,10 @@ func MsgWithUsageResponse(msg llm.Message, usage *llm.Usage) mockResponse {
 
 func (m *MockProvider) Name() string { return "mock" }
 
-func (m *MockProvider) Chat(_ context.Context, messages []llm.Message, tools []tool.ToolInfo, _ ...llm.Option) (*llm.Message, *llm.Usage, error) {
+func (m *MockProvider) Chat(_ context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (*llm.Message, *llm.Usage, error) {
 	m.LastMessages = messages
 	m.LastTools = tools
+	m.LastOptions = opts
 	if m.failBefore > 0 && m.failCount < m.failBefore {
 		m.failCount++
 		return nil, nil, m.failErr
@@ -97,6 +99,8 @@ type MockStreamingProvider struct {
 	failCount    int   // tracks failure count
 	LastMessages []llm.Message
 	LastTools    []tool.ToolInfo
+	LastOptions  []llm.Option
+	AllMessages  [][]llm.Message
 }
 
 func NewMockStreamingProvider(responses [][]llm.Chunk) *MockStreamingProvider {
@@ -114,9 +118,11 @@ func (m *MockStreamingProvider) Chat(_ context.Context, _ []llm.Message, _ []too
 	return nil, nil, llm.ErrStreamingNotSupported
 }
 
-func (m *MockStreamingProvider) ChatStream(_ context.Context, messages []llm.Message, tools []tool.ToolInfo, _ ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
+func (m *MockStreamingProvider) ChatStream(_ context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	m.LastMessages = messages
 	m.LastTools = tools
+	m.AllMessages = append(m.AllMessages, messages)
+	m.LastOptions = opts
 	if m.failBefore > 0 && m.failCount < m.failBefore {
 		m.failCount++
 		return nil, m.failErr

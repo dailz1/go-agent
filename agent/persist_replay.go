@@ -30,6 +30,8 @@ type threadView struct {
 	cancelled bool
 	lastRound int
 	open      *openRound
+	cfg       configState
+	queue     []queueEntry
 }
 
 // closeUnknown resolves an interrupted round honestly: the declared
@@ -94,6 +96,13 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 		if err != nil {
 			return threadView{}, err
 		}
+		if cpState != nil && cpState.CodecVersion < store.SchemaV3 {
+			// Pre-v3 snapshots carry no control-plane projection; replaying
+			// only their tail would silently drop config_changed records
+			// hidden behind the checkpoint. Full-log fallback per the D9
+			// rule: an old snapshot must never bypass new semantics.
+			cpState = nil
+		}
 		if cpState != nil {
 			base = cpState.History
 		}
@@ -113,6 +122,12 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 		// lifecycle; the snapshot carries them.
 		v.system, v.systemSet, v.runActive, v.runID, v.lastRound =
 			cpState.System, true, cpState.RunActive, cpState.RunID, cpState.LastRound
+		if cpState.Config != nil {
+			v.cfg = *cpState.Config
+		}
+		if cpState.Queue != nil {
+			v.queue = cpState.Queue
+		}
 	}
 	v, err = replayRecords(v, records)
 	v.head = state.Head
@@ -125,7 +140,7 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 	v.history = deepCopyMessages(v.history)
 	for i := range records {
 		r := records[i]
-		if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV2 {
+		if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV3 {
 			return v, fmt.Errorf("%w: seq %d schema %d", ErrIncompatibleLog, r.Seq, r.Schema)
 		}
 		if r.Kind == store.KindCheckpoint {
@@ -168,6 +183,18 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 			if p.Message.Role != llm.RoleAssistant {
 				return v, incompatible(r, "declaration message must be an assistant message")
 			}
+			if p.Kind == terminalTextDeclaration {
+				// A FinishRound-Continue keeps the run alive after a
+				// tool-free turn: the turn joins history and no open
+				// declaration exists (there is nothing to execute).
+				if len(toolUseBlocks(p.Message)) > 0 {
+					return v, incompatible(r, "terminal_text declaration carries tool calls")
+				}
+				v.history = append(v.history, p.Message)
+				v.lastRound = p.Round
+				v.head = r.Seq + 1
+				continue
+			}
 			calls := toolUseBlocks(p.Message)
 			if len(calls) == 0 {
 				return v, incompatible(r, "declaration without tool calls")
@@ -202,6 +229,53 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 			v.history = append(v.history, v.open.declared)
 			v.history = append(v.history, p.Results...)
 			v.open = nil
+		case store.KindConfigChanged:
+			// Valid anywhere: a host may retune a thread between runs or
+			// while one is active. It carries no lifecycle constraints.
+			p, err := decodeConfigChanged(r)
+			if err != nil {
+				return v, err
+			}
+			v.cfg.fold(p)
+		case store.KindInputQueued:
+			p, err := decodeInputQueued(r)
+			if err != nil {
+				return v, err
+			}
+			v.queue = append(v.queue, queueEntry{ID: r.ID, Input: p.Input})
+		case store.KindInputConsumed:
+			p, err := decodeInputConsumed(r)
+			if err != nil {
+				return v, err
+			}
+			if !v.runActive || v.open != nil {
+				// A legal D1 drain runs between a committed round and the next
+				// declaration: never mid-declaration, never outside a run.
+				return v, incompatible(r, "input consumed outside the drain window")
+			}
+			if len(p.Inputs) > len(v.queue) {
+				return v, incompatible(r, "consumed inputs exceed the pending queue")
+			}
+			for i, e := range p.Inputs {
+				if v.queue[i].ID != e.ID || v.queue[i].Input != e.Input {
+					return v, incompatible(r, fmt.Sprintf("consumed input %d does not match the queue prefix (id %q)", i, e.ID))
+				}
+				v.history = append(v.history, llm.UserMessage(e.Input))
+			}
+			v.queue = v.queue[len(p.Inputs):]
+		case store.KindRunClosed:
+			p, err := decodeRunClosed(r)
+			if err != nil {
+				return v, err
+			}
+			if !v.runActive || v.open != nil {
+				return v, incompatible(r, "run_closed outside the cooperative-end window")
+			}
+			if p.RunID != v.runID {
+				return v, incompatible(r, fmt.Sprintf("run_closed for run %q does not match active run %q", p.RunID, v.runID))
+			}
+			v.runActive = false
+			v.cancelled = false
 		case store.KindRunCancelled:
 			if err := v.applyCancellation(r); err != nil {
 				return v, err

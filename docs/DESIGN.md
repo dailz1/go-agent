@@ -218,6 +218,34 @@ WithRunExitFn(func(SettlementToken)) 在成功建立的 session unwind
 依据 ThreadID 自动认领当前 run。SettlementTarget、SettleThread 与
 cancelled 快照读取都不启动执行，不新增该包装或退出回调。
 
+### 运行中控制面（docs/CONTROL-PLANE-DESIGN.md v3，分批建设中）
+
+原则：**运行中来自外部的意图——插话、改配置、叫停——一律走线程日志，在回合边界的 drain 点生效；接受即持久化。**裁决记录与完整设计见 docs/CONTROL-PLANE-DESIGN.md v3。三个契约：① 运行时配置热更新（已落地）；② durable steering 队列（已落地）；③ FinishRound 回合末决策钩子（已落地）。事件面不变：sealed 七种事件不增不减。
+
+#### ① 运行时配置热更新（本批）
+
+新记录 kind `config_changed`（schema=2）：payload `{model,thinking}` 均为 nullable 字符串，nil = 不变；自记录的 replay 位置起线程生效配置按字段覆盖、后写赢，无记录时 = Agent 构造时的 `WithLLMOptions` 对应字段。v1 字段域仅 Model + Thinking（各 adapter 的实际支持差异由适配器文档如实承载，openairesponses 忽略 Thinking）。
+
+新 API `SetThreadConfig(ctx, store, thread, ConfigChange) error`：外部写者，接受即落库——Append 前重读 head、同幂等键重试（bounded，超限 `ErrThreadBusy`）；全字段 nil 拒绝（`ErrEmptyConfig`）；未配置 Store 的调用返回 `ErrNoStore`。要求 Store 值可比较（同所有权登记规则）。
+
+runner 写点吸收协议（D6-a）：runner 不再盲信 session 缓存 head；每个写点（declare/commit/checkpoint/终态）Append 前重读日志尾，发现尾部的新 `config_changed` 则吸收进生效配置投影，遇白名单外的未知记录仍按冲突失败。生效读取点在每轮顶部：**读配置 → 压缩 → drain（②③批生效）→ 预算检查 → 请求**，本轮请求的 options = 叠加后配置覆盖 `a.llmOpts`，按轮快照不回写 `a.llmOpts`。
+
+checkpoint：codec_version 升至 3，快照新增 `effective_config` 投影；旧版本快照遇含新 kind 的日志按既有规则回退 `History(ctx, thread, fromSeq)` 全量重放，不得借旧快照绕过新语义。
+
+#### ② durable steering 队列（本批）
+
+新记录 kind：`input_queued`（schema=2，payload `{input}`，逐字节保留）为意图记录，不改 history；`input_consumed`（schema=2，payload `{inputs:[{id,input}]}`）为 D1 drain 的消费记录，必须逐项匹配当前队列 FIFO 前缀（ID+文本），消费项作为 role=user 消息按位置插入 canonical history。
+
+新 API：`(*Agent).EnqueueInputWithID(ctx, thread, idempotencyKey, input) (QueuedInputID, error)`（注：实现为 Agent 方法而非设计稿早期的包级函数，以获取 contextWindow 语义与 Store 绑定）。幂等键由调用方提供，**操作身份 = 调用意图**：同键重试跨重启、跨 checkpoint 确认（含 ErrInvalidRecord 时全量日志回查），不产生重复注入；不同键同文本是两条消息。哨兵：`ErrNoStore` / `ErrEmptyInput`（空 input 或空键）/ `ErrInputTooLarge`（超过 `MaxEnqueueInputRunes`=8192，把超长输入挡在承诺之前）。
+
+drain 点全循环唯一：每轮顶部顺序 = 读配置 → 压缩 → **drain** → 预算检查 → 请求；drain 以单条 `input_consumed` 记录原子落库后注入。run 结束时残留队列由下一 run 首轮消费（follow-up 语义）。吸收白名单扩展：runner 写点冲突与轮顶扫描同步吸收 `input_queued`（并入队列投影）；`input_consumed` 仅 runner 自写，不在白名单。checkpoint 快照新增队列投影（含未消费项），旧快照回退规则同①。匿名（无 store）run 不支持 steering。
+
+#### ③ FinishRound 回合末决策钩子（本批）
+
+新记录 kind `run_closed`（schema=2，payload `{run_id,tool_calls,usage,total_usage}`，不携带消息）：FinishRound-End 的合作式终态，与 run_cancelled 对称——声明与结果已在日志中，关闭 run 不重携带、不伪造消息；重放层要求 active run、无 open declaration、RunID 匹配。
+
+新 API `WithFinishRound(fn(ctx, FinishRoundContext) (FinishRoundDecision, error))`：FinishRoundContext 携带 `{ThreadID, Round（零基）, Assistant, Results}`（深拷贝）；FinishRoundDecision 三值——零值 Default 维持既有调度、Continue 保证再发一次 provider 请求（受 maxIter 约束）、End 合作式收尾（正常 Done，Truncated=false，不产生 run_cancelled、不需要 SettleThread，DoneEvent.Message = 本回合 assistant）。调用点在终态判定之前，覆盖工具回合（commit 之后）与无工具回合——后者先以 `terminal_text` 子状态持久宣告（round_declared 的 kind 字段泛化：空 = 传统工具回合；重放层接受无工具调用的 terminal_text 宣告并并入 history，其余无工具宣告仍拒绝）。Continue 后崩溃：宣告已 durable，重放不丢回合。钩子错误以 `FinishRoundError{Round,Err}` 包装（fail-closed，已提交回合保留，run 可 Resume）；无效 Action 值同错误路径。最后一片允许迭代（maxIter 熔断圈）不咨询钩子——熔断优先级最高，Continue 不可延长预算护栏。无 store 的匿名 run 同样可用（纯内存回调）。
+
 ### OpenAI Responses 协议适配器（`llm/openairesponses`，建设中）
 
 独立子包实现同一 `llm.Provider` 接口（`Name` 为 `openai_responses`），与 glm/openai 平行；协议差异是条目级的，不做双协议混包。已裁决（2026-09-11）：D1 独立子包；D2 状态策略 A（`store:false` + 手动回放）；D3 新增条目级 reasoning 块；D4 内建工具不做；D5 Chat+ChatStream 全量、mock SSE 单测 + e2e。

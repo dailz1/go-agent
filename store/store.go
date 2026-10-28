@@ -31,6 +31,7 @@ import (
 const (
 	SchemaV1 = 1
 	SchemaV2 = 2
+	SchemaV3 = 3
 )
 
 // Record kinds. Append rejects unknown kinds so a stale binary cannot write
@@ -45,6 +46,10 @@ const (
 	KindRoundCommitted = "round_committed" // payload: the round's ordered model-visible results
 	KindError          = "error"           // payload: terminal stream error description
 	KindCheckpoint     = "checkpoint"      // payload: Checkpoint
+	KindConfigChanged  = "config_changed"  // payload: runtime config override (agent-owned)
+	KindInputQueued    = "input_queued"    // payload: steering input awaiting drain (agent-owned)
+	KindInputConsumed  = "input_consumed"  // payload: FIFO prefix of drained steering inputs (agent-owned)
+	KindRunClosed      = "run_closed"      // payload: cooperative FinishRound-End terminal (agent-owned)
 )
 
 // Errors returned by Store implementations. Wrapped I/O failures remain
@@ -210,17 +215,17 @@ func planAppend(log []Record, expected int64, batch []Record) (apply []Record, h
 
 func validateRecord(r *Record) error {
 	switch r.Kind {
-	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindError, KindCheckpoint:
+	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindError, KindCheckpoint, KindConfigChanged, KindInputQueued, KindInputConsumed, KindRunClosed:
 	default:
 		return ErrUnknownKind
 	}
 	if r.ID == "" {
 		return ErrInvalidRecord
 	}
-	if r.Schema < 0 || r.Schema > SchemaV2 {
+	if r.Schema < 0 || r.Schema > SchemaV3 {
 		return ErrUnsupportedSchema
 	}
-	if r.Kind == KindRunCancelled && r.Schema != SchemaV2 {
+	if (r.Kind == KindRunCancelled || r.Kind == KindConfigChanged || r.Kind == KindInputQueued || r.Kind == KindInputConsumed || r.Kind == KindRunClosed) && r.Schema != SchemaV2 {
 		return ErrUnsupportedSchema
 	}
 	if len(r.Payload) == 0 {

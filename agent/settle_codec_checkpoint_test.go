@@ -11,21 +11,39 @@ import (
 )
 
 func TestSettleCodecCheckpointVersions(t *testing.T) {
-	for _, schema := range []int{store.SchemaV1, store.SchemaV2} {
+	for _, schema := range []int{store.SchemaV1, store.SchemaV2, store.SchemaV3} {
 		t.Run(string(rune('0'+schema)), func(t *testing.T) {
 			start := settleCodecPrefix(t)[0]
-			cp := store.Record{Kind: store.KindCheckpoint, Schema: schema, ID: "cp",
-				Payload: []byte(`{"history":[{"role":"system","content":"frozen"},{"role":"user","content":"compacted"}],"system":"frozen","run_active":true,"run_id":"r","last_round":-1}`)}
-			if schema == store.SchemaV2 {
-				cp.Payload = append([]byte(`{"codec_version":2,`), cp.Payload[1:]...)
+			var payload string
+			switch schema {
+			case store.SchemaV1:
+				payload = `{"history":[{"role":"system","content":"frozen"},{"role":"user","content":"compacted"}],"system":"frozen","run_active":true,"run_id":"r","last_round":-1}`
+			case store.SchemaV2:
+				payload = `{"codec_version":2,"history":[{"role":"system","content":"frozen"},{"role":"user","content":"compacted"}],"system":"frozen","run_active":true,"run_id":"r","last_round":-1}`
+			default:
+				payload = `{"codec_version":3,"history":[{"role":"system","content":"frozen"},{"role":"user","content":"compacted"}],"system":"frozen","run_active":true,"run_id":"r","last_round":-1,"config":{"model":"model-b"}}`
 			}
+			cp := store.Record{Kind: store.KindCheckpoint, Schema: schema, ID: "cp", Payload: []byte(payload)}
 			cancel := settleCodecCancel(t)
 			cancel.Payload = []byte(`{"run_id":"r","open_round":null,"results":[]}`)
 			st := settleCodecStore([]store.Record{start, cp, cancel})
 			a := New(nil, nil, WithStore(st))
 			v, err := a.replayThread(t.Context(), "t")
+			if schema < store.SchemaV3 {
+				// D9: pre-v3 snapshots are not trusted; full-log fallback
+				// replays the original records, so the compacted view is
+				// not restored and the config record set behind the
+				// checkpoint region is re-derived from the log itself.
+				if err != nil || !v.cancelled || len(v.history) != 1 || messageString(v.history[0]) != "original" {
+					t.Fatalf("legacy checkpoint falls back to full log = %+v, %v", v, err)
+				}
+				return
+			}
 			if err != nil || !v.cancelled || len(v.history) != 2 || messageString(v.history[1]) != "compacted" {
-				t.Fatalf("checkpoint -> cancellation = %+v, %v", v, err)
+				t.Fatalf("v3 checkpoint -> cancellation = %+v, %v", v, err)
+			}
+			if v.cfg.Model == nil || *v.cfg.Model != "model-b" {
+				t.Fatalf("v3 checkpoint config projection lost: %+v", v.cfg)
 			}
 		})
 	}
@@ -55,7 +73,7 @@ func TestSettleCodecCheckpointAfterCancellation(t *testing.T) {
 	if err := json.Unmarshal(state.Checkpoint.Payload, &version); err != nil {
 		t.Fatal(err)
 	}
-	if state.Checkpoint.Schema != store.SchemaV2 || version.CodecVersion != 2 {
+	if state.Checkpoint.Schema != store.SchemaV3 || version.CodecVersion != 3 {
 		t.Fatalf("checkpoint versions = schema %d, codec %d", state.Checkpoint.Schema, version.CodecVersion)
 	}
 	v, err := a.replayThread(t.Context(), "t")
@@ -78,9 +96,9 @@ func TestSettleCodecRejectsFutureVersions(t *testing.T) {
 		schema  int
 		payload string
 	}{
-		{"envelope", 3, `{}`},
-		{"future codec", 2, `{"codec_version":3}`},
-		{"future codec v1 envelope", 1, `{"codec_version":3}`},
+		{"envelope", 4, `{}`},
+		{"future codec", 2, `{"codec_version":4}`},
+		{"future codec v1 envelope", 1, `{"codec_version":4}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cp := store.Record{Kind: store.KindCheckpoint, Schema: tc.schema, ID: "cp", Payload: []byte(tc.payload)}
