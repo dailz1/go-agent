@@ -30,7 +30,7 @@ var jsonlRegistry = struct {
 // first access after a crash, a torn final line (no trailing newline, or
 // trailing garbage) is repaired by truncation and the truncation is synced;
 // interior corruption and sequence gaps are NOT repaired — they surface as
-// ErrCorruptLog. Records with a schema newer than SchemaV1 surface as
+// ErrCorruptLog. Records with a schema newer than SchemaV3 surface as
 // ErrUnsupportedSchema. If a write or sync fails, the thread is reloaded
 // from disk before the error returns, so the in-memory view always matches
 // durable bytes and retries classify correctly.
