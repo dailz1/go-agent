@@ -62,7 +62,7 @@ func TestGeneratedIDReservationAmbiguousFailure(t *testing.T) {
 	t.Cleanup(func() { newThreadID = orig })
 
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("x")))
-	res, err := agent.Run(ctx, "hi")
+	res, err := agent.Run(ctx, "hi", WithThread(""))
 	if err != nil {
 		t.Fatalf("Run through ambiguous reservation: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestNonComparableStoreIsRejected(t *testing.T) {
 	})
 	agent := New(NewMockProvider(MsgResponse(llm.AssistantMessage("x"))), reg,
 		WithStore(valueStore{calls: map[string]int{}}), WithLogger(discardLogger()))
-	if _, err := agent.RunThread(context.Background(), "t", "hi"); !errors.Is(err, ErrStoreNotComparable) {
-		t.Fatalf("RunThread error = %v, want ErrStoreNotComparable", err)
+	if _, err := agent.Run(context.Background(), "hi", WithThread("t")); !errors.Is(err, ErrStoreNotComparable) {
+		t.Fatalf("Run error = %v, want ErrStoreNotComparable", err)
 	}
 }

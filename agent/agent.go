@@ -218,9 +218,9 @@ func WithRetryConfig(cfg AgentRetryConfig) Option {
 	return func(a *Agent) { a.retryCfg = cfg; a.retryCfgSet = true }
 }
 
-// WithStore enables kernel-automatic session persistence: RunThread /
-// ResumeThread / RunThreadStream address threads explicitly, and Run / RunStream
-// gain a kernel-generated thread ID exposed via ThreadID fields. Without a
+// WithStore configures the store that durable threads live in. Run /
+// RunStream persist only when the call passes WithThread; ResumeThread /
+// SettleThread / SettlementTarget address threads explicitly. Without a
 // store nothing changes: no thread ID is generated and the persistence path
 // never executes. See docs/DESIGN.md for the persistence contract.
 func WithStore(s store.Store) Option {
@@ -293,7 +293,9 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	return a
 }
 
-// Run executes the agent loop with the given user input.
+// Run executes the agent loop with the given user input. Without options
+// the run is ephemeral: it never touches a configured store and ThreadID
+// stays ""; pass WithThread to route it onto a durable thread.
 //
 // The loop:
 //  1. Send conversation history + tool definitions to the LLM.
@@ -303,16 +305,8 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 //
 // Returns an error only for system-level failures (provider unreachable, tool
 // Execute returned a Go error). Tool-level errors are fed back to the LLM.
-func (a *Agent) Run(ctx context.Context, input string) (*RunResult, error) {
-	if a.store != nil {
-		return a.runOnNewThread(ctx, input)
-	}
-	history := make([]llm.Message, 0, 16)
-	if a.system.Content != nil {
-		history = append(history, a.system)
-	}
-	history = append(history, llm.UserMessage(input))
-	seq, err := a.runStreamInternal(ctx, history, nil)
+func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunResult, error) {
+	seq, err := a.runSequence(ctx, input, newRunConfig(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -354,18 +348,14 @@ func (a *Agent) foldRunStream(seq iter.Seq2[AgentEvent, error]) (*RunResult, err
 // flow through the iterator's second value and stop iteration. Breaking out
 // of the range early is safe. The loop runs up to the configured maxIter
 // rounds; the final [DoneEvent] carries the same fields as [RunResult].
+// Without options the run is ephemeral; WithThread routes it onto a durable
+// thread, whose stream stays lazy: ownership, replay, and the input commit
+// happen on the first iteration, so a never-ranged call has no observable
+// effect, and events of previous runs are never re-emitted.
 //
 // See docs/DESIGN.md for design detail.
-func (a *Agent) RunStream(ctx context.Context, input string) (iter.Seq2[AgentEvent, error], error) {
-	if a.store != nil {
-		return a.runOnNewThreadStream(ctx, input), nil
-	}
-	history := make([]llm.Message, 0, 16)
-	if a.system.Content != nil {
-		history = append(history, a.system)
-	}
-	history = append(history, llm.UserMessage(input))
-	return a.runStreamInternal(ctx, history, nil)
+func (a *Agent) RunStream(ctx context.Context, input string, opts ...RunOption) (iter.Seq2[AgentEvent, error], error) {
+	return a.runSequence(ctx, input, newRunConfig(opts))
 }
 
 func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, sess *persistence) (iter.Seq2[AgentEvent, error], error) {

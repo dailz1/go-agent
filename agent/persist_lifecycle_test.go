@@ -11,9 +11,9 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
-// TestRunThreadPersistsRoundLifecycle pins the record shape of a complete
+// TestRunPersistsRoundLifecycle pins the record shape of a complete
 // tool round and the replay of that history into the next run.
-func TestRunThreadPersistsRoundLifecycle(t *testing.T) {
+func TestRunPersistsRoundLifecycle(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()
 	agent := persistTestAgent(t, st,
@@ -21,9 +21,9 @@ func TestRunThreadPersistsRoundLifecycle(t *testing.T) {
 		MsgResponse(llm.AssistantMessage("all done")),
 	)
 
-	res, err := agent.RunThread(ctx, "t1", "hi")
+	res, err := agent.Run(ctx, "hi", WithThread("t1"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.ThreadID != "t1" {
 		t.Errorf("ThreadID = %q, want t1", res.ThreadID)
@@ -64,8 +64,8 @@ func TestRunThreadPersistsRoundLifecycle(t *testing.T) {
 	// The next run replays the closed history: the model must see the whole
 	// prior conversation, not just the new input.
 	agent2 := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("second")))
-	if _, err := agent2.RunThread(ctx, "t1", "again"); err != nil {
-		t.Fatalf("second RunThread: %v", err)
+	if _, err := agent2.Run(ctx, "again", WithThread("t1")); err != nil {
+		t.Fatalf("second Run: %v", err)
 	}
 	msgs := agent2.provider.(*MockProvider).LastMessages
 	if len(msgs) != 5 {
@@ -82,10 +82,10 @@ func TestRunThreadPersistsRoundLifecycle(t *testing.T) {
 	}
 }
 
-// TestRunThreadRejectsNewInputWhileIncomplete pins the dangling-input rule:
+// TestRunRejectsNewInputWhileIncomplete pins the dangling-input rule:
 // a run without a terminal record blocks new input. This branch chooses
 // ResumeThread, which re-asks the model without appending anything.
-func TestRunThreadRejectsNewInputWhileIncomplete(t *testing.T) {
+func TestRunRejectsNewInputWhileIncomplete(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()
 	stagedRunStarted(t, st, "t", "r-1", "crashed before reply")
@@ -94,8 +94,8 @@ func TestRunThreadRejectsNewInputWhileIncomplete(t *testing.T) {
 		MsgResponse(llm.AssistantMessage("late answer")),
 		MsgResponse(llm.AssistantMessage("next answer")),
 	)
-	if _, err := agent.RunThread(ctx, "t", "new question"); !errors.Is(err, ErrRunIncomplete) {
-		t.Fatalf("RunThread error = %v, want ErrRunIncomplete", err)
+	if _, err := agent.Run(ctx, "new question", WithThread("t")); !errors.Is(err, ErrRunIncomplete) {
+		t.Fatalf("Run error = %v, want ErrRunIncomplete", err)
 	}
 	// The rejection must not have written anything.
 	equalKinds(t, logKinds(t, st, "t"), store.KindRunStarted)
@@ -110,8 +110,8 @@ func TestRunThreadRejectsNewInputWhileIncomplete(t *testing.T) {
 	// The run is now closed; a new input is accepted and the provider never
 	// sees two adjacent user turns: the original input is answered by the
 	// resumed reply before the new input arrives.
-	if _, err := agent.RunThread(ctx, "t", "next"); err != nil {
-		t.Fatalf("RunThread after resume: %v", err)
+	if _, err := agent.Run(ctx, "next", WithThread("t")); err != nil {
+		t.Fatalf("Run after resume: %v", err)
 	}
 	msgs := agent.provider.(*MockProvider).LastMessages
 	for i := 1; i < len(msgs); i++ {
@@ -187,9 +187,9 @@ func TestTruncatedRunPersistsSkippedResults(t *testing.T) {
 	agent := New(NewMockProvider(MsgResponse(toolCallMessage("c1"))), reg,
 		WithStore(st), WithMaxIter(1), WithLogger(discardLogger()))
 
-	res, err := agent.RunThread(ctx, "t", "hi")
+	res, err := agent.Run(ctx, "hi", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if !res.Truncated {
 		t.Error("Truncated = false, want true")
@@ -221,8 +221,8 @@ func TestTruncatedRunPersistsSkippedResults(t *testing.T) {
 	// The replayed history is provider-valid: exactly user, declaration,
 	// skipped result — no trailing unpaired assistant tool-call batch.
 	agent2 := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("ok")))
-	if _, err := agent2.RunThread(ctx, "t", "next"); err != nil {
-		t.Fatalf("RunThread after truncation: %v", err)
+	if _, err := agent2.Run(ctx, "next", WithThread("t")); err != nil {
+		t.Fatalf("Run after truncation: %v", err)
 	}
 	msgs := agent2.provider.(*MockProvider).LastMessages
 	want := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleUser}
@@ -279,9 +279,9 @@ func TestRoundTopScanRejectsForeignRecord(t *testing.T) {
 			return FinishRoundDecision{}, nil
 		}),
 	)
-	_, err := agent.RunThread(context.Background(), "t", "compute")
+	_, err := agent.Run(context.Background(), "compute", WithThread("t"))
 	if !errors.Is(err, store.ErrRevisionConflict) {
-		t.Fatalf("RunThread err = %v, want ErrRevisionConflict from the fail-closed round-top scan", err)
+		t.Fatalf("Run err = %v, want ErrRevisionConflict from the fail-closed round-top scan", err)
 	}
 	if len(provider.AllMessages) != 1 {
 		t.Fatalf("provider calls = %d, want 1 (the abort precedes the second request)", len(provider.AllMessages))

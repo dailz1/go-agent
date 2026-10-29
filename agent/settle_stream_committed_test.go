@@ -14,7 +14,7 @@ func TestSettleE32PreservesEarlierCommittedRound(t *testing.T) {
 		ag := persistTestAgent(t, st, MsgResponse(toolCallMessage("first")), MsgResponse(toolCallMessage("second", "third")))
 		var target SettlementToken
 		WithRunExitFn(func(value SettlementToken) { target = value })(ag)
-		seq, err := ag.RunThreadStream(t.Context(), "t", "old")
+		seq, err := ag.RunStream(t.Context(), "old", WithThread("t"))
 		if err != nil {
 			t.Fatal(err)
 		}

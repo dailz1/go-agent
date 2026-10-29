@@ -39,9 +39,9 @@ func TestStoreFailureAbortsRoundAndResumeRecovers(t *testing.T) {
 		MsgResponse(llm.AssistantMessage("after recovery")),
 	)
 
-	_, err := agent.RunThread(ctx, "t", "hi")
+	_, err := agent.Run(ctx, "hi", WithThread("t"))
 	if err == nil || !strings.Contains(err.Error(), "disk on fire") {
-		t.Fatalf("RunThread error = %v, want the storage failure", err)
+		t.Fatalf("Run error = %v, want the storage failure", err)
 	}
 	equalKinds(t, logKinds(t, st, "t"), store.KindRunStarted, store.KindRoundDeclared)
 
@@ -192,8 +192,8 @@ func TestReplayKindErrorClosesOpenDeclaration(t *testing.T) {
 	st := &scriptStore{records: []store.Record{start, declared, errRec}}
 
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("fresh run")))
-	if _, err := agent.RunThread(context.Background(), "t", "again"); err != nil {
-		t.Fatalf("RunThread after compatibility error record: %v", err)
+	if _, err := agent.Run(context.Background(), "again", WithThread("t")); err != nil {
+		t.Fatalf("Run after compatibility error record: %v", err)
 	}
 	// The model saw the interrupted declaration with its unresolved call
 	// state left out (the error terminal is opaque) and then the new input —
@@ -221,8 +221,8 @@ func TestReplayPreservesEmptyTerminalTurn(t *testing.T) {
 	st := &scriptStore{records: []store.Record{start, done}}
 
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("next")))
-	if _, err := agent.RunThread(context.Background(), "t", "again"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "again", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	msgs := agent.provider.(*MockProvider).LastMessages
 	want := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleUser}
@@ -268,8 +268,8 @@ func TestReplayAcceptsCompatibleDone(t *testing.T) {
 	st := &scriptStore{records: []store.Record{start, declared, committed, done}}
 
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("next")))
-	if _, err := agent.RunThread(context.Background(), "t", "again"); err != nil {
-		t.Fatalf("RunThread on replayed chain: %v", err)
+	if _, err := agent.Run(context.Background(), "again", WithThread("t")); err != nil {
+		t.Fatalf("Run on replayed chain: %v", err)
 	}
 	msgs := agent.provider.(*MockProvider).LastMessages
 	want := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleAssistant, llm.RoleUser}

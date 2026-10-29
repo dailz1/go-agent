@@ -58,7 +58,7 @@ func TestSettleInterruptCommittedResults(t *testing.T) {
 				}
 				p := parallelProvider(parallelToolCalls("success", "soft_error"))
 				a := New(p, reg, WithStore(st), WithToolConcurrency(tc.concurrency), WithLogger(discardLogger()))
-				seq, err := a.RunThreadStream(ctx, "t", "old")
+				seq, err := a.RunStream(ctx, "old", WithThread("t"))
 				if err != nil {
 					t.Fatal(err)
 				}

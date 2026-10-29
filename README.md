@@ -38,7 +38,7 @@ The module path is `github.com/dailz1/go-agent` and this repository requires Go 
 - **Provider** is the model boundary. Bring an OpenAI-compatible provider or a deterministic test double.
 - **Tool** exposes a JSON schema and returns either a model-visible soft error or a Go hard error.
 - **Event** exposes text deltas, tool calls/results, retries, compaction, and the terminal result without hook chains.
-- **Store** persists explicit threads for `RunThread` and `ResumeThread`; `Run` gains generated thread IDs when a Store is configured.
+- **Store** persists explicit threads for `Run`/`RunStream` with `WithThread` and for `ResumeThread`; without `WithThread` a run is ephemeral even when a Store is configured.
 
 ## Stop and redirect a persistent thread
 
@@ -46,7 +46,7 @@ Cancellation alone leaves a run incomplete and resumable. To abandon it, cancel 
 
 Settlement writes one `run_cancelled` record, pairs uncommitted tool calls with outcome-unknown results, and never reruns tools, emits Done, or undoes external effects. Retry uncertain settlement writes with the **same token**. A stale token cannot cancel a successor. `SettlementTarget` is a read-only inspection for a **new explicit recovery decision** after a crash, not a way to refresh an old cancellation request.
 
-After settlement, `ResumeThread` returns `Cancelled=true` with detached canonical `History`, zero `Message` and execution statistics, and no execution or writes. Normal Done still returns `ErrNothingToResume`. Submit the next input through `RunThread` or `RunThreadStream`; stopping and accepting that input are separate durable confirmations, not an atomic redirect. Parent settlement is non-recursive: the host collects child tokens and settles children before the parent.
+After settlement, `ResumeThread` returns `Cancelled=true` with detached canonical `History`, zero `Message` and execution statistics, and no execution or writes. Normal Done still returns `ErrNothingToResume`. Submit the next input through `Run` or `RunStream` with `WithThread`; stopping and accepting that input are separate durable confirmations, not an atomic redirect. Parent settlement is non-recursive: the host collects child tokens and settles children before the parent.
 
 Upgrade notes: consumers must check `RunResult.Cancelled` on successful Resume; `RunInterruptedError` now carries `Settlement`. Custom Stores must support Schema 2. New cancellation records and checkpoints use Schema 2 (checkpoints also carry `codec_version:2`); old logs remain readable without migration, but old binaries cannot read the new format. The seven-event set and nonpersistent history entry points are unchanged.
 

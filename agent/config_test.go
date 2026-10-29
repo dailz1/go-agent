@@ -45,8 +45,8 @@ func TestSetThreadConfigAppliesBeforeRun(t *testing.T) {
 	if err := SetThreadConfig(context.Background(), st, "t", ConfigChange{Model: strptr("model-b")}); err != nil {
 		t.Fatalf("SetThreadConfig: %v", err)
 	}
-	if _, err := agent.RunThread(context.Background(), "t", "hello"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "hello", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if got := configTestOpts(provider.LastOptions).Model; got != "model-b" {
 		t.Fatalf("model = %q, want model-b", got)
@@ -71,8 +71,8 @@ func TestSetThreadConfigMidRunAbsorbedAtNextRound(t *testing.T) {
 		WithLLMOptions(llm.WithModel("model-a")),
 		WithLogger(discardLogger()),
 	)
-	if _, err := agent.RunThread(context.Background(), "t", "compute"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "compute", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if got := configTestOpts(provider.LastOptions).Model; got != "model-b" {
 		t.Fatalf("round-2 model = %q, want model-b (absorbed after mid-run change)", got)
@@ -97,7 +97,7 @@ func TestConfigReplayAfterRestart(t *testing.T) {
 		WithLLMOptions(llm.WithModel("model-a")),
 		WithLogger(discardLogger()),
 	)
-	if _, err := agent.RunThread(context.Background(), "t", "first"); err != nil {
+	if _, err := agent.Run(context.Background(), "first", WithThread("t")); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	if got := configTestOpts(provider.LastOptions).Model; got != "model-a" {
@@ -106,7 +106,7 @@ func TestConfigReplayAfterRestart(t *testing.T) {
 	if err := SetThreadConfig(context.Background(), st, "t", ConfigChange{Thinking: strptr("enabled")}); err != nil {
 		t.Fatalf("SetThreadConfig: %v", err)
 	}
-	if _, err := agent.RunThread(context.Background(), "t", "second"); err != nil {
+	if _, err := agent.Run(context.Background(), "second", WithThread("t")); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	got := configTestOpts(provider.LastOptions)
@@ -244,8 +244,8 @@ func TestSetThreadConfigABAEndsOnA(t *testing.T) {
 			t.Fatalf("SetThreadConfig(%s): %v", m, err)
 		}
 	}
-	if _, err := agent.RunThread(ctx, "t", "hello"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(ctx, "hello", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if got := configTestOpts(provider.LastOptions).Model; got != "model-a" {
 		t.Fatalf("model = %q, want model-a (A->B->A must end on A)", got)
@@ -275,7 +275,7 @@ func TestCheckpointCarriesAbsorbedConfig(t *testing.T) {
 			return CompactionResult{History: []llm.Message{llm.UserMessage("compute")}, Changed: true}, nil
 		})),
 	)
-	if _, err := agent.RunThread(context.Background(), "t", "compute something here now"); err != nil {
+	if _, err := agent.Run(context.Background(), "compute something here now", WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	state, err := st.Latest(context.Background(), "t")
@@ -295,7 +295,7 @@ func TestCheckpointCarriesAbsorbedConfig(t *testing.T) {
 		WithLLMOptions(llm.WithModel("model-a")),
 		WithLogger(discardLogger()),
 	)
-	if _, err := resumed.RunThread(context.Background(), "t", "again"); err != nil {
+	if _, err := resumed.Run(context.Background(), "again", WithThread("t")); err != nil {
 		t.Fatalf("resumed run: %v", err)
 	}
 	if got := configTestOpts(provider2.LastOptions).Model; got != "model-b" {
@@ -311,8 +311,8 @@ func TestRunStartRebasesOverConfig(t *testing.T) {
 		WithLLMOptions(llm.WithModel("model-a")),
 		WithLogger(discardLogger()),
 	)
-	if _, err := agent.RunThread(context.Background(), "t", "hello"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "hello", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if got := configTestOpts(provider.LastOptions).Model; got != "model-b" {
 		t.Fatalf("model = %q, want model-b (run_started rebased over injected config)", got)

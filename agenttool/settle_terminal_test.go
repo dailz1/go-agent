@@ -27,11 +27,12 @@ func TestSettleE56AlreadyTerminalChild(t *testing.T) {
 			child := agent.New(provider, registry, agent.WithStore(childStore), agent.WithMaxIter(1),
 				agent.WithRunExitFn(func(token agent.SettlementToken) { childExits <- token }))
 			parentRegistry := tool.NewRegistry()
-			parentRegistry.MustRegister(agenttool.New(child, agenttool.Config{Name: "child"}))
+			parentRegistry.MustRegister(agenttool.New(child, agenttool.Config{Name: "child",
+				RunOptions: []agent.RunOption{agent.WithThread("")}}))
 			parentProvider := &roundContextSequenceProvider{steps: [][]llm.Chunk{settleCall("parent-call", "child")}}
 			parent := agent.New(parentProvider, parentRegistry, agent.WithStore(parentStore),
 				agent.WithRunExitFn(func(token agent.SettlementToken) { parentExits <- token }))
-			seq, err := parent.RunThreadStream(t.Context(), "parent", "work")
+			seq, err := parent.RunStream(t.Context(), "work", agent.WithThread("parent"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,8 +1,9 @@
 // Command resume shows the minimal persistent-thread recovery flow without a
 // network provider. Run it with `go run ./examples/resume`. Production callers
 // can replace MemoryStore with store.NewJSONL and must retain their thread IDs.
-// This example continues an incomplete RunThread with ResumeThread. Explicit
-// SettleThread instead abandons that run and unlocks new input.
+// This example continues an incomplete durable thread (Run + WithThread) with
+// ResumeThread. Explicit SettleThread instead abandons that run and unlocks
+// new input.
 package main
 
 import (
@@ -39,9 +40,9 @@ func recoverThread() (*agent.RunResult, error) {
 	registry := tool.NewRegistry()
 	registry.MustRegister(interruptTool{cancel: cancel})
 	a := agent.New(provider, registry, agent.WithStore(st))
-	_, err := a.RunThread(cancelled, threadID, "start work")
+	_, err := a.Run(cancelled, "start work", agent.WithThread(threadID))
 	if !errors.Is(err, context.Canceled) {
-		return nil, fmt.Errorf("interrupt RunThread: %w", err)
+		return nil, fmt.Errorf("interrupt run: %w", err)
 	}
 	return a.ResumeThread(context.Background(), threadID)
 }

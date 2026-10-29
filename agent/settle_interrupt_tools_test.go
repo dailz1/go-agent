@@ -67,7 +67,7 @@ func TestSettleInterruptTools(t *testing.T) {
 					}))
 				outcome := make(chan error, 1)
 				go func() {
-					seq, err := a.RunThreadStream(ctx, "t", "old")
+					seq, err := a.RunStream(ctx, "old", WithThread("t"))
 					if err == nil {
 						for event, streamErr := range seq {
 							if _, ok := event.(ToolResultEvent); ok {

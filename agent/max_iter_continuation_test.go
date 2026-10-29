@@ -109,9 +109,9 @@ func TestMaxIterPersistentContinuationIsClosed(t *testing.T) {
 		WithMaxIter(1),
 		WithLogger(discardLogger()),
 	)
-	first, err := agent.RunThread(context.Background(), "thread", "first")
+	first, err := agent.Run(context.Background(), "first", WithThread("thread"))
 	if err != nil {
-		t.Fatalf("first RunThread: %v", err)
+		t.Fatalf("first Run: %v", err)
 	}
 	if !first.Truncated || len(historyResultBlocks(first.History)) != 1 {
 		t.Fatalf("first result = %#v, want paired truncated history", first)
@@ -119,8 +119,8 @@ func TestMaxIterPersistentContinuationIsClosed(t *testing.T) {
 	if _, err := agent.ResumeThread(context.Background(), "thread"); !errors.Is(err, ErrNothingToResume) {
 		t.Errorf("ResumeThread = %v, want ErrNothingToResume", err)
 	}
-	if _, err := agent.RunThread(context.Background(), "thread", "next"); err != nil {
-		t.Fatalf("next RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "next", WithThread("thread")); err != nil {
+		t.Fatalf("next Run: %v", err)
 	}
 	input := agent.provider.(*MockProvider).LastMessages
 	if len(input) < 4 || input[1].Role != llm.RoleAssistant || input[2].Role != llm.RoleTool {

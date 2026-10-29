@@ -685,8 +685,8 @@ func (c *Controller) beginRun(ctx context.Context, thread string, aux *auxStores
 	return c.startup.BeginRun(ctx, thread, aux.snapshots, aux.outputs)
 }
 
-// streamWorker consumes one RunThreadStream on the worker goroutine: the
-// only consumer of the event stream. Done and compaction snapshots are
+// streamWorker consumes one RunStream (WithThread) on the worker goroutine:
+// the only consumer of the event stream. Done and compaction snapshots are
 // captured (head included) before the view is published.
 func (c *Controller) streamWorker(run *activeRun, meta session.Meta, aux *auxStores, input string) {
 	reducer := NewReducer(meta.ID)
@@ -702,7 +702,7 @@ func (c *Controller) streamWorker(run *activeRun, meta session.Meta, aux *auxSto
 	run.approval = approval
 	agentRun := c.buildRunAgent(run, registry)
 
-	seq, err := agentRun.RunThreadStream(run.ctx, meta.ID, input)
+	seq, err := agentRun.RunStream(run.ctx, input, agent.WithThread(meta.ID))
 	if err != nil {
 		run.outcome = outcomeInterrupted
 		c.workerEnded(run, meta, approval)

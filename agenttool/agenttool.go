@@ -30,12 +30,25 @@ type Config struct {
 	Description string
 	// RequiresApproval delegates outer approval to the parent Agent.
 	RequiresApproval bool
+	// RunOptions are per-call agent.RunOption values passed through to every
+	// child Run. The only supported value is agent.WithThread(""), which
+	// gives each Execute one fresh kernel-generated durable thread (requires
+	// the child to be constructed with agent.WithStore); hosts that want the
+	// parent/child settlement chain configure it here. Passing a fixed
+	// non-empty thread ID is legal but documented against: the thread's
+	// history accumulates across Execute calls, so the child sees earlier
+	// delegations' context and the stateless-per-Execute promise breaks; and
+	// concurrent Execute calls hitting the same fixed thread (two adapters on
+	// one child, or one adapter called in parallel by the parent) fail with
+	// ErrThreadBusy before any model call.
+	RunOptions []agent.RunOption
 }
 
 type adapter struct {
-	child *agent.Agent
-	info  tool.ToolInfo
-	gate  chan struct{}
+	child   *agent.Agent
+	info    tool.ToolInfo
+	gate    chan struct{}
+	runOpts []agent.RunOption
 }
 
 // New returns a Tool that delegates one free-text task to child per Execute.
@@ -51,7 +64,8 @@ func New(child *agent.Agent, cfg Config) tool.Tool {
 			Parameters:       parameters,
 			RequiresApproval: cfg.RequiresApproval,
 		},
-		gate: make(chan struct{}, 1),
+		gate:    make(chan struct{}, 1),
+		runOpts: cfg.RunOptions,
 	}
 }
 
@@ -71,7 +85,7 @@ func (a *adapter) Execute(ctx context.Context, args json.RawMessage) (*tool.Tool
 	}
 	defer func() { <-a.gate }()
 
-	result, err := a.child.Run(ctx, *input.Input)
+	result, err := a.child.Run(ctx, *input.Input, a.runOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("run sub-agent %q: %w", a.info.Name, err)
 	}

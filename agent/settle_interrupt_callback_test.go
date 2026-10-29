@@ -51,7 +51,7 @@ func TestSettleInterruptCallbackFailureE12(t *testing.T) {
 						}
 						return "ephemeral-overlay-B", cause
 					}))
-				_, err := a.RunThread(ctx, "t", "old")
+				_, err := a.Run(ctx, "old", WithThread("t"))
 				token := settleInterruptToken(t, err, cause)
 				if got := settleInterruptAwait(t, exit); got != token {
 					t.Fatalf("callback error and exit tokens differ: %+v / %+v", token, got)

@@ -17,7 +17,7 @@ func TestSettleMaxIterPrefixes(t *testing.T) {
 			ag := terminalStoreAgent(t, st)
 			var target SettlementToken
 			WithRunExitFn(func(value SettlementToken) { target = value })(ag)
-			_, runErr := ag.RunThread(context.Background(), "t", "old")
+			_, runErr := ag.Run(context.Background(), "old", WithThread("t"))
 			if (runErr != nil) != (failOn != 0) {
 				t.Fatalf("run error = %v", runErr)
 			}

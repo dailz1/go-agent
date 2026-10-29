@@ -48,7 +48,7 @@ func TestSettleInterruptProvider(t *testing.T) {
 				a := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()),
 					WithRunExitFn(func(token SettlementToken) { exited <- token }))
 				go func() {
-					seq, err := a.RunThreadStream(ctx, "t", "old input")
+					seq, err := a.RunStream(ctx, "old input", WithThread("t"))
 					if err == nil {
 						for event, streamErr := range seq {
 							if _, ok := event.(DoneEvent); ok {
@@ -79,7 +79,7 @@ func TestSettleInterruptProvider(t *testing.T) {
 					t.Fatalf("partial content became durable: %+v", snapshot.History)
 				}
 				equalKinds(t, logKinds(t, st, "t"), store.KindRunStarted, "run_cancelled")
-				seq, err := a.RunThreadStream(t.Context(), "t", "new input")
+				seq, err := a.RunStream(t.Context(), "new input", WithThread("t"))
 				if err != nil {
 					t.Fatal(err)
 				}

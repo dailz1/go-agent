@@ -23,7 +23,7 @@ func TestSettleLateCredentials(t *testing.T) {
 			ag := persistTestAgent(t, st, ErrResponse(context.Canceled))
 			WithRunExitFn(func(target SettlementToken) { frozen <- target; <-exitGate })(ag)
 			done := make(chan error, 1)
-			go func() { _, err := ag.RunThread(ctx, "t", "A"); done <- err }()
+			go func() { _, err := ag.Run(ctx, "A", WithThread("t")); done <- err }()
 			target := settleAwait(t, frozen)
 			other := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("A done")), ErrResponse(context.Canceled))
 			if _, err := other.ResumeThread(ctx, "t"); !errors.Is(err, ErrThreadBusy) {
@@ -43,7 +43,7 @@ func TestSettleLateCredentials(t *testing.T) {
 			} else if _, err := other.ResumeThread(ctx, "t"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := other.RunThread(ctx, "t", "B"); !errors.Is(err, context.Canceled) {
+			if _, err := other.Run(ctx, "B", WithThread("t")); !errors.Is(err, context.Canceled) {
 				t.Fatal(err)
 			}
 			before, err := other.replayThread(ctx, "t")
@@ -92,7 +92,7 @@ func TestSettleIdentityAndRevision(t *testing.T) {
 					t.Fatal(err)
 				}
 				if mode == "E52_inspection_race" {
-					if _, err := ag.RunThread(ctx, "t", "B"); !errors.Is(err, context.Canceled) {
+					if _, err := ag.Run(ctx, "B", WithThread("t")); !errors.Is(err, context.Canceled) {
 						t.Fatal(err)
 					}
 				}

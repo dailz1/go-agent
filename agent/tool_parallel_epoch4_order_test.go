@@ -33,7 +33,7 @@ func TestParallelC2FirstKeepsEventHistoryAndCommitOrder(t *testing.T) {
 		err    error
 	}, 1)
 	go func() {
-		seq, err := agent.RunThreadStream(context.Background(), "t", "go")
+		seq, err := agent.RunStream(context.Background(), "go", WithThread("t"))
 		var events []AgentEvent
 		if err == nil {
 			for event, streamErr := range seq {

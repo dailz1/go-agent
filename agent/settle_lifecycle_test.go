@@ -46,7 +46,7 @@ func TestSettleLifecycle(t *testing.T) {
 				st, reopen := settlementStore(t, disk)
 				ag := persistTestAgent(t, st, ErrResponse(context.Canceled))
 				WithSystemPrompt("frozen")(ag)
-				_, err := ag.RunThread(ctx, "t", "old input")
+				_, err := ag.Run(ctx, "old input", WithThread("t"))
 				var interrupted *RunInterruptedError
 				if !errors.As(err, &interrupted) || interrupted.Settlement == nil {
 					t.Fatalf("interruption = %v", err)
@@ -54,7 +54,7 @@ func TestSettleLifecycle(t *testing.T) {
 				target := *interrupted.Settlement
 				// E20/E45: explicit settlement unlocks adjacent exact user inputs,
 				// but the no-settlement protection stays intact.
-				if _, err := ag.RunThread(ctx, "t", input); !errors.Is(err, ErrRunIncomplete) {
+				if _, err := ag.Run(ctx, input, WithThread("t")); !errors.Is(err, ErrRunIncomplete) {
 					t.Fatalf("unsettled new input = %v", err)
 				}
 				if err := ag.SettleThread(ctx, target); err != nil {
@@ -81,7 +81,7 @@ func TestSettleLifecycle(t *testing.T) {
 				if !reflect.DeepEqual(before, logRecords(t, st, "t")) || next.provider.(*MockProvider).index != 0 {
 					t.Fatal("snapshot read executed or wrote")
 				}
-				res, err := next.RunThread(ctx, "t", input)
+				res, err := next.Run(ctx, input, WithThread("t"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -116,7 +116,7 @@ func TestSettleNewStartRecovery(t *testing.T) {
 			ctx := context.Background()
 			st, reopen := settlementStore(t, true)
 			ag := persistTestAgent(t, st, ErrResponse(context.Canceled))
-			_, err := ag.RunThread(ctx, "t", "old")
+			_, err := ag.Run(ctx, "old", WithThread("t"))
 			var interrupted *RunInterruptedError
 			if !errors.As(err, &interrupted) {
 				t.Fatal(err)
@@ -127,7 +127,7 @@ func TestSettleNewStartRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 				next := persistTestAgent(t, st, ErrResponse(context.Canceled))
-				if _, err := next.RunThread(ctx, "t", "new"); !errors.Is(err, context.Canceled) {
+				if _, err := next.Run(ctx, "new", WithThread("t")); !errors.Is(err, context.Canceled) {
 					t.Fatal(err)
 				}
 				wantInput = "new"

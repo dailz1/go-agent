@@ -330,13 +330,13 @@ func TestPersistedHistoryWithUnregisteredToolReplays(t *testing.T) {
 		WithStore(st),
 		WithLogger(discardLogger()),
 	)
-	if _, err := agent.RunThread(ctx, "t", "compute"); err != nil {
-		t.Fatalf("first RunThread: %v", err)
+	if _, err := agent.Run(ctx, "compute", WithThread("t")); err != nil {
+		t.Fatalf("first Run: %v", err)
 	}
 	reg.Unregister("calc")
-	res, err := agent.RunThread(ctx, "t", "again")
+	res, err := agent.Run(ctx, "again", WithThread("t"))
 	if err != nil {
-		t.Fatalf("second RunThread after Unregister: %v", err)
+		t.Fatalf("second Run after Unregister: %v", err)
 	}
 	blocks := historyResultBlocks(res.History)
 	if len(blocks) != 2 {

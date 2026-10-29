@@ -65,7 +65,7 @@ func TestSettleOwnership(t *testing.T) {
 				call func() error
 			}{
 				{"E25_settle", func() error { return competitor.SettleThread(ctx, target) }},
-				{"E26_run", func() error { _, err := competitor.RunThread(ctx, "t", "new"); return err }},
+				{"E26_run", func() error { _, err := competitor.Run(ctx, "new", WithThread("t")); return err }},
 				{"E27_resume", func() error { _, err := competitor.ResumeThread(ctx, "t"); return err }},
 				{"inspection", func() error { _, err := competitor.SettlementTarget(ctx, "t"); return err }},
 			} {
@@ -104,7 +104,7 @@ func TestSettleExecutorOwnership(t *testing.T) {
 			ag := persistTestAgent(t, st)
 			ag.provider = gate
 			if !resume {
-				if _, err := ag.RunThread(ctx, "t", "new"); !errors.Is(err, ErrRunIncomplete) {
+				if _, err := ag.Run(ctx, "new", WithThread("t")); !errors.Is(err, ErrRunIncomplete) {
 					t.Fatalf("run on incomplete = %v", err)
 				}
 				if err := ag.SettleThread(ctx, target); err != nil {
@@ -117,7 +117,7 @@ func TestSettleExecutorOwnership(t *testing.T) {
 				if resume {
 					_, err = ag.ResumeThread(ctx, "t")
 				} else {
-					_, err = ag.RunThread(ctx, "t", "new")
+					_, err = ag.Run(ctx, "new", WithThread("t"))
 				}
 				done <- err
 			}()

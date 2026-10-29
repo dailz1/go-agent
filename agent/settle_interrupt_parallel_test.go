@@ -43,7 +43,7 @@ func TestSettleInterruptParallelJoinE06(t *testing.T) {
 			WithRunExitFn(func(token SettlementToken) { exits <- token }))
 		outcome := make(chan error, 1)
 		go func() {
-			_, err := a.RunThread(ctx, "t", "old")
+			_, err := a.Run(ctx, "old", WithThread("t"))
 			outcome <- err
 		}()
 		for range 2 {

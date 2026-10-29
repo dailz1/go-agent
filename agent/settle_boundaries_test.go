@@ -58,12 +58,12 @@ func TestSettleBeforeSession(t *testing.T) {
 			WithRunExitFn(func(SettlementToken) { callbacks++ })(ag)
 			var err error
 			if mode == "E29_unranged" {
-				_, err = ag.RunThreadStream(ctx, "t", "old")
+				_, err = ag.RunStream(ctx, "old", WithThread("t"))
 			} else {
 				if mode == "E29_cancelled" {
 					cancel()
 				}
-				_, err = ag.RunThread(ctx, "t", "old")
+				_, err = ag.Run(ctx, "old", WithThread("t"))
 			}
 			var interrupted *RunInterruptedError
 			if errors.As(err, &interrupted) || callbacks != 0 {
@@ -144,7 +144,7 @@ func TestSettleAfterCooperativeEndDoesNotReopen(t *testing.T) {
 		}),
 		WithRunExitFn(func(tk SettlementToken) { token = tk }),
 	)
-	if _, err := agent.RunThread(ctx, "t", "compute"); err != nil {
+	if _, err := agent.Run(ctx, "compute", WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if token.ExpectedHead != 4 {

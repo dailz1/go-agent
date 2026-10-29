@@ -19,7 +19,7 @@ func TestMaxIterPersistent(t *testing.T) {
 		return tool.NewTextResult("one"), nil
 	}})
 	st := store.NewMemory()
-	result, err := New(parallelProvider(parallelToolCalls("one")), reg, WithStore(st), WithToolConcurrency(2), WithMaxIter(1), WithLogger(discardLogger())).RunThread(context.Background(), "limit", "go")
+	result, err := New(parallelProvider(parallelToolCalls("one")), reg, WithStore(st), WithToolConcurrency(2), WithMaxIter(1), WithLogger(discardLogger())).Run(context.Background(), "go", WithThread("limit"))
 	if err != nil || !result.Truncated || executed.Load() != 0 {
 		t.Fatalf("persistent maxIter result = %#v, err = %v, executions = %d", result, err, executed.Load())
 	}

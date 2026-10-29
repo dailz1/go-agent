@@ -31,8 +31,8 @@ func TestSteeringInjectedNextRound(t *testing.T) {
 		WithStore(st),
 		WithLogger(discardLogger()),
 	)
-	if _, err := agent.RunThread(context.Background(), "t", "compute"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "compute", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if len(provider.AllMessages) != 2 {
 		t.Fatalf("provider calls = %d, want 2", len(provider.AllMessages))
@@ -53,8 +53,8 @@ func TestSteeringQueuedBetweenRunsConsumedFirstRound(t *testing.T) {
 	if _, err := agent.EnqueueInputWithID(context.Background(), "t", "k1", "pre-queued"); err != nil {
 		t.Fatalf("EnqueueInputWithID: %v", err)
 	}
-	if _, err := agent.RunThread(context.Background(), "t", "new task"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "new task", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	last := agent.lastOutboundTail(t)
 	if last != "pre-queued" {
@@ -113,8 +113,8 @@ func TestSteeringDrainRebaseKeepsAbsorbedEntry(t *testing.T) {
 		textChunks("r2"),
 	})
 	agent2 := New(provider, reg, WithStore(wrapped), WithLogger(discardLogger()))
-	if _, err := agent2.RunThread(context.Background(), "t", "go"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent2.Run(context.Background(), "go", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if len(provider.AllMessages) != 2 {
 		t.Fatalf("provider calls = %d, want 2", len(provider.AllMessages))
@@ -313,7 +313,7 @@ func TestSteeringStarvationFreeDrain(t *testing.T) {
 	if _, err := agent.EnqueueInputWithID(ctx, "t", "k1", input); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if _, err := agent.RunThread(ctx, "t", "go"); err != nil {
+	if _, err := agent.Run(ctx, "go", WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	last := provider.LastMessages[len(provider.LastMessages)-1]
@@ -404,9 +404,9 @@ func TestSteeringEnqueuedInEndHookConsumedByNextRun(t *testing.T) {
 			return FinishRoundDecision{Action: FinishRoundEnd}, nil
 		}),
 	)
-	res, err := agent.RunThread(context.Background(), "t", "compute")
+	res, err := agent.Run(context.Background(), "compute", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if len(provider.AllMessages) != 1 {
 		t.Fatalf("provider calls = %d, want 1", len(provider.AllMessages))
@@ -425,7 +425,7 @@ func TestSteeringEnqueuedInEndHookConsumedByNextRun(t *testing.T) {
 
 	provider2 := NewMockStreamingProvider([][]llm.Chunk{textChunks("done2")})
 	agent2 := New(provider2, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
-	if _, err := agent2.RunThread(context.Background(), "t", "next"); err != nil {
+	if _, err := agent2.Run(context.Background(), "next", WithThread("t")); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	second := messageSliceString(provider2.AllMessages[0])
@@ -474,7 +474,7 @@ func TestSteeringDeferralKeepsFIFOOrderNoSkip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enqueue q2: %v", err)
 	}
-	if _, err := agent.RunThread(ctx, "t", strings.Repeat("x", 200)); err != nil {
+	if _, err := agent.Run(ctx, strings.Repeat("x", 200), WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	round1 := messageSliceString(provider.AllMessages[0])
@@ -552,7 +552,7 @@ func TestSteeringDrainConsumesPartialPrefix(t *testing.T) {
 			t.Fatalf("enqueue %s: %v", q.key, err)
 		}
 	}
-	if _, err := agent.RunThread(ctx, "t", strings.Repeat("x", 100)); err != nil {
+	if _, err := agent.Run(ctx, strings.Repeat("x", 100), WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	first := provider.AllMessages[0]

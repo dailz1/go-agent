@@ -97,7 +97,14 @@ func newSettleFixture(t *testing.T, parentStore, childStore store.Store) *settle
 	}
 	f.child = agent.New(f.childProvider, registry, options...)
 	parentRegistry := tool.NewRegistry()
-	parentRegistry.MustRegister(agenttool.New(f.child, agenttool.Config{Name: "child"}))
+	childCfg := agenttool.Config{Name: "child"}
+	if childStore != nil {
+		// Durable child threads (the parent/child settlement chain) are
+		// opt-in per Execute call: WithThread("") makes each delegation
+		// run on a fresh kernel-generated thread.
+		childCfg.RunOptions = []agent.RunOption{agent.WithThread("")}
+	}
+	parentRegistry.MustRegister(agenttool.New(f.child, childCfg))
 	f.parent = agent.New(f.parentProvider, parentRegistry,
 		agent.WithStore(parentStore), agent.WithCompactor(nil),
 		agent.WithRunExitFn(func(token agent.SettlementToken) { f.parentExits <- token }),
@@ -106,7 +113,7 @@ func newSettleFixture(t *testing.T, parentStore, childStore store.Store) *settle
 	f.cancel = cancel
 	go func() {
 		defer close(f.joined)
-		_, err := f.parent.RunThread(ctx, "parent", "original parent work")
+		_, err := f.parent.Run(ctx, "original parent work", agent.WithThread("parent"))
 		f.outcome <- err
 	}()
 	t.Cleanup(func() {

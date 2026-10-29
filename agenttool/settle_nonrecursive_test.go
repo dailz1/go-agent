@@ -29,7 +29,7 @@ func TestSettleE54ChildOnly(t *testing.T) {
 			}
 			settleCancelled(t, f.child, child, "leaf-call")
 			settleUnchanged(t, parentStore, parent.ThreadID, before)
-			if _, err := f.parent.RunThread(t.Context(), parent.ThreadID, "redirect"); !errors.Is(err, agent.ErrRunIncomplete) {
+			if _, err := f.parent.Run(t.Context(), "redirect", agent.WithThread(parent.ThreadID)); !errors.Is(err, agent.ErrRunIncomplete) {
 				t.Fatalf("child-only cleanup unlocked parent: %v", err)
 			}
 			settleUnchanged(t, parentStore, parent.ThreadID, before)
@@ -59,7 +59,7 @@ func TestSettleE55ParentOnly(t *testing.T) {
 
 			f.parentProvider.steps = [][]llm.Chunk{settleCall("new-call", "child"), settleText()}
 			input := "  only the test directory\n"
-			seq, err := f.parent.RunThreadStream(t.Context(), parent.ThreadID, input)
+			seq, err := f.parent.RunStream(t.Context(), input, agent.WithThread(parent.ThreadID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -92,7 +92,7 @@ func TestSettleE55ParentOnly(t *testing.T) {
 			}
 			replay := &roundContextSequenceProvider{steps: [][]llm.Chunk{settleText()}}
 			reader := agent.New(replay, tool.NewRegistry(), agent.WithStore(parentStore))
-			if _, err := reader.RunThread(t.Context(), parent.ThreadID, "replay probe"); err != nil {
+			if _, err := reader.Run(t.Context(), "replay probe", agent.WithThread(parent.ThreadID)); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(replay.requests[0], append(wantDone, llm.UserMessage("replay probe"))) {
@@ -102,7 +102,7 @@ func TestSettleE55ParentOnly(t *testing.T) {
 				t.Fatal("redirect replayed old child tool")
 			}
 			settleUnchanged(t, childStore, child.ThreadID, before)
-			if _, err := f.child.RunThread(t.Context(), child.ThreadID, "not cleaned"); !errors.Is(err, agent.ErrRunIncomplete) {
+			if _, err := f.child.Run(t.Context(), "not cleaned", agent.WithThread(child.ThreadID)); !errors.Is(err, agent.ErrRunIncomplete) {
 				t.Fatalf("old child incorrectly cleaned: %v", err)
 			}
 		})

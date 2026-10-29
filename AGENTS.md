@@ -26,11 +26,11 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Understand the loop | `runStreamInternal` agent/agent.go:347 | single execution path; `Run` :282 folds it, `RunStream` :335 |
+| Understand the loop | `runStreamInternal` agent/agent.go:361 | single execution path; `Run` :308 folds it, `RunStream` :357 |
 | Add a provider adapter | llm/glm or llm/openai | copy one; update BOTH (duplication is by design) |
 | Change Message/Chunk/Event types | docs/DESIGN.md, then llm/ + agent/ | docs-first; sealed interfaces |
 | Add a tool | tool/tool.go:14 + tool/registry.go:10 | Register validates schema |
-| Persist / resume threads | agent/persist_api.go:19,40,55 + store/ | RunThread/ResumeThread/RunThreadStream |
+| Persist / resume threads | agent/persist_api.go:14,32,63,105 + store/ | WithThread per-call RunOption; ResumeThread; durable threads over store.Store |
 | Tune context | agent/compact.go, agent/truncate.go | compaction at 80% of window; tool results ~30% |
 | Test doubles | agenttest/ | scripted provider, record/replay — NOT agent.MockProvider (unexported types) |
 | MCP bridge | mcp/bridge.go:24 + mcp/README.md | package `mcpbridge`; tools-line only |
@@ -45,7 +45,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 | runStreamInternal | method | agent/agent.go:347 | the loop; Run/RunStream both fold it |
 | AgentEvent (7 sealed variants) | iface | agent/event.go:15 | TC-first announcements; DoneEvent :97 authoritative |
 | iterationLimitResults | func | agent/max_iter.go:8 | C10: maxIter terminal skip results |
-| RunThread/ResumeThread | methods | agent/persist_api.go:19/:40 | durable threads over store.Store |
+| Run/RunStream+WithThread/ResumeThread | methods | agent/persist_api.go:32/:105 + agent.go:308 | durable threads over store.Store; WithThread is a per-call RunOption |
 | store.Store / store.Record | iface/type | store/store.go:104 / :74 | append-only log; checkpoints are accelerators |
 | tool.Tool / Registry | iface/type | tool/tool.go:14 / tool/registry.go:10 | soft-error contract; RWMutex registry |
 | tool.ParameterSchema | type | tool/tool.go:49 | recursive JSON Schema, semantic-fidelity codec |
@@ -57,7 +57,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 
 ## CONVENTIONS
 - Errors: `fmt.Errorf("lowercase context: %w", err)`; sentinels via `errors.Is`; `*llm.APIError` via `errors.As` — leaf, no Unwrap.
-- Functional options at 3 levels; value normalization lives in constructors (`agent.New`), sole exception glm `WithTopP` clamps in place.
+- Functional options at 4 levels (agent.New `Option`, per-call `RunOption`, `llm.Option`, adapter options); value normalization lives in constructors (`agent.New` for Option, `newRunConfig` for RunOption), sole exception glm `WithTopP` clamps in place.
 - Sealed interfaces via unexported marker methods; type switches must handle value AND pointer forms.
 - Streaming is `iter.Seq2[T, error]`; no channels in public APIs; early-break safe.
 - Tests: stdlib `testing` only, table-driven, white-box in-package; test seams are package vars (`sleepFor`, `timeNow`).

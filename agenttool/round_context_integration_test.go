@@ -99,14 +99,15 @@ func TestAgentToolNestedRunInterruptedErrorKeepsParentThread(t *testing.T) {
 		}),
 	)
 	registry := tool.NewRegistry()
-	registry.MustRegister(agenttool.New(child, agenttool.Config{Name: "child"}))
+	registry.MustRegister(agenttool.New(child, agenttool.Config{Name: "child",
+		RunOptions: []agent.RunOption{agent.WithThread("")}}))
 	parent := agent.New(&roundContextSequenceProvider{steps: [][]llm.Chunk{{
 		llm.ToolCallStartChunk{ID: "call", Name: "child"},
 		llm.ToolCallArgsChunk{ID: "call", Delta: string(json.RawMessage(`{"input":"work"}`))},
 		llm.DoneChunk{FinishReason: "tool_calls"},
 	}}}, registry, agent.WithStore(store.NewMemory()))
 
-	_, err := parent.RunThread(context.Background(), "parent-thread", "parent work")
+	_, err := parent.Run(context.Background(), "parent work", agent.WithThread("parent-thread"))
 	var threadIDs []string
 	for current := err; current != nil; current = errors.Unwrap(current) {
 		if interrupted, ok := current.(*agent.RunInterruptedError); ok {

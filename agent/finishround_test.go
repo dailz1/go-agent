@@ -31,9 +31,9 @@ func TestFinishRoundEndAfterToolRound(t *testing.T) {
 			return FinishRoundDecision{Action: FinishRoundEnd}, nil
 		}),
 	)
-	res, err := agent.RunThread(context.Background(), "t", "compute")
+	res, err := agent.Run(context.Background(), "compute", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("hook calls = %d, want 1", calls)
@@ -85,9 +85,9 @@ func TestFinishRoundContinueKeepsNoToolRunAlive(t *testing.T) {
 			return FinishRoundDecision{}, nil
 		}),
 	)
-	res, err := agent.RunThread(context.Background(), "t", "hello")
+	res, err := agent.Run(context.Background(), "hello", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if len(provider.AllMessages) != 2 {
 		t.Fatalf("provider calls = %d, want 2 (Continue keeps the run alive)", len(provider.AllMessages))
@@ -118,9 +118,9 @@ func TestFinishRoundEndOnNoToolRound(t *testing.T) {
 			return FinishRoundDecision{Action: FinishRoundEnd}, nil
 		}),
 	)
-	res, err := agent.RunThread(context.Background(), "t", "hello")
+	res, err := agent.Run(context.Background(), "hello", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if messageString(res.Message) != "the answer" {
 		t.Fatalf("Done message = %q, want the assistant turn", messageString(res.Message))
@@ -157,9 +157,9 @@ func TestFinishRoundNotConsultedAtMaxIterBoundary(t *testing.T) {
 			return FinishRoundDecision{Action: FinishRoundContinue}, nil
 		}),
 	)
-	res, err := agent.RunThread(context.Background(), "t", "compute")
+	res, err := agent.Run(context.Background(), "compute", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThread: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if consulted != 0 {
 		t.Fatalf("hook consulted %d times at the maxIter boundary, want 0 (frozen)", consulted)
@@ -201,7 +201,7 @@ func TestFinishRoundErrorIsTypedAndResumable(t *testing.T) {
 			return FinishRoundDecision{}, nil
 		}),
 	)
-	_, err := agent.RunThread(context.Background(), "t", "compute")
+	_, err := agent.Run(context.Background(), "compute", WithThread("t"))
 	var frErr *FinishRoundError
 	if !errors.As(err, &frErr) || !strings.Contains(err.Error(), "hook exploded") {
 		t.Fatalf("err = %v, want FinishRoundError wrapping the cause", err)
@@ -236,7 +236,7 @@ func TestFinishRoundDeclarationReplaysAcrossRestart(t *testing.T) {
 			return FinishRoundDecision{}, nil
 		}),
 	)
-	if _, err := agent.RunThread(context.Background(), "t", "hello"); err != nil {
+	if _, err := agent.Run(context.Background(), "hello", WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if len(provider.AllMessages) != 2 {
@@ -248,7 +248,7 @@ func TestFinishRoundDeclarationReplaysAcrossRestart(t *testing.T) {
 	// request carries the declared turn.
 	provider2 := NewMockStreamingProvider([][]llm.Chunk{textChunks("again")})
 	agent2 := New(provider2, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
-	if _, err := agent2.RunThread(context.Background(), "t", "next"); err != nil {
+	if _, err := agent2.Run(context.Background(), "next", WithThread("t")); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	joined := messageSliceString(provider2.AllMessages[0])
@@ -283,7 +283,7 @@ func TestFinishRoundToolFreeContinueCrashWindow(t *testing.T) {
 			return FinishRoundDecision{}, errors.New("interrupted after declaration")
 		}),
 	)
-	_, err := agent.RunThread(context.Background(), "t", "hello")
+	_, err := agent.Run(context.Background(), "hello", WithThread("t"))
 	var frErr *FinishRoundError
 	if !errors.As(err, &frErr) || !strings.Contains(err.Error(), "interrupted after declaration") {
 		t.Fatalf("err = %v, want FinishRoundError wrapping the interruption", err)
@@ -337,7 +337,7 @@ func TestFinishRoundInvalidActionRejected(t *testing.T) {
 			return FinishRoundDecision{Action: FinishRoundAction(99)}, nil
 		}),
 	)
-	_, err := agent.RunThread(context.Background(), "t", "hello")
+	_, err := agent.Run(context.Background(), "hello", WithThread("t"))
 	var frErr *FinishRoundError
 	if !errors.As(err, &frErr) || !strings.Contains(err.Error(), "invalid finish round action") {
 		t.Fatalf("err = %v, want FinishRoundError for the invalid action", err)
@@ -410,12 +410,12 @@ func TestRunClosedWriteBoundaries(t *testing.T) {
 				}),
 				WithRunExitFn(func(tk SettlementToken) { token = tk }),
 			)
-			res, err := agent.RunThread(ctx, "t", "compute")
+			res, err := agent.Run(ctx, "compute", WithThread("t"))
 			switch tc.mode {
 			case "cancel_before_append":
 				var interrupted *RunInterruptedError
 				if !errors.As(err, &interrupted) || !errors.Is(err, context.Canceled) {
-					t.Fatalf("RunThread err = %v, want RunInterruptedError wrapping context.Canceled", err)
+					t.Fatalf("Run err = %v, want RunInterruptedError wrapping context.Canceled", err)
 				}
 				if res != nil {
 					t.Fatal("a run whose run_closed never landed must not deliver a success Done")
@@ -434,7 +434,7 @@ func TestRunClosedWriteBoundaries(t *testing.T) {
 				}
 			case "cancel_after_append":
 				if err != nil || res == nil || res.Truncated {
-					t.Fatalf("RunThread = %v, %v: the durable terminal must not be undone by a later cancel", res, err)
+					t.Fatalf("Run = %v, %v: the durable terminal must not be undone by a later cancel", res, err)
 				}
 				equalKinds(t, logKinds(t, st, "t"),
 					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindRunClosed)
@@ -447,7 +447,7 @@ func TestRunClosedWriteBoundaries(t *testing.T) {
 			default: // "ack_lost"
 				var interrupted *RunInterruptedError
 				if !errors.As(err, &interrupted) || !strings.Contains(err.Error(), "ack lost") {
-					t.Fatalf("RunThread err = %v, want RunInterruptedError wrapping the lost ack", err)
+					t.Fatalf("Run err = %v, want RunInterruptedError wrapping the lost ack", err)
 				}
 				kinds := logKinds(t, st, "t")
 				equalKinds(t, kinds,

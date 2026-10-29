@@ -86,7 +86,7 @@ func TestRunInterruptedErrorPreventsGeneratedThreadRebuild(t *testing.T) {
 	st := &roundContextCountingStore{Store: store.NewMemory()}
 	p := &capturedProvider{streams: []capturedStreamResult{{err: ErrThreadBusy}}}
 	ag := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
-	_, err := ag.Run(context.Background(), "input")
+	_, err := ag.Run(context.Background(), "input", WithThread(""))
 	var interrupted *RunInterruptedError
 	if !errors.Is(err, ErrThreadBusy) || !errors.As(err, &interrupted) || interrupted.ThreadID == "" {
 		t.Fatalf("Run() error = %v, want wrapped ErrThreadBusy with its thread", err)

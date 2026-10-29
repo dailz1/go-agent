@@ -6,14 +6,14 @@ Core autonomous loop: chat → tool calls → results → chat, streaming `Agent
 ## WHERE TO LOOK
 | Task | Location |
 |------|----------|
-| Understand the loop | `runStreamInternal` agent.go:347 — single execution path; Run :282 folds it (`foldRunStream` :298), RunStream :335 |
+| Understand the loop | `runStreamInternal` agent.go:361 — single execution path; Run :308 folds it (`foldRunStream` :316), RunStream :357 |
 | Retry / stream fallback | `chatWithRetryAndFallback` agent.go:641; falls back to Chat on `llm.ErrStreamingNotSupported` |
 | Stream reassembly | accumulator.go — `toolCallAccum` keyed by stream Index |
 | maxIter terminal skip (C10) | truncation branch agent.go:471-517; skip helper max_iter.go:8 (`iterationLimitResults`); Store side `truncateRun` persist.go:210 |
 | Events a consumer sees | event.go — 7 sealed variants; TC-first semantics :36-44; DoneEvent :97 (History field :102 is the authoritative snapshot) |
 | Compaction strategies | compact.go — standard, sliding-window, drop-oldest-tool-groups, summarization, `NewCompactorChain` (`Compactor` iface compact.go:43) |
 | Tool-result truncation | truncate.go:17 — head+tail with omission marker; panics on invalid rune limits ("caller bug") |
-| Durable threads | persist_api.go:19/40/55 (RunThread/ResumeThread/RunThreadStream); persist.go (declareRound/commit/truncateRun); persist_replay.go |
+| Durable threads | persist_api.go:14/32/63/105 (RunOption/WithThread/runSequence/ResumeThread); persist.go (declareRound/commit/truncateRun); persist_replay.go |
 | Provider mocks | mock_provider.go — exported constructors over UNEXPORTED types; external packages use agenttest instead |
 | Options | agent.go:152-214 — normalized in New :243 (maxIter<1→10, window<=0→8192, concurrency<1→1); defaults :142/:146 |
 

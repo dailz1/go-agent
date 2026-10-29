@@ -32,7 +32,7 @@ func (p *recoveryProvider) Chat(context.Context, []llm.Message, []tool.ToolInfo,
 func TestRunOnThreadResumesLazyIncomplete(t *testing.T) {
 	p := &recoveryProvider{}
 	a := agent.New(p, tool.NewRegistry(), agent.WithStore(store.NewMemory()))
-	if _, err := a.RunThread(context.Background(), "t", "old"); !errors.Is(err, context.Canceled) {
+	if _, err := a.Run(context.Background(), "old", agent.WithThread("t")); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	runOnThread(context.Background(), a, "t", "new")

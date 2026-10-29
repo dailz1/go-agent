@@ -27,9 +27,9 @@ func terminalStoreAgent(t *testing.T, st store.Store) *Agent {
 
 func TestTerminalMaxIterStoreBarrierAndClosure(t *testing.T) {
 	st := store.NewMemory()
-	seq, err := terminalStoreAgent(t, st).RunThreadStream(context.Background(), "t", "go")
+	seq, err := terminalStoreAgent(t, st).RunStream(context.Background(), "go", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	var events []AgentEvent
 	for event, streamErr := range seq {
@@ -83,7 +83,7 @@ func TestTerminalMaxIterConsumerBreakAndCancellationStillClose(t *testing.T) {
 			var seq iter.Seq2[AgentEvent, error]
 			var err error
 			if test.persistent {
-				seq, err = agent.RunThreadStream(ctx, "t", "go")
+				seq, err = agent.RunStream(ctx, "go", WithThread("t"))
 			} else {
 				seq, err = agent.RunStream(ctx, "go")
 			}
@@ -154,9 +154,9 @@ func TestTerminalMaxIterPersistenceFailureRecovery(t *testing.T) {
 				MsgResponse(toolCallMessage("c1", "c2")),
 				MsgResponse(llm.AssistantMessage("recovered")),
 			)
-			seq, err := agent.RunThreadStream(context.Background(), "t", "go")
+			seq, err := agent.RunStream(context.Background(), "go", WithThread("t"))
 			if err != nil {
-				t.Fatalf("RunThreadStream: %v", err)
+				t.Fatalf("RunStream: %v", err)
 			}
 			var events []AgentEvent
 			var terminal error
@@ -214,9 +214,9 @@ func TestTerminalMaxIterPrecommitCancellationDoesNotDeclare(t *testing.T) {
 		WithMaxIter(1),
 		WithLogger(discardLogger()),
 	)
-	seq, err := agent.RunThreadStream(ctx, "t", "go")
+	seq, err := agent.RunStream(ctx, "go", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	events, errs := collectEvents(t, seq, nil)
 	if len(events) != 0 || len(errs) != 1 || !errors.Is(errs[0], context.Canceled) {
@@ -249,13 +249,13 @@ func TestTerminalMaxIterStoreAndNonStoreResultsMatch(t *testing.T) {
 	}
 
 	st := store.NewMemory()
-	persistentSeq, err := terminalStoreAgent(t, st).RunThreadStream(context.Background(), "t", "go")
+	persistentSeq, err := terminalStoreAgent(t, st).RunStream(context.Background(), "go", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	persistentEvents, persistentErrs := collectEvents(t, persistentSeq, nil)
 	if len(persistentErrs) != 0 {
-		t.Fatalf("Store RunThreadStream errors = %v", persistentErrs)
+		t.Fatalf("Store RunStream errors = %v", persistentErrs)
 	}
 
 	nonPersistentDone := terminalDone(t, nonPersistentEvents)

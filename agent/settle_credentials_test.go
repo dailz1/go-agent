@@ -12,10 +12,10 @@ func TestSettleInterruptedCredential(t *testing.T) {
 	st := store.NewMemory()
 	want := errors.New("provider interrupted")
 	ag := persistTestAgent(t, st, ErrResponse(want))
-	_, err := ag.RunThread(context.Background(), "thread", "old input")
+	_, err := ag.Run(context.Background(), "old input", WithThread("thread"))
 	var interrupted *RunInterruptedError
 	if !errors.As(err, &interrupted) || !errors.Is(err, want) {
-		t.Fatalf("RunThread = %v", err)
+		t.Fatalf("Run = %v", err)
 	}
 	credential := interrupted.Settlement
 	if credential == nil || credential.ThreadID != "thread" || credential.RunID == "" || credential.ExpectedHead != 1 {

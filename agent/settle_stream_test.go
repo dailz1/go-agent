@@ -57,9 +57,9 @@ func TestSettleStreamExit(t *testing.T) {
 					}
 				})(ag)
 			}
-			seq, err := ag.RunThreadStream(context.Background(), "t", "old")
+			seq, err := ag.RunStream(context.Background(), "old", WithThread("t"))
 			if test.anonymous {
-				seq, err = ag.RunStream(context.Background(), "old")
+				seq, err = ag.RunStream(context.Background(), "old", WithThread(""))
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -129,8 +129,8 @@ func TestSettleStreamExit(t *testing.T) {
 			if test.stop == "call" && calls != 0 {
 				t.Fatal("tool executed after TC break")
 			}
-			// Exercise the public streaming redirect surface, not just RunThread.
-			next, err := ag.RunThreadStream(context.Background(), target.ThreadID, "new exact input")
+			// Exercise the public streaming redirect surface, not just Run.
+			next, err := ag.RunStream(context.Background(), "new exact input", WithThread(target.ThreadID))
 			if err != nil {
 				t.Fatal(err)
 			}

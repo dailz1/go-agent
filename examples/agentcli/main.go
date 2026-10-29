@@ -112,11 +112,11 @@ func main() {
 	}
 }
 
-// runNew starts a fresh session on a kernel-generated thread. The real
-// thread ID arrives on the terminal DoneEvent.
+// runNew starts a fresh session on a kernel-generated thread (WithThread("")).
+// The real thread ID arrives on the terminal DoneEvent.
 func runNew(ctx context.Context, a *agent.Agent, input string) (string, bool) {
 	threadID := ""
-	seq, err := a.RunStream(ctx, input)
+	seq, err := a.RunStream(ctx, input, agent.WithThread(""))
 	if err != nil {
 		fatal(err)
 	}
@@ -139,7 +139,7 @@ func runNew(ctx context.Context, a *agent.Agent, input string) (string, bool) {
 // terminal state (crash, Ctrl+C, dropped connection), ResumeThread finishes
 // it instead — the model is told what stayed unresolved.
 func runOnThread(ctx context.Context, a *agent.Agent, threadID, input string) bool {
-	seq, err := a.RunThreadStream(ctx, threadID, input)
+	seq, err := a.RunStream(ctx, input, agent.WithThread(threadID))
 	if err != nil {
 		return roundFailed(err)
 	}

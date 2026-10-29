@@ -56,7 +56,7 @@ internal/tui         唯一终端所有者；Bubble Tea、Bubbles、Lip Gloss
 
 用户启动后，应用校验配置，取得 workspace 独占进程锁，显示规则来源、
 模型与权限模式。新任务先持久保存随机 ThreadID 和 workspace 元数据，
-再构造 run ctx、审批 closure、退出 token 回调并调用 `RunThreadStream`。
+再构造 run ctx、审批 closure、退出 token 回调并调用 `RunStream` + `WithThread`。
 read/grep 返回真实文件内容与适用规则；edit 显示具体 diff，批准后先保存
 快照再写盘。shell 即使处于文件授权模式也单独审批，输出附件落盘。
 

@@ -43,7 +43,7 @@ func TestSettleInterruptRetry(t *testing.T) {
 				p := parallelProvider(parallelToolCalls("one", "one"))
 				a := New(p, reg, WithStore(st), WithLogger(discardLogger()),
 					WithRunExitFn(func(token SettlementToken) { exit <- token }))
-				seq, err := a.RunThreadStream(t.Context(), "t", "old")
+				seq, err := a.RunStream(t.Context(), "old", WithThread("t"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -73,7 +73,7 @@ func TestSettleInterruptRetry(t *testing.T) {
 					if !reflect.DeepEqual(logRecords(t, st, "t"), before) {
 						t.Fatal("prewrite failure changed incomplete declaration")
 					}
-					if _, err := a.RunThread(t.Context(), "t", "new"); !errors.Is(err, ErrRunIncomplete) {
+					if _, err := a.Run(t.Context(), "new", WithThread("t")); !errors.Is(err, ErrRunIncomplete) {
 						t.Fatalf("failed settle unlocked new input: %v", err)
 					}
 				}

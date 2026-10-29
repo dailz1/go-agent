@@ -313,8 +313,8 @@ func TestReplayFallbackConcurrentEnqueueConsumedOnce(t *testing.T) {
 			if len(v.queue) != 0 {
 				t.Fatalf("post-run replay queue = %v, want empty", v.queue)
 			}
-			if _, err := agent.RunThread(ctx, "t", "next"); err != nil {
-				t.Fatalf("RunThread after resume: %v", err)
+			if _, err := agent.Run(ctx, "next", WithThread("t")); err != nil {
+				t.Fatalf("Run after resume: %v", err)
 			}
 		})
 	}

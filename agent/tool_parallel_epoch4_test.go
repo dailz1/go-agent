@@ -26,8 +26,8 @@ func TestParallelInfoPanicLeavesRecoverableDeclaration(t *testing.T) {
 	reg.MustRegister(third)
 	provider := &plannerArmProvider{MockStreamingProvider: parallelProvider(parallelToolCalls("one", "panic_info", "three")), arm: func() { panicTool.armed.Store(true) }}
 	agent := New(provider, reg, WithStore(st), WithToolConcurrency(2), WithLogger(discardLogger()))
-	if _, err := agent.RunThread(context.Background(), "t", "go"); err == nil {
-		t.Fatal("RunThread accepted Info panic")
+	if _, err := agent.Run(context.Background(), "go", WithThread("t")); err == nil {
+		t.Fatal("Run accepted Info panic")
 	}
 	if first.calls.Load() != 0 || panicTool.execCalls.Load() != 0 || third.calls.Load() != 0 || hasKind(t, st, "t", store.KindRoundCommitted) {
 		t.Fatal("Info panic executed or committed its round")

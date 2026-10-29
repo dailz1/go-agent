@@ -27,7 +27,7 @@ func TestSerialToolHardErrorStopsAcceptedIterator(t *testing.T) {
 	provider := parallelProvider(parallelToolCalls("one", "two", "three"))
 	st := store.NewMemory()
 	agent := New(provider, reg, WithStore(st), WithToolConcurrency(1), WithLogger(discardLogger()))
-	seq, err := agent.RunThreadStream(context.Background(), "t", "go")
+	seq, err := agent.RunStream(context.Background(), "go", WithThread("t"))
 	if err != nil {
 		t.Fatalf("RunStream: %v", err)
 	}

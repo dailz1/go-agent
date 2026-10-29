@@ -39,6 +39,6 @@ func (h settleHarness) redirect(ctx context.Context, input string) (string, erro
 	if err != nil {
 		return pending, err
 	}
-	_, err = h.parent.agent.RunThread(ctx, h.parent.token.ThreadID, input)
+	_, err = h.parent.agent.Run(ctx, input, agent.WithThread(h.parent.token.ThreadID))
 	return "", err
 }

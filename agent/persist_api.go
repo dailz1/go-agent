@@ -8,24 +8,85 @@ import (
 	"github.com/dailz1/go-agent/llm"
 )
 
-// RunThread executes the agent loop on a persistent thread: the input is
-// committed to the store before the model is called, every round's tool-call
-// declaration is committed before any tool executes, and the terminal state
-// is committed before DoneEvent. Calling RunThread on a thread whose last
-// run never reached a terminal state fails with ErrRunIncomplete — resume it
-// with ResumeThread or explicitly settle its original token with SettleThread.
+// RunOption configures a single Run / RunStream invocation. It is a
+// per-call option: it never mutates the Agent and is unrelated to the
+// constructor-level Option in agent.New.
+type RunOption func(*runConfig)
+
+// WithThread routes this run onto a durable thread.
 //
-// The first call on an unknown thread creates it; the thread's system prompt
-// is captured on creation and replayed from the log on every later run,
-// regardless of later WithSystemPrompt configuration.
-func (a *Agent) RunThread(ctx context.Context, threadID string, input string) (*RunResult, error) {
+//	absent            → ephemeral run: the store is never touched,
+//	                    even when one is configured (ThreadID stays "").
+//	WithThread("")    → kernel-generated thread ID (crypto-random 128-bit,
+//	                    rev=0 reservation; exposed via DoneEvent/RunResult).
+//	WithThread("t-1") → continue (or create) the named thread; the first
+//	                    call on an unknown ID creates it and later calls
+//	                    replay its frozen system prompt from the log.
+//
+// Requires WithStore at construction; otherwise the call fails with
+// ErrNoStore before anything executes. Calling on a thread whose last run
+// never reached a terminal state fails with ErrRunIncomplete — resume it
+// with ResumeThread or explicitly settle its original token with
+// SettleThread. Repeated WithThread options: the last one wins (same
+// override order as constructor options).
+func WithThread(threadID string) RunOption {
+	return func(rc *runConfig) {
+		rc.thread = threadID
+		rc.threadSet = true
+	}
+}
+
+// runConfig is the per-call configuration of one Run/RunStream invocation.
+// It is created fresh for every call, so it never races with concurrent
+// invocations of the same immutable Agent.
+type runConfig struct {
+	thread    string // target thread ID; "" with threadSet=true means kernel-generated
+	threadSet bool   // whether WithThread appeared among the options
+}
+
+// newRunConfig applies per-call options in order, normalizing them the way
+// constructors normalize constructor options: a later WithThread overrides
+// an earlier one.
+func newRunConfig(opts []RunOption) *runConfig {
+	rc := &runConfig{}
+	for _, opt := range opts {
+		opt(rc)
+	}
+	return rc
+}
+
+// runSequence is the single dispatch point shared by Run and RunStream:
+// Run folds the returned stream, RunStream returns it directly. Ephemeral
+// runs connect straight to runStreamInternal; thread runs go through
+// executeSession → runStreamInternal, so the single-execution-path
+// invariant is preserved.
+func (a *Agent) runSequence(ctx context.Context, input string, rc *runConfig) (iter.Seq2[AgentEvent, error], error) {
+	if !rc.threadSet {
+		// Ephemeral run: whether a store is configured is irrelevant —
+		// the store is never touched.
+		return a.runStreamInternal(ctx, a.freshHistory(input), nil)
+	}
 	if a.store == nil {
-		return nil, ErrNoStore
+		return nil, ErrNoStore // synchronous, before validateThreadID
 	}
-	if err := validateThreadID(threadID); err != nil {
-		return nil, err
+	if rc.thread == "" {
+		// Kernel-generated thread: rev=0 reservation, lazy.
+		return a.runOnNewThreadStream(ctx, input), nil
 	}
-	return a.foldRunStream(a.threadSession(ctx, threadID, input, false, false))
+	if err := validateThreadID(rc.thread); err != nil {
+		return nil, err // synchronous, before the iterator exists
+	}
+	return a.threadSession(ctx, rc.thread, input, false, false), nil // lazy
+}
+
+// freshHistory builds the opening history of an ephemeral run: the
+// configured system prompt (when set) followed by the user input.
+func (a *Agent) freshHistory(input string) []llm.Message {
+	history := make([]llm.Message, 0, 16)
+	if a.system.Content != nil {
+		history = append(history, a.system)
+	}
+	return append(history, llm.UserMessage(input))
 }
 
 // ResumeThread continues the thread's incomplete run without appending a new
@@ -73,21 +134,6 @@ func (a *Agent) ResumeThread(ctx context.Context, threadID string) (*RunResult, 
 	return a.foldRunStream(a.executeSession(ctx, sess, history))
 }
 
-// RunThreadStream is the streaming form of RunThread. The returned iterator
-// is lazy: ownership, replay, and the input commit happen on the first
-// iteration, so a never-ranged call has no observable effect. Events of
-// previous runs are never re-emitted; the stream carries only the events of
-// this invocation.
-func (a *Agent) RunThreadStream(ctx context.Context, threadID string, input string) (iter.Seq2[AgentEvent, error], error) {
-	if a.store == nil {
-		return nil, ErrNoStore
-	}
-	if err := validateThreadID(threadID); err != nil {
-		return nil, err
-	}
-	return a.threadSession(ctx, threadID, input, false, false), nil
-}
-
 // threadSession wraps one persistent run. Setup errors (busy thread,
 // incompatible log, persistence failure) flow through the iterator so that
 // laziness is preserved for stream consumers; ownership is released
@@ -125,15 +171,10 @@ func (a *Agent) executeSession(ctx context.Context, sess *persistence, history [
 	}
 }
 
-// runOnNewThread runs the loop on a fresh kernel-generated thread ID. The
-// generated ID uses rev=0 reservation: only a reservation conflict is
-// retried, with a fresh ID; a conflict after reservation means real
-// concurrent writes and stops the run. The stream form shares the retry so
-// Run and RunStream behave identically.
-func (a *Agent) runOnNewThread(ctx context.Context, input string) (*RunResult, error) {
-	return a.foldRunStream(a.runOnNewThreadStream(ctx, input))
-}
-
+// runOnNewThreadStream runs the loop on a fresh kernel-generated thread
+// ID. The generated ID uses rev=0 reservation: only a reservation conflict
+// is retried, with a fresh ID; a conflict after reservation means real
+// concurrent writes and stops the run.
 func (a *Agent) runOnNewThreadStream(ctx context.Context, input string) iter.Seq2[AgentEvent, error] {
 	return func(yield func(AgentEvent, error) bool) {
 		for range 3 {

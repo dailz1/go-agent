@@ -21,8 +21,8 @@ func TestParallelDeclarationIsDurableBeforeApproval(t *testing.T) {
 			approvedAfterDeclaration = hasKind(t, st, "t", store.KindRoundDeclared)
 			return true
 		}), WithLogger(discardLogger()))
-	if _, err := agent.RunThread(context.Background(), "t", "go"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "go", WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	if !approvedAfterDeclaration {
 		t.Fatal("approval ran before the declaration was durable")

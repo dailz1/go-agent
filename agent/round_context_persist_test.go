@@ -35,9 +35,9 @@ func TestRoundContextProviderPersistence(t *testing.T) {
 			return "snapshot-B", nil
 		}), WithLogger(discardLogger()))
 
-		seq, err := ag.RunThreadStream(context.Background(), "thread", "input")
+		seq, err := ag.RunStream(context.Background(), "input", WithThread("thread"))
 		if err != nil {
-			t.Fatalf("RunThreadStream() error = %v", err)
+			t.Fatalf("RunStream() error = %v", err)
 		}
 		for event, iterErr := range seq {
 			if iterErr != nil {
@@ -103,7 +103,7 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 			}
 			return "fresh", nil
 		}), WithLogger(discardLogger()))
-		_, err := ag.Run(context.Background(), "input")
+		_, err := ag.Run(context.Background(), "input", WithThread(""))
 		var interrupted *RunInterruptedError
 		if !errors.As(err, &interrupted) || interrupted.ThreadID == "" || !errors.Is(err, want) {
 			t.Fatalf("Run() error = %v, want resumable wrapper for %v", err, want)
@@ -117,10 +117,10 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		ag := New(&capturedProvider{}, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()))
-		_, err := ag.RunThread(ctx, "thread", "input")
+		_, err := ag.Run(ctx, "input", WithThread("thread"))
 		var interrupted *RunInterruptedError
 		if !errors.Is(err, context.Canceled) || errors.As(err, &interrupted) {
-			t.Errorf("RunThread() error = %v, want unwrapped context cancellation", err)
+			t.Errorf("Run() error = %v, want unwrapped context cancellation", err)
 		}
 	})
 
@@ -131,9 +131,9 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 			{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
 		}}
 		ag := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
-		seq, err := ag.RunThreadStream(context.Background(), "thread", "input")
+		seq, err := ag.RunStream(context.Background(), "input", WithThread("thread"))
 		if err != nil {
-			t.Fatalf("RunThreadStream() error = %v", err)
+			t.Fatalf("RunStream() error = %v", err)
 		}
 		for event, iterErr := range seq {
 			if iterErr != nil {
@@ -157,21 +157,21 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 			}),
 			WithLogger(discardLogger()),
 		)
-		_, err := ag.RunThread(context.Background(), "budget-thread", "input")
+		_, err := ag.Run(context.Background(), "input", WithThread("budget-thread"))
 		var interrupted *RunInterruptedError
 		if !errors.As(err, &interrupted) || interrupted.ThreadID != "budget-thread" ||
 			!errors.Is(err, ErrCompactionBudgetExceeded) {
-			t.Errorf("RunThread() error = %v, want budget-thread RunInterruptedError wrapping budget sentinel", err)
+			t.Errorf("Run() error = %v, want budget-thread RunInterruptedError wrapping budget sentinel", err)
 		}
 	})
 
 	t.Run("post-session busy failure exposes thread and sentinel", func(t *testing.T) {
 		p := &capturedProvider{streams: []capturedStreamResult{{err: ErrThreadBusy}}}
 		ag := New(p, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()))
-		_, err := ag.RunThread(context.Background(), "busy-thread", "input")
+		_, err := ag.Run(context.Background(), "input", WithThread("busy-thread"))
 		var interrupted *RunInterruptedError
 		if !errors.As(err, &interrupted) || interrupted.ThreadID != "busy-thread" || !errors.Is(err, ErrThreadBusy) {
-			t.Errorf("RunThread() error = %v, want busy-thread RunInterruptedError wrapping ErrThreadBusy", err)
+			t.Errorf("Run() error = %v, want busy-thread RunInterruptedError wrapping ErrThreadBusy", err)
 		}
 	})
 
@@ -180,8 +180,8 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 			llm.DoneChunk{FinishReason: "stop"},
 		}}}}
 		ag := New(p, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()))
-		if _, err := ag.RunThread(context.Background(), "closed-thread", "input"); err != nil {
-			t.Fatalf("RunThread() error = %v", err)
+		if _, err := ag.Run(context.Background(), "input", WithThread("closed-thread")); err != nil {
+			t.Fatalf("Run() error = %v", err)
 		}
 		_, closedErr := ag.ResumeThread(context.Background(), "closed-thread")
 		if !errors.Is(closedErr, ErrNothingToResume) {

@@ -35,9 +35,9 @@ func TestStreamLifecycleBarriers(t *testing.T) {
 		},
 	}), reg, WithStore(st), WithLogger(discardLogger()))
 
-	seq, err := agent.RunThreadStream(ctx, "t", "hi")
+	seq, err := agent.RunStream(ctx, "hi", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	sawCall, sawResult, sawDone := false, false, false
 	for ev, iterErr := range seq {
@@ -120,8 +120,8 @@ func TestCompactionPersistsCheckpoint(t *testing.T) {
 		WithContextWindowTokens(200), // target ≈160 runes: the 400-rune input forces compaction
 		WithLogger(discardLogger()),
 	)
-	if _, err := agent.RunThread(ctx, "t", big); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(ctx, big, WithThread("t")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	state, err := st.Latest(ctx, "t")
 	if err != nil {
@@ -148,8 +148,8 @@ func TestCompactionPersistsCheckpoint(t *testing.T) {
 	// model sees exactly one system message, and the compacted-away input
 	// does not reappear.
 	agent2 := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("next")))
-	if _, err := agent2.RunThread(ctx, "t", "more"); err != nil {
-		t.Fatalf("RunThread after compaction: %v", err)
+	if _, err := agent2.Run(ctx, "more", WithThread("t")); err != nil {
+		t.Fatalf("Run after compaction: %v", err)
 	}
 	msgs := agent2.provider.(*MockProvider).LastMessages
 	systems := 0
@@ -169,13 +169,13 @@ func TestCompactionPersistsCheckpoint(t *testing.T) {
 	}
 }
 
-// TestRunThreadStreamIsLazy pins that a never-ranged RunThreadStream has no
+// TestRunStreamIsLazy pins that a never-ranged RunStream has no
 // observable effect: no ownership, no replay, no input commit.
-func TestRunThreadStreamIsLazy(t *testing.T) {
+func TestRunStreamIsLazy(t *testing.T) {
 	st := store.NewMemory()
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("hi")))
-	if _, err := agent.RunThreadStream(context.Background(), "t", "hi"); err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+	if _, err := agent.RunStream(context.Background(), "hi", WithThread("t")); err != nil {
+		t.Fatalf("RunStream: %v", err)
 	}
 	state, err := st.Latest(context.Background(), "t")
 	if err != nil {
@@ -197,11 +197,11 @@ func TestRunWithStoreGeneratesDistinctThreadIDs(t *testing.T) {
 		MsgResponse(llm.AssistantMessage("two")),
 	)
 
-	res1, err := agent.Run(ctx, "a")
+	res1, err := agent.Run(ctx, "a", WithThread(""))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	res2, err := agent.Run(ctx, "b")
+	res2, err := agent.Run(ctx, "b", WithThread(""))
 	if err != nil {
 		t.Fatalf("second Run: %v", err)
 	}

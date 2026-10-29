@@ -39,7 +39,8 @@ func TestSettleE59ParallelChildrenCollectedByCallbacks(t *testing.T) {
 				providers[index] = &roundContextSequenceProvider{steps: [][]llm.Chunk{settleCall("leaf-call", "leaf")}}
 				children[index] = agent.New(providers[index], childRegistry, agent.WithStore(stores[index]),
 					agent.WithRunExitFn(func(token agent.SettlementToken) { exits <- exit{index: index, token: token} }))
-				registry.MustRegister(agenttool.New(children[index], agenttool.Config{Name: toolName}))
+				registry.MustRegister(agenttool.New(children[index], agenttool.Config{Name: toolName,
+					RunOptions: []agent.RunOption{agent.WithThread("")}}))
 			}
 			provider := &roundContextSequenceProvider{steps: [][]llm.Chunk{toolCallChunks([]llm.ToolUseBlock{
 				{ID: "first-call", Name: "first", Input: json.RawMessage(`{"input":"one"}`)},
@@ -51,7 +52,7 @@ func TestSettleE59ParallelChildrenCollectedByCallbacks(t *testing.T) {
 			outcome, joined := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(joined)
-				_, err := parent.RunThread(ctx, "parent", "parallel delegation")
+				_, err := parent.Run(ctx, "parallel delegation", agent.WithThread("parent"))
 				outcome <- err
 			}()
 			t.Cleanup(func() {

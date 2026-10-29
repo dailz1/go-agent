@@ -50,7 +50,7 @@ func TestSettleInterruptCompaction(t *testing.T) {
 				outcome := make(chan error, 1)
 				events := make(chan CompactionEvent, 1)
 				go func() {
-					seq, err := a.RunThreadStream(ctx, "t", input)
+					seq, err := a.RunStream(ctx, input, WithThread("t"))
 					if err == nil {
 						for event, streamErr := range seq {
 							if streamErr != nil {

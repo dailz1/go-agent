@@ -21,8 +21,8 @@ func TestParallelApprovalPanicLeavesRecoverableDeclaration(t *testing.T) {
 	reg.MustRegister(first)
 	reg.MustRegister(second)
 	agent := New(parallelProvider(parallelToolCalls("one", "two")), reg, WithStore(st), WithToolConcurrency(2), WithApprovalFn(func(tool.ToolInfo, json.RawMessage) bool { panic("approval") }), WithLogger(discardLogger()))
-	if _, err := agent.RunThread(context.Background(), "t", "go"); err == nil {
-		t.Fatal("RunThread accepted callback panic")
+	if _, err := agent.Run(context.Background(), "go", WithThread("t")); err == nil {
+		t.Fatal("Run accepted callback panic")
 	}
 	if first.calls.Load() != 0 || second.calls.Load() != 0 || hasKind(t, st, "t", store.KindRoundCommitted) {
 		t.Fatal("callback panic executed or committed its round")

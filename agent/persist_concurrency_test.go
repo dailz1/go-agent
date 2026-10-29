@@ -36,7 +36,7 @@ func TestSameThreadOwnershipAcrossAgents(t *testing.T) {
 
 	doneA := make(chan error, 1)
 	go func() {
-		_, err := agentA.RunThread(ctx, "t", "a")
+		_, err := agentA.Run(ctx, "a", WithThread("t"))
 		doneA <- err
 	}()
 	// Bounded waits: a regression must fail the test, not hang the package.
@@ -46,8 +46,8 @@ func TestSameThreadOwnershipAcrossAgents(t *testing.T) {
 		t.Fatal("agent A never reached its provider call")
 	}
 
-	if _, err := agentB.RunThread(ctx, "t", "b"); !errors.Is(err, ErrThreadBusy) {
-		t.Errorf("B RunThread error = %v, want ErrThreadBusy", err)
+	if _, err := agentB.Run(ctx, "b", WithThread("t")); !errors.Is(err, ErrThreadBusy) {
+		t.Errorf("B Run error = %v, want ErrThreadBusy", err)
 	}
 	// B's rejection must not have written anything.
 	equalKinds(t, logKinds(t, st, "t"), store.KindRunStarted)
@@ -56,14 +56,14 @@ func TestSameThreadOwnershipAcrossAgents(t *testing.T) {
 	select {
 	case err := <-doneA:
 		if err != nil {
-			t.Fatalf("A RunThread: %v", err)
+			t.Fatalf("A Run: %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("agent A never finished after release")
 	}
 	// Ownership is released with the run; B can now run the thread.
-	if _, err := agentB.RunThread(ctx, "t", "b2"); err != nil {
-		t.Errorf("B RunThread after A finished: %v", err)
+	if _, err := agentB.Run(ctx, "b2", WithThread("t")); err != nil {
+		t.Errorf("B Run after A finished: %v", err)
 	}
 }
 
@@ -98,7 +98,7 @@ func TestGeneratedIDReservation(t *testing.T) {
 	t.Cleanup(func() { newThreadID = orig })
 
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("new run")))
-	res, err := agent.Run(ctx, "hi")
+	res, err := agent.Run(ctx, "hi", WithThread(""))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestGeneratedIDReservationActiveCollision(t *testing.T) {
 	t.Cleanup(func() { newThreadID = orig })
 
 	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("new run")))
-	res, err := agent.Run(ctx, "hi")
+	res, err := agent.Run(ctx, "hi", WithThread(""))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestGeneratedIDCollisionWithOwnedThread(t *testing.T) {
 
 	doneA := make(chan error, 1)
 	go func() {
-		_, err := agentA.RunThread(ctx, "owned", "a")
+		_, err := agentA.Run(ctx, "a", WithThread("owned"))
 		doneA <- err
 	}()
 	select {
@@ -183,7 +183,7 @@ func TestGeneratedIDCollisionWithOwnedThread(t *testing.T) {
 	}
 	t.Cleanup(func() { newThreadID = orig })
 
-	res, err := agentB.Run(ctx, "hi")
+	res, err := agentB.Run(ctx, "hi", WithThread(""))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestGeneratedIDCollisionWithOwnedThread(t *testing.T) {
 	select {
 	case err := <-doneA:
 		if err != nil {
-			t.Fatalf("A RunThread: %v", err)
+			t.Fatalf("A Run: %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("agent A never finished after release")
@@ -209,13 +209,17 @@ func TestGeneratedIDCollisionWithOwnedThread(t *testing.T) {
 func TestThreadIDBoundaryValidation(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()
-	agent := persistTestAgent(t, st, MsgResponse(llm.AssistantMessage("x")))
+	agent := persistTestAgent(t, st,
+		MsgResponse(llm.AssistantMessage("x")),
+		MsgResponse(llm.AssistantMessage("x")))
 
-	if _, err := agent.RunThread(ctx, "", "hi"); !errors.Is(err, ErrInvalidThreadID) {
-		t.Errorf("empty id error = %v, want ErrInvalidThreadID", err)
+	// WithThread("") is the generate instruction, not an invalid ID: the
+	// store-backed agent runs it on a kernel-generated thread.
+	if _, err := agent.Run(ctx, "hi", WithThread("")); err != nil {
+		t.Errorf("empty id run error = %v, want nil (kernel-generated thread)", err)
 	}
 	long := "/" + string(make([]byte, 200)) // escapes to 3 bytes per NUL
-	if _, err := agent.RunThread(ctx, long, "hi"); !errors.Is(err, ErrInvalidThreadID) {
+	if _, err := agent.Run(ctx, "hi", WithThread(long)); !errors.Is(err, ErrInvalidThreadID) {
 		t.Errorf("over-long escaped id error = %v, want ErrInvalidThreadID", err)
 	}
 	for _, id := range []string{"", long} {
@@ -226,7 +230,7 @@ func TestThreadIDBoundaryValidation(t *testing.T) {
 			t.Errorf("SettlementTarget id %q = %v, want ErrInvalidThreadID", id, err)
 		}
 	}
-	if _, err := agent.RunThread(ctx, "valid-thread-1", "hi"); err != nil {
+	if _, err := agent.Run(ctx, "hi", WithThread("valid-thread-1")); err != nil {
 		t.Errorf("valid id rejected: %v", err)
 	}
 }
@@ -241,11 +245,11 @@ func TestExplicitThreadAPIRequiresStore(t *testing.T) {
 		result: tool.NewTextResult("echoed"),
 	})
 	agent := New(NewMockProvider(MsgResponse(llm.AssistantMessage("x"))), reg, WithLogger(discardLogger()))
-	if _, err := agent.RunThread(context.Background(), "t", "hi"); !errors.Is(err, ErrNoStore) {
-		t.Errorf("RunThread without store = %v, want ErrNoStore", err)
+	if _, err := agent.Run(context.Background(), "hi", WithThread("t")); !errors.Is(err, ErrNoStore) {
+		t.Errorf("Run without store = %v, want ErrNoStore", err)
 	}
-	if _, err := agent.RunThreadStream(context.Background(), "t", "hi"); !errors.Is(err, ErrNoStore) {
-		t.Errorf("RunThreadStream without store = %v, want ErrNoStore", err)
+	if _, err := agent.RunStream(context.Background(), "hi", WithThread("t")); !errors.Is(err, ErrNoStore) {
+		t.Errorf("RunStream without store = %v, want ErrNoStore", err)
 	}
 	if err := agent.SettleThread(context.Background(), SettlementToken{ThreadID: "t"}); !errors.Is(err, ErrNoStore) {
 		t.Errorf("SettleThread without store = %v, want ErrNoStore", err)

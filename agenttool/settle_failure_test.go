@@ -43,7 +43,7 @@ func TestSettleE57ChildCleanupFailureStopsRedirect(t *testing.T) {
 				if _, err := f.child.ResumeThread(t.Context(), child.ThreadID); err != nil {
 					t.Fatal(err)
 				}
-				seq, err := f.child.RunThreadStream(t.Context(), child.ThreadID, "new child task")
+				seq, err := f.child.RunStream(t.Context(), "new child task", agent.WithThread(child.ThreadID))
 				if err != nil {
 					t.Fatal(err)
 				}

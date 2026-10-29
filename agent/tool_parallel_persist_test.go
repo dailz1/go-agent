@@ -33,7 +33,7 @@ func TestParallelStoreCommitsResultsInDeclarationOrder(t *testing.T) {
 		WithStore(st), WithToolConcurrency(2), WithLogger(discardLogger()))
 	outcome := make(chan error, 1)
 	go func() {
-		_, err := agent.RunThread(context.Background(), "t", "go")
+		_, err := agent.Run(context.Background(), "go", WithThread("t"))
 		outcome <- err
 	}()
 	waitParallelSignal(t, firstStarted)
@@ -45,7 +45,7 @@ func TestParallelStoreCommitsResultsInDeclarationOrder(t *testing.T) {
 	select {
 	case err := <-outcome:
 		if err != nil {
-			t.Fatalf("RunThread: %v", err)
+			t.Fatalf("Run: %v", err)
 		}
 	case <-ctx.Done():
 		t.Fatal("parallel persisted run did not finish")
@@ -80,9 +80,9 @@ func TestParallelInterruptedResultBatchResumesWithOrderedUnknowns(t *testing.T) 
 	}
 	agent := New(parallelProvider(parallelToolCalls("one", "two")), reg,
 		WithStore(st), WithToolConcurrency(2), WithLogger(discardLogger()))
-	seq, err := agent.RunThreadStream(context.Background(), "t", "go")
+	seq, err := agent.RunStream(context.Background(), "go", WithThread("t"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	for event, streamErr := range seq {
 		if streamErr != nil {
@@ -116,9 +116,9 @@ func TestParallelSettledResultsCommitDespiteCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	seq, err := New(parallelProvider(parallelToolCalls("one")), reg,
-		WithStore(st), WithToolConcurrency(2), WithLogger(discardLogger())).RunThreadStream(ctx, "settled", "go")
+		WithStore(st), WithToolConcurrency(2), WithLogger(discardLogger())).RunStream(ctx, "go", WithThread("settled"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	var terminal error
 	for event, streamErr := range seq {
@@ -145,9 +145,9 @@ func TestParallelCommitFailureLeavesOpenRound(t *testing.T) {
 	failed := &failAppendStore{Store: store.NewMemory(), failOnCall: 3}
 	agent := New(parallelProvider(parallelToolCalls("one")), reg,
 		WithStore(failed), WithToolConcurrency(2), WithLogger(discardLogger()))
-	seq, err := agent.RunThreadStream(context.Background(), "failure", "go")
+	seq, err := agent.RunStream(context.Background(), "go", WithThread("failure"))
 	if err != nil {
-		t.Fatalf("RunThreadStream: %v", err)
+		t.Fatalf("RunStream: %v", err)
 	}
 	seenResult := false
 	for event, streamErr := range seq {
@@ -218,8 +218,8 @@ func TestParallelBatchCompactsOnNextModelRound(t *testing.T) {
 	agent := New(parallelProvider(parallelToolCalls("large")), reg,
 		WithStore(st), WithToolConcurrency(2), WithContextWindowTokens(128),
 		WithCompactor(compactKeepSystem{}), WithLogger(discardLogger()))
-	if _, err := agent.RunThread(context.Background(), "compact", "go"); err != nil {
-		t.Fatalf("RunThread: %v", err)
+	if _, err := agent.Run(context.Background(), "go", WithThread("compact")); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 	state, err := st.Latest(context.Background(), "compact")
 	if err != nil {
