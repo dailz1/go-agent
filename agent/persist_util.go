@@ -20,7 +20,7 @@ func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) err
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			if aerr := p.absorbTail(ctx, p.head, true); aerr != nil {
+			if aerr := p.absorbTail(ctx, p.head); aerr != nil {
 				return fmt.Errorf("agent: persist checkpoint on thread %q: %w", p.thread, aerr)
 			}
 		}

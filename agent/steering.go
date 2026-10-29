@@ -12,13 +12,6 @@ import (
 	"github.com/dailz1/go-agent/store"
 )
 
-// MaxEnqueueInputRunes is the absolute upper bound for one steering input.
-// The effective admission bound is narrower: an Agent admits an input only
-// if it fits the compaction headroom of the configured context window, so
-// an accepted input can never push an active run past its budget at the
-// drain point.
-const MaxEnqueueInputRunes = 8192
-
 // QueuedInputID identifies one enqueued steering input. It is derived from
 // the caller-supplied idempotency key: the same key names the same logical
 // message, so an ambiguous-failure retry confirms instead of duplicating.
@@ -27,8 +20,9 @@ type QueuedInputID string
 // ErrEmptyInput rejects an enqueue call with an empty input or key.
 var ErrEmptyInput = errors.New("agent: steering input and idempotency key must be non-empty")
 
-// ErrInputTooLarge rejects an enqueue call whose input exceeds
-// MaxEnqueueInputRunes.
+// ErrInputTooLarge rejects an enqueue call whose serialized input exceeds
+// the thread's hard limit: the context window, or the canonical cap under
+// a runtime-context overlay.
 var ErrInputTooLarge = errors.New("agent: steering input exceeds the maximum length")
 
 // queueEntry is one pending steering input: the record ID of the
@@ -63,8 +57,12 @@ type inputConsumedPayload struct {
 // EnqueueInputWithID durably queues a steering input for a thread. The
 // record lands immediately — before any run consumes it — so a crash never
 // loses an input the API already accepted. The change reaches the model at
-// the next drain point: the next round boundary of an active run, or the
-// first round of the next run on the thread.
+// the next drain point where it fits: the next round boundary of an active
+// run, or the first round of the next run on the thread. An accepted input
+// defers (stays queued) while the round's remaining hard-limit budget
+// cannot hold it, and lands when a later drain has room; if no round ever
+// frees enough capacity it stays durably queued — visible in the log,
+// never silently dropped, never pushed past the hard limit.
 //
 // The idempotency key names the logical message: retrying this call with
 // the same key confirms instead of duplicating, even across restarts and
@@ -80,7 +78,7 @@ func (a *Agent) EnqueueInputWithID(ctx context.Context, thread, idempotencyKey, 
 	// compaction budget and the drain use — so escaping-heavy text cannot
 	// slip past the bound on raw rune count alone.
 	cost := estimateRunes([]llm.Message{llm.UserMessage(input)})
-	if cost > MaxEnqueueInputRunes || cost > a.steeringAdmissionRunes() {
+	if cost > a.steeringAdmissionRunes() {
 		return "", fmt.Errorf("agent: steering input costs %d serialized runes, admission bound %d: %w",
 			cost, a.steeringAdmissionRunes(), ErrInputTooLarge)
 	}
@@ -155,7 +153,7 @@ func queuedRecordLanded(tail []store.Record, id, payload string) bool {
 // defer, but never push the run past its hard limit. The returned messages
 // must be appended to the live history by the caller.
 func (p *persistence) drainInputs(ctx context.Context, availableRunes int) ([]llm.Message, error) {
-	if err := p.absorbTail(ctx, p.cfgRead, false); err != nil {
+	if err := p.absorbTail(ctx, p.cfgRead); err != nil {
 		return nil, err
 	}
 	if len(p.queue) == 0 {

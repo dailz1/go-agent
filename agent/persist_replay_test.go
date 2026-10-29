@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
@@ -191,4 +192,190 @@ func mustRecord(t *testing.T, kind, id string, payload any) store.Record {
 		t.Fatalf("encode %s: %v", kind, err)
 	}
 	return rec
+}
+
+// enqueueAfterLatestStore deterministically stages the H1 interleaving: the
+// first Latest call appends an input_queued record at the snapshot's head
+// and then returns the pre-injection snapshot — an external enqueue that
+// lands between the Latest read and the fallback History read.
+type enqueueAfterLatestStore struct {
+	store.Store
+	injected bool
+}
+
+func (s *enqueueAfterLatestStore) Latest(ctx context.Context, thread string) (store.ThreadState, error) {
+	state, err := s.Store.Latest(ctx, thread)
+	if err != nil || s.injected {
+		return state, err
+	}
+	s.injected = true
+	rec, err := encodeRecord(store.KindInputQueued, "q-h1", inputQueuedPayload{Input: "concurrent-Q"})
+	if err != nil {
+		return store.ThreadState{}, err
+	}
+	rec.Schema = store.SchemaV2
+	if _, err := s.Store.Append(ctx, thread, state.Head, rec); err != nil {
+		return store.ThreadState{}, err
+	}
+	return state, nil
+}
+
+// stageH1Thread hand-builds a thread with an active run; a v2 checkpoint
+// forces the full-log fallback path, and openDeclared adds an open round
+// declaration so a resume must first write its recovery commit.
+func stageH1Thread(t *testing.T, st store.Store, checkpoint, openDeclared bool) {
+	t.Helper()
+	head := stagedRunStarted(t, st, "t", "r1", "go")
+	lastRound := -1
+	if openDeclared {
+		head = stagedDeclaration(t, st, "t", "r1", head, 0, toolCallMessage("c1"))
+		lastRound = 0
+	}
+	if !checkpoint {
+		return
+	}
+	// The checkpoint carries a valid v2 snapshot whose history omits the
+	// open declaration; it is discarded on codec grounds either way.
+	writeRaw(t, st, "t", head, store.Record{
+		Kind: store.KindCheckpoint, Schema: store.SchemaV2, ID: "cp-h1",
+		Payload: mustJSON(t, agentCheckpoint{
+			CodecVersion: store.SchemaV2,
+			History:      []llm.Message{llm.UserMessage("go")},
+			System:       "",
+			RunActive:    true,
+			RunID:        "r1",
+			LastRound:    lastRound,
+		}),
+	})
+}
+
+// TestReplayFallbackConcurrentEnqueueConsumedOnce pins the H1 contract:
+// an input enqueued between the Latest snapshot and the fallback History
+// read enters the projection exactly once. The v2-fallback cases were red
+// before the fix — without open: the fallback replay and the first round
+// top's refreshConfig each folded Q; with an open declaration: the fallback
+// replay and the recovery commit's rebase each folded Q. The no-checkpoint
+// cases are green sentinels: Latest.Tail and Latest.Head come from the same
+// snapshot read, so no double-read window exists there.
+func TestReplayFallbackConcurrentEnqueueConsumedOnce(t *testing.T) {
+	const qText = "concurrent-Q"
+	for _, tc := range []struct {
+		name       string
+		checkpoint bool
+		open       bool
+	}{
+		{"v2_checkpoint/no_open", true, false},
+		{"v2_checkpoint/open_round", true, true},
+		{"no_checkpoint/no_open", false, false},
+		{"no_checkpoint/open_round", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := store.NewMemory()
+			stageH1Thread(t, inner, tc.checkpoint, tc.open)
+			st := &enqueueAfterLatestStore{Store: inner}
+			provider := NewMockStreamingProvider([][]llm.Chunk{
+				textChunks("resumed"),
+				textChunks("next run"),
+			})
+			agent := New(provider, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
+			ctx := context.Background()
+			if _, err := agent.ResumeThread(ctx, "t"); err != nil {
+				t.Fatalf("ResumeThread: %v", err)
+			}
+			first := messageSliceString(provider.AllMessages[0])
+			if got := strings.Count(first, qText); got != 1 {
+				t.Fatalf("resumed outbound carries the enqueued input %d times, want 1: %q", got, first)
+			}
+			queued, consumed := 0, 0
+			var drain inputConsumedPayload
+			for _, r := range logRecords(t, st, "t") {
+				switch r.Kind {
+				case store.KindInputQueued:
+					queued++
+				case store.KindInputConsumed:
+					consumed++
+					if err := strictDecode(r.Payload, &drain); err != nil {
+						t.Fatalf("decode input_consumed: %v", err)
+					}
+				}
+			}
+			if queued != 1 {
+				t.Fatalf("input_queued records = %d, want 1", queued)
+			}
+			if consumed != 1 || len(drain.Inputs) != 1 ||
+				drain.Inputs[0].ID != "q-h1" || drain.Inputs[0].Input != qText {
+				t.Fatalf("input_consumed records = %d payload %+v, want 1 consuming exactly q-h1", consumed, drain.Inputs)
+			}
+			v, rerr := agent.replayThread(ctx, "t")
+			if rerr != nil {
+				t.Fatalf("post-run replay: %v (log must stay replayable)", rerr)
+			}
+			if len(v.queue) != 0 {
+				t.Fatalf("post-run replay queue = %v, want empty", v.queue)
+			}
+			if _, err := agent.RunThread(ctx, "t", "next"); err != nil {
+				t.Fatalf("RunThread after resume: %v", err)
+			}
+		})
+	}
+}
+
+// TestReplayFallbackPrefixBoundedBySnapshotHead is the D-H1(a) white-box
+// companion: replay of the fallback prefix terminates exactly at the Latest
+// snapshot head, and records beyond it are never folded into the projection.
+func TestReplayFallbackPrefixBoundedBySnapshotHead(t *testing.T) {
+	inner := store.NewMemory()
+	stageH1Thread(t, inner, true, false)
+	st := &enqueueAfterLatestStore{Store: inner}
+	agent := New(NewMockStreamingProvider(nil), tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
+	v, err := agent.replayThread(context.Background(), "t")
+	if err != nil {
+		t.Fatalf("replayThread: %v", err)
+	}
+	// The snapshot covered [run_started, checkpoint]: head 2, Q landed at 2.
+	if v.head != 2 {
+		t.Fatalf("view head = %d, want the snapshot head 2", v.head)
+	}
+	if len(v.queue) != 0 {
+		t.Fatalf("queue = %v, want empty (records past the snapshot are left to absorption)", v.queue)
+	}
+	if !v.runActive {
+		t.Fatal("view must keep the run active")
+	}
+}
+
+func TestReplayRejectsRunClosedAfterCancellation(t *testing.T) {
+	st := store.NewMemory()
+	head := stagedRunStarted(t, st, "t", "r1", "go")
+	cancelRec, err := encodeRecord(store.KindRunCancelled, recordID("r1", "-cancel"),
+		runCancelledPayload{RunID: "r1", Results: []llm.Message{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRec.Schema = store.SchemaV2
+	head = writeRaw(t, st, "t", head, cancelRec)
+	closedRec, err := encodeRecord(store.KindRunClosed, recordID("r1", "-closed"),
+		runClosedPayload{RunID: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedRec.Schema = store.SchemaV2
+	writeRaw(t, st, "t", head, closedRec)
+	agent := persistTestAgent(t, st)
+	_, err = agent.replayThread(context.Background(), "t")
+	if !errors.Is(err, ErrIncompatibleLog) || !strings.Contains(err.Error(), "outside the cooperative-end window") {
+		t.Fatalf("replay err = %v, want ErrIncompatibleLog naming the cooperative-end window", err)
+	}
+}
+
+func TestReplayRejectsUnknownDeclarationKind(t *testing.T) {
+	st := store.NewMemory()
+	stagedRunStarted(t, st, "t", "r1", "go")
+	writeRaw(t, st, "t", 1, mustRecord(t, store.KindRoundDeclared, "r1-d0",
+		roundDeclaredPayload{RunID: "r1", Round: 0, Message: toolCallMessage("c1"), Kind: "bogus"}))
+	agent := persistTestAgent(t, st)
+	_, err := agent.replayThread(context.Background(), "t")
+	if !errors.Is(err, ErrIncompatibleLog) || !strings.Contains(err.Error(), `unknown declaration kind "bogus"`) {
+		t.Fatalf("replay err = %v, want ErrIncompatibleLog naming the unknown declaration kind", err)
+	}
 }

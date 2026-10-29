@@ -180,7 +180,7 @@ func (p *persistence) append(ctx context.Context, records ...store.Record) error
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			if aerr := p.absorbTail(ctx, p.head, true); aerr != nil {
+			if aerr := p.absorbTail(ctx, p.head); aerr != nil {
 				return fmt.Errorf("agent: persist %s on thread %q: %w", records[0].Kind, p.thread, aerr)
 			}
 		}
@@ -203,35 +203,37 @@ func (p *persistence) append(ctx context.Context, records ...store.Record) error
 // refreshConfig folds any config_changed records appended since the last
 // scan into the session's effective config. Called at each round top.
 func (p *persistence) refreshConfig(ctx context.Context) error {
-	return p.absorbTail(ctx, p.cfgRead, false)
+	return p.absorbTail(ctx, p.cfgRead)
 }
 
-// absorbTail reads the log from seq and folds config_changed records into
-// the session projection. In strict mode (write-point conflict) any other
-// record in the gap is a hard error; in scan mode (round top) the gap holds
-// this session's own lifecycle records and only config records are folded.
-func (p *persistence) absorbTail(ctx context.Context, from int64, strict bool) error {
+// absorbTail reads the log from seq and folds whitelisted control records
+// (config_changed, input_queued) into the session projection. Any other
+// record in the gap fails closed: the runner never advances past a record
+// it did not write (D6). Every runner write advances head and cfgRead
+// together, so the gap can only contain external records.
+func (p *persistence) absorbTail(ctx context.Context, from int64) error {
 	recs, err := p.a.store.History(ctx, p.thread, from)
 	if err != nil {
 		return fmt.Errorf("agent: absorb control records on thread %q: %w", p.thread, err)
 	}
 	high := from
 	for _, r := range recs {
-		switch {
-		case r.Kind == store.KindConfigChanged:
+		switch r.Kind {
+		case store.KindConfigChanged:
 			cp, derr := decodeConfigChanged(r)
 			if derr != nil {
 				return derr
 			}
 			p.cfg.fold(cp)
-		case r.Kind == store.KindInputQueued:
+		case store.KindInputQueued:
 			qp, derr := decodeInputQueued(r)
 			if derr != nil {
 				return derr
 			}
 			p.queue = append(p.queue, queueEntry{ID: r.ID, Input: qp.Input})
-		case strict:
-			return fmt.Errorf("agent: unabsorbable record %s at seq %d on thread %q: %w", r.Kind, r.Seq, p.thread, store.ErrRevisionConflict)
+		default:
+			return fmt.Errorf("agent: unabsorbable record %s at seq %d on thread %q: %w",
+				r.Kind, r.Seq, p.thread, store.ErrRevisionConflict)
 		}
 		if r.Seq+1 > high {
 			high = r.Seq + 1

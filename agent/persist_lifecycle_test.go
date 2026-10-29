@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -244,4 +245,47 @@ func roles(msgs []llm.Message) []llm.Role {
 		out[i] = m.Role
 	}
 	return out
+}
+
+// TestRoundTopScanRejectsForeignRecord pins the fail-closed absorb
+// discipline at round tops: a record outside the whitelist
+// (config_changed, input_queued) sitting in the scan gap aborts the run
+// instead of being silently skipped with head advanced past it. The
+// FinishRound hook is the deterministic injection point — it runs after the
+// round commit and before the next round top. The gap can only hold
+// external records: every runner write advances head and cfgRead together.
+func TestRoundTopScanRejectsForeignRecord(t *testing.T) {
+	st := store.NewMemory()
+	reg := tool.NewRegistry()
+	reg.MustRegister(mutatorTool("calc", func(context.Context, json.RawMessage) (*tool.ToolResult, error) {
+		return tool.NewTextResult("42"), nil
+	}))
+	provider := NewMockStreamingProvider([][]llm.Chunk{toolCallChunks("c1", "calc")})
+	agent := New(provider, reg,
+		WithStore(st),
+		WithLogger(discardLogger()),
+		WithFinishRound(func(ctx context.Context, fc FinishRoundContext) (FinishRoundDecision, error) {
+			state, err := st.Latest(ctx, fc.ThreadID)
+			if err != nil {
+				return FinishRoundDecision{}, err
+			}
+			rec, err := encodeRecord(store.KindError, "foreign-err",
+				map[string]string{"message": "foreign record"})
+			if err != nil {
+				return FinishRoundDecision{}, err
+			}
+			writeRaw(t, st, fc.ThreadID, state.Head, rec)
+			// Default: the run continues into the next round top.
+			return FinishRoundDecision{}, nil
+		}),
+	)
+	_, err := agent.RunThread(context.Background(), "t", "compute")
+	if !errors.Is(err, store.ErrRevisionConflict) {
+		t.Fatalf("RunThread err = %v, want ErrRevisionConflict from the fail-closed round-top scan", err)
+	}
+	if len(provider.AllMessages) != 1 {
+		t.Fatalf("provider calls = %d, want 1 (the abort precedes the second request)", len(provider.AllMessages))
+	}
+	equalKinds(t, logKinds(t, st, "t"),
+		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindError)
 }

@@ -243,8 +243,9 @@ func TestFinishRoundDeclarationReplaysAcrossRestart(t *testing.T) {
 		t.Fatalf("calls = %d", len(provider.AllMessages))
 	}
 	// A fresh agent over the same store must replay the terminal_text
-	// declaration: the run is still active and the next request carries the
-	// declared turn.
+	// declaration: the first run closed via run_closed; the fresh agent's
+	// new run replays the terminal_text turn into history and the next
+	// request carries the declared turn.
 	provider2 := NewMockStreamingProvider([][]llm.Chunk{textChunks("again")})
 	agent2 := New(provider2, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
 	if _, err := agent2.RunThread(context.Background(), "t", "next"); err != nil {
@@ -340,5 +341,136 @@ func TestFinishRoundInvalidActionRejected(t *testing.T) {
 	var frErr *FinishRoundError
 	if !errors.As(err, &frErr) || !strings.Contains(err.Error(), "invalid finish round action") {
 		t.Fatalf("err = %v, want FinishRoundError for the invalid action", err)
+	}
+}
+
+// runClosedBoundaryStore injects one write-boundary failure exactly at the
+// run_closed Append, mirroring settleCancelAfterAppend's one-shot gate:
+// MemoryStore.Append rejects a canceled context on its first line, so a
+// synchronous cancel before the delegate deterministically blocks the write.
+type runClosedBoundaryStore struct {
+	store.Store
+	mode   string // "cancel_before_append" | "cancel_after_append" | "ack_lost"
+	cancel context.CancelFunc
+	fired  bool
+}
+
+func (s *runClosedBoundaryStore) Append(ctx context.Context, thread string, expected int64, records ...store.Record) (int64, error) {
+	if s.fired || len(records) == 0 || records[0].Kind != store.KindRunClosed {
+		return s.Store.Append(ctx, thread, expected, records...)
+	}
+	s.fired = true
+	switch s.mode {
+	case "cancel_before_append":
+		s.cancel()
+		return s.Store.Append(ctx, thread, expected, records...)
+	case "cancel_after_append":
+		head, err := s.Store.Append(ctx, thread, expected, records...)
+		if err == nil {
+			s.cancel()
+		}
+		return head, err
+	default: // "ack_lost"
+		if _, err := s.Store.Append(ctx, thread, expected, records...); err != nil {
+			return 0, err
+		}
+		return 0, errors.New("ack lost")
+	}
+}
+
+// TestRunClosedWriteBoundaries covers the three write states of the
+// cooperative-end append: canceled before it lands, landed and acknowledged
+// before a later cancel, and landed with the acknowledgement lost. The
+// durable log, the exit token, and the resumability of the thread must match
+// the state the log is actually in — never the state the caller believes in.
+func TestRunClosedWriteBoundaries(t *testing.T) {
+	for _, tc := range []struct{ name, mode string }{
+		{"cancel_before_append", "cancel_before_append"},
+		{"cancel_after_append_ack_ok", "cancel_after_append"},
+		{"ack_lost", "ack_lost"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			st := &runClosedBoundaryStore{Store: store.NewMemory(), mode: tc.mode, cancel: cancel}
+			reg := tool.NewRegistry()
+			reg.MustRegister(mutatorTool("calc", func(context.Context, json.RawMessage) (*tool.ToolResult, error) {
+				return tool.NewTextResult("42"), nil
+			}))
+			provider := NewMockStreamingProvider([][]llm.Chunk{
+				toolCallChunks("c1", "calc"),
+				textChunks("recovered"),
+			})
+			var token SettlementToken
+			agent := New(provider, reg,
+				WithStore(st),
+				WithLogger(discardLogger()),
+				WithFinishRound(func(context.Context, FinishRoundContext) (FinishRoundDecision, error) {
+					return FinishRoundDecision{Action: FinishRoundEnd}, nil
+				}),
+				WithRunExitFn(func(tk SettlementToken) { token = tk }),
+			)
+			res, err := agent.RunThread(ctx, "t", "compute")
+			switch tc.mode {
+			case "cancel_before_append":
+				var interrupted *RunInterruptedError
+				if !errors.As(err, &interrupted) || !errors.Is(err, context.Canceled) {
+					t.Fatalf("RunThread err = %v, want RunInterruptedError wrapping context.Canceled", err)
+				}
+				if res != nil {
+					t.Fatal("a run whose run_closed never landed must not deliver a success Done")
+				}
+				equalKinds(t, logKinds(t, st, "t"),
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted)
+				if token.ExpectedHead != 3 {
+					t.Fatalf("exit token ExpectedHead = %d, want 3 (after the commit)", token.ExpectedHead)
+				}
+				v, rerr := agent.replayThread(context.Background(), "t")
+				if rerr != nil || !v.runActive {
+					t.Fatalf("replay after the boundary = active:%v err:%v, want an active run", v.runActive, rerr)
+				}
+				if _, err := agent.ResumeThread(context.Background(), "t"); err != nil {
+					t.Fatalf("ResumeThread with a fresh context: %v", err)
+				}
+			case "cancel_after_append":
+				if err != nil || res == nil || res.Truncated {
+					t.Fatalf("RunThread = %v, %v: the durable terminal must not be undone by a later cancel", res, err)
+				}
+				equalKinds(t, logKinds(t, st, "t"),
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindRunClosed)
+				if _, err := agent.ResumeThread(context.Background(), "t"); err != ErrNothingToResume {
+					t.Fatalf("Resume after the closed run = %v, want ErrNothingToResume", err)
+				}
+				if len(provider.AllMessages) != 1 {
+					t.Fatalf("provider calls = %d, want 1 (no re-request after the closed run)", len(provider.AllMessages))
+				}
+			default: // "ack_lost"
+				var interrupted *RunInterruptedError
+				if !errors.As(err, &interrupted) || !strings.Contains(err.Error(), "ack lost") {
+					t.Fatalf("RunThread err = %v, want RunInterruptedError wrapping the lost ack", err)
+				}
+				kinds := logKinds(t, st, "t")
+				equalKinds(t, kinds,
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindRunClosed)
+				if token.ExpectedHead != 3 {
+					t.Fatalf("exit token ExpectedHead = %d, want 3 (the session head never advanced past the commit)", token.ExpectedHead)
+				}
+				v, rerr := agent.replayThread(context.Background(), "t")
+				if rerr != nil || v.runActive {
+					t.Fatalf("replay = active:%v err:%v, want the run closed by the landed run_closed", v.runActive, rerr)
+				}
+				if _, err := agent.ResumeThread(context.Background(), "t"); err != ErrNothingToResume {
+					t.Fatalf("Resume = %v, want ErrNothingToResume", err)
+				}
+				if len(provider.AllMessages) != 1 {
+					t.Fatalf("provider calls = %d, want 1", len(provider.AllMessages))
+				}
+				if err := agent.SettleThread(context.Background(), token); !errors.Is(err, store.ErrRevisionConflict) {
+					t.Fatalf("SettleThread with the stale token = %v, want store.ErrRevisionConflict", err)
+				}
+				// The failed settle wrote nothing: no compensating cancel, no reopen.
+				equalKinds(t, logKinds(t, st, "t"), kinds...)
+			}
+		})
 	}
 }

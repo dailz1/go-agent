@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestSettlePublicBoundaries(t *testing.T) {
@@ -121,6 +123,45 @@ func TestSettleCancellationContext(t *testing.T) {
 	if err := ag.SettleThread(ctx, target); err != nil || !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatalf("E39 confirmed append revoked: %v, ctx=%v", err, ctx.Err())
 	}
+}
+
+// TestSettleAfterCooperativeEndDoesNotReopen pins that a run closed by
+// run_closed is a real terminal: the original token reports nothing to
+// settle, and after a later append the same stale token conflicts instead
+// of cancelling or reopening anything.
+func TestSettleAfterCooperativeEndDoesNotReopen(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	reg := tool.NewRegistry()
+	reg.MustRegister(mutatorTool("calc", func(context.Context, json.RawMessage) (*tool.ToolResult, error) {
+		return tool.NewTextResult("42"), nil
+	}))
+	provider := NewMockStreamingProvider([][]llm.Chunk{toolCallChunks("c1", "calc")})
+	var token SettlementToken
+	agent := New(provider, reg, WithStore(st), WithLogger(discardLogger()),
+		WithFinishRound(func(context.Context, FinishRoundContext) (FinishRoundDecision, error) {
+			return FinishRoundDecision{Action: FinishRoundEnd}, nil
+		}),
+		WithRunExitFn(func(tk SettlementToken) { token = tk }),
+	)
+	if _, err := agent.RunThread(ctx, "t", "compute"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if token.ExpectedHead != 4 {
+		t.Fatalf("exit token ExpectedHead = %d, want 4 (run_closed included)", token.ExpectedHead)
+	}
+	if err := agent.SettleThread(ctx, token); err != ErrNothingToSettle {
+		t.Fatalf("Settle after cooperative end = %v, want ErrNothingToSettle", err)
+	}
+	if _, err := agent.EnqueueInputWithID(ctx, "t", "k-after", "after end"); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SettleThread(ctx, token); !errors.Is(err, store.ErrRevisionConflict) {
+		t.Fatalf("Settle with the stale token after a later append = %v, want store.ErrRevisionConflict", err)
+	}
+	equalKinds(t, logKinds(t, st, "t"),
+		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted,
+		store.KindRunClosed, store.KindInputQueued)
 }
 
 func TestSettleHistoryEntrypointsStayNonpersistent(t *testing.T) {

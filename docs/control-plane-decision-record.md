@@ -85,7 +85,7 @@ maxIter 数值熔断保留，优先级高于一切决策回调（terminal 圈的
 | 探针 | 三 adapter 的 D4 形状验证（含存量 maxIter/settle 路径欠账） | ✅ 全过 |
 | ① | config_changed + SetThreadConfig + 吸收协议 + checkpoint v3 | ✅ 评审 APPROVE |
 | ② | input_queued/input_consumed + EnqueueInputWithID + D1 drain + 队列投影 | ✅ 评审 APPROVE（四轮） |
-| ③ | FinishRound：run_closed + declare 泛化 terminal_text + 钩子前移 | 待实现 |
+| ③ | FinishRound：run_closed + declare 泛化 terminal_text + 钩子前移 | ✅ 已落地（本评审轮核对：run_closed/terminal_text/钩子前移均在 adb6c8e） |
 
 不变量承诺（全批次有效）：sealed 七种事件不增不减；TC-first、declare/commit 两阶段、maxIter terminal 冻结、提交点先落库后行动原样保留；非 steering 的预算超限仍报错（只有 steerering 注入享有延后容忍）。
 

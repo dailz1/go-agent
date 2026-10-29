@@ -112,6 +112,13 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 			if ferr != nil {
 				return threadView{}, fmt.Errorf("agent: rebuild thread %q: %w", thread, ferr)
 			}
+			// The fallback replays exactly the prefix the Latest snapshot
+			// covers. Records beyond state.Head were appended after the
+			// snapshot and belong to the absorption protocol; folding them
+			// here would pair the queue projection with a stale head (H1).
+			for len(full) > 0 && full[len(full)-1].Seq >= state.Head {
+				full = full[:len(full)-1]
+			}
 			records = full
 		}
 	}

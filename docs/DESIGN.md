@@ -236,7 +236,7 @@ checkpoint：codec_version 升至 3，快照新增 `effective_config` 投影；�
 
 新记录 kind：`input_queued`（schema=2，payload `{input}`，逐字节保留）为意图记录，不改 history；`input_consumed`（schema=2，payload `{inputs:[{id,input}]}`）为 D1 drain 的消费记录，必须逐项匹配当前队列 FIFO 前缀（ID+文本），消费项作为 role=user 消息按位置插入 canonical history。
 
-新 API：`(*Agent).EnqueueInputWithID(ctx, thread, idempotencyKey, input) (QueuedInputID, error)`（注：实现为 Agent 方法而非设计稿早期的包级函数，以获取 contextWindow 语义与 Store 绑定）。幂等键由调用方提供，**操作身份 = 调用意图**：同键重试跨重启、跨 checkpoint 确认（含 ErrInvalidRecord 时全量日志回查），不产生重复注入；不同键同文本是两条消息。哨兵：`ErrNoStore` / `ErrEmptyInput`（空 input 或空键）/ `ErrInputTooLarge`（超过 `MaxEnqueueInputRunes`=8192，把超长输入挡在承诺之前）。
+新 API：`(*Agent).EnqueueInputWithID(ctx, thread, idempotencyKey, input) (QueuedInputID, error)`（注：实现为 Agent 方法而非设计稿早期的包级函数，以获取 contextWindow 语义与 Store 绑定）。幂等键由调用方提供，**操作身份 = 调用意图**：同键重试跨重启、跨 checkpoint 确认（含 ErrInvalidRecord 时全量日志回查），不产生重复注入；不同键同文本是两条消息。哨兵：`ErrNoStore` / `ErrEmptyInput`（空 input 或空键）/ `ErrInputTooLarge`（超过序列化硬限制——窗口或 canonical cap，把物理不可行的超长输入挡在承诺之前）。
 
 drain 点全循环唯一：每轮顶部顺序 = 读配置 → 压缩 → **drain** → 预算检查 → 请求；drain 以单条 `input_consumed` 记录原子落库后注入。run 结束时残留队列由下一 run 首轮消费（follow-up 语义）。吸收白名单扩展：runner 写点冲突与轮顶扫描同步吸收 `input_queued`（并入队列投影）；`input_consumed` 仅 runner 自写，不在白名单。checkpoint 快照新增队列投影（含未消费项），旧快照回退规则同①。匿名（无 store）run 不支持 steering。
 
