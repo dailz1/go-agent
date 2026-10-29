@@ -459,7 +459,7 @@ func TestSteeringDeferralKeepsFIFOOrderNoSkip(t *testing.T) {
 	agent := New(provider, reg, WithStore(st),
 		WithContextWindowTokens(1500),
 		WithCompactionThresholdPercent(20),
-		WithCompactor(CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget) (CompactionResult, error) {
+		WithCompactor(CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{History: []llm.Message{llm.UserMessage("seed")}, Changed: true}, nil
 		})),
 		WithLogger(discardLogger()),
@@ -537,7 +537,7 @@ func TestSteeringDrainConsumesPartialPrefix(t *testing.T) {
 	agent := New(provider, reg, WithStore(st),
 		WithContextWindowTokens(1150),
 		WithCompactionThresholdPercent(20),
-		WithCompactor(CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget) (CompactionResult, error) {
+		WithCompactor(CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{History: []llm.Message{llm.UserMessage("seed")}, Changed: true}, nil
 		})),
 		WithLogger(discardLogger()),

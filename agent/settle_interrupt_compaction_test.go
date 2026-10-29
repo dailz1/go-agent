@@ -28,14 +28,14 @@ func TestSettleInterruptCompaction(t *testing.T) {
 				}
 				entered := make(chan struct{})
 				var compactions, overlays atomic.Int32
-				compactor := CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget) (CompactionResult, error) {
+				compactor := CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					compactions.Add(1)
 					if name == "E08_in_progress" {
 						close(entered)
 						<-ctx.Done()
 						return CompactionResult{}, ctx.Err()
 					}
-					return compactKeepSystem{}.Compact(ctx, history, budget)
+					return compactKeepSystem{}.Compact(ctx, history, budget, nil, nil)
 				})
 				p := NewMockStreamingProvider(nil).WithStreamError(context.Canceled)
 				exit := make(chan SettlementToken, 1)

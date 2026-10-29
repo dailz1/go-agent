@@ -268,7 +268,7 @@ func TestCheckpointCarriesAbsorbedConfig(t *testing.T) {
 		WithLogger(discardLogger()),
 		WithContextWindowTokens(400),
 		WithCompactionThresholdPercent(40),
-		WithCompactor(CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget) (CompactionResult, error) {
+		WithCompactor(CompactFunc(func(ctx context.Context, history []llm.Message, budget CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			if err := SetThreadConfig(ctx, st, "t", ConfigChange{Model: strptr("model-b")}); err != nil {
 				return CompactionResult{}, err
 			}

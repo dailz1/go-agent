@@ -108,6 +108,8 @@ type ApprovalFunc func(info tool.ToolInfo, args json.RawMessage) bool
 // the LLM produces a final text response or the iteration limit is reached.
 type Agent struct {
 	provider                   llm.Provider
+	providers                  map[string]llm.Provider
+	altProviders               []llm.Provider
 	registry                   *tool.Registry
 	system                     llm.Message
 	maxIter                    int
@@ -214,6 +216,18 @@ func WithLLMOptions(opts ...llm.Option) Option {
 	return func(a *Agent) { a.llmOpts = opts }
 }
 
+// WithProviders registers alternate providers for cross-provider hot
+// switching on durable threads. The positional provider of New stays the
+// default and is registered under its own Name; every provider passed
+// here is keyed by its Name, and a later registration with the same name
+// replaces the earlier one (last write wins, no fail-fast — distinguish
+// same-named instances by overriding Name). A thread whose folded
+// configuration names a provider missing from the table fails the round
+// with ErrUnknownProvider. Anonymous runs always use the default.
+func WithProviders(providers ...llm.Provider) Option {
+	return func(a *Agent) { a.altProviders = append(a.altProviders, providers...) }
+}
+
 func WithRetryConfig(cfg AgentRetryConfig) Option {
 	return func(a *Agent) { a.retryCfg = cfg; a.retryCfgSet = true }
 }
@@ -290,6 +304,19 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	if a.roundContextProvider == nil {
 		a.roundContextProvider = nil
 	}
+	// The provider table pairs with New's positional default: the default
+	// is registered under its own Name first, WithProviders entries follow,
+	// and a later same-name registration replaces the earlier entry.
+	a.providers = make(map[string]llm.Provider, 1+len(a.altProviders))
+	if provider != nil {
+		a.providers[provider.Name()] = provider
+	}
+	for _, p := range a.altProviders {
+		if p != nil {
+			a.providers[p.Name()] = p
+		}
+	}
+	a.altProviders = nil
 	return a
 }
 
@@ -387,16 +414,30 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			var ok bool
 			// Per-round fixed order: read config → compact → drain → budget → request.
 			var opts []llm.Option
+			prov := a.provider
 			if sess != nil {
 				if err := sess.refreshConfig(ctx); err != nil {
 					yield(nil, err)
 					return
 				}
 				opts = sess.cfg.apply(a.llmOpts)
+				// Provider resolution reads the same projection and shares the
+				// config pipeline: empty folded name = the thread never switched
+				// (default provider); a named provider resolves through the
+				// injected table and stays fixed for the whole round — every
+				// retry attempt and the stream fallback reuse the instance.
+				if name := sess.cfg.Provider; name != nil && *name != "" {
+					p, ok := a.providers[*name]
+					if !ok {
+						yield(nil, fmt.Errorf("agent: thread %q names provider %q which WithProviders did not inject: %w", threadID, *name, ErrUnknownProvider))
+						return
+					}
+					prov = p
+				}
 			} else {
 				opts = a.llmOpts
 			}
-			history, ok = a.compactHistoryRound(ctx, history, yield, sess)
+			history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess)
 			if !ok {
 				return
 			}
@@ -424,6 +465,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			)
 			stream, ok := a.chatWithRetryAndFallback(
 				ctx,
+				prov,
 				history,
 				tools,
 				RoundContextRequest{
@@ -708,9 +750,15 @@ func (a *Agent) steeringAdmissionRunes() int {
 }
 
 // compactHistoryRound enforces the history budget at the top of each round and reports via events.
+// provider and opts are the round's already-resolved effective provider and
+// options: the summarization strategy follows them, so a thread that hot
+// switched providers summarizes on the switched-to provider with the
+// thread's effective model.
 func (a *Agent) compactHistoryRound(
 	ctx context.Context,
 	history []llm.Message,
+	provider llm.Provider,
+	opts []llm.Option,
 	yield func(AgentEvent, error) bool,
 	sess *persistence,
 ) ([]llm.Message, bool) {
@@ -722,7 +770,7 @@ func (a *Agent) compactHistoryRound(
 	}
 	beforeRunes := estimateRunes(history)
 	if a.compactor != nil && beforeRunes > targetRunes {
-		result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes})
+		result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes}, provider, opts)
 		for _, strategyErr := range result.Errors {
 			a.logger.Warn("history compaction strategy failed", "error", strategyErr)
 		}

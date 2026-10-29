@@ -13,7 +13,7 @@ import (
 
 type noChangeParallelCompactor struct{}
 
-func (noChangeParallelCompactor) Compact(context.Context, []llm.Message, CompactionBudget) (CompactionResult, error) {
+func (noChangeParallelCompactor) Compact(context.Context, []llm.Message, CompactionBudget, llm.Provider, []llm.Option) (CompactionResult, error) {
 	return CompactionResult{}, nil
 }
 

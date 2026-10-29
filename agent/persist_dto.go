@@ -120,16 +120,31 @@ func decodeRunCancelled(r store.Record) (runCancelledPayload, error) {
 
 // configChangedPayload is the runtime config override carried by one
 // config_changed record. Nil means "unchanged"; non-nil overwrites the
-// field for every subsequent provider request in the thread.
+// field for every subsequent provider request in the thread. Provider is
+// omitted when nil so records without a switch stay byte-identical to the
+// pre-provider payload (older binaries fail loudly on the field via
+// strict-decode instead of misreading it).
 type configChangedPayload struct {
 	Model    *string `json:"model"`
 	Thinking *string `json:"thinking"`
+	Provider *string `json:"provider,omitempty"`
 }
 
 func decodeConfigChanged(r store.Record) (configChangedPayload, error) {
 	var p configChangedPayload
 	if err := strictDecode(r.Payload, &p); err != nil {
 		return configChangedPayload{}, incompatible(r, "invalid config_changed payload")
+	}
+	// The pair rule and the non-empty name, mirrored from the write side:
+	// a conforming writer never produces these shapes, so seeing one means
+	// a malformed or hand-edited log — fail closed, never guess.
+	if p.Provider != nil {
+		if *p.Provider == "" {
+			return configChangedPayload{}, incompatible(r, "config_changed provider name is empty")
+		}
+		if p.Model == nil || *p.Model == "" {
+			return configChangedPayload{}, incompatible(r, "config_changed provider switch without a model")
+		}
 	}
 	return p, nil
 }
@@ -163,10 +178,13 @@ func decodeInputConsumed(r store.Record) (inputConsumedPayload, error) {
 
 // configState is the folded effective config of a thread. It starts from the
 // Agent's WithLLMOptions defaults and is overridden field-by-field by each
-// config_changed record in replay order (last write wins).
+// config_changed record in replay order (last write wins). Provider is
+// folded the same way: once a record names a provider, every later round
+// resolves it from the Agent's injected provider table.
 type configState struct {
 	Model    *string `json:"model,omitempty"`
 	Thinking *string `json:"thinking,omitempty"`
+	Provider *string `json:"provider,omitempty"`
 }
 
 func (c *configState) fold(p configChangedPayload) {
@@ -175,6 +193,9 @@ func (c *configState) fold(p configChangedPayload) {
 	}
 	if p.Thinking != nil {
 		c.Thinking = p.Thinking
+	}
+	if p.Provider != nil {
+		c.Provider = p.Provider
 	}
 }
 

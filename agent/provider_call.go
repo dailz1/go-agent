@@ -12,6 +12,7 @@ import (
 
 func (a *Agent) chatWithRetryAndFallback(
 	ctx context.Context,
+	provider llm.Provider,
 	history []llm.Message,
 	tools []tool.ToolInfo,
 	request RoundContextRequest,
@@ -34,7 +35,7 @@ func (a *Agent) chatWithRetryAndFallback(
 			yield(nil, err)
 			return nil, false
 		}
-		stream, lastRetryErr = a.provider.ChatStream(ctx, outbound, tools, opts...)
+		stream, lastRetryErr = provider.ChatStream(ctx, outbound, tools, opts...)
 		if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
 			request.Attempt++
 			outbound, err = a.roundContextOutbound(ctx, history, request)
@@ -42,7 +43,7 @@ func (a *Agent) chatWithRetryAndFallback(
 				yield(nil, err)
 				return nil, false
 			}
-			response, usage, chatErr := a.provider.Chat(ctx, outbound, tools, opts...)
+			response, usage, chatErr := provider.Chat(ctx, outbound, tools, opts...)
 			lastRetryErr = chatErr
 			if chatErr == nil {
 				stream = func(yield func(llm.Chunk, error) bool) {

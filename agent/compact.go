@@ -40,8 +40,14 @@ type CompactionResult struct {
 }
 
 // Compactor reduces message history while preserving valid message groups.
+// provider and opts carry the calling round's effective provider and request
+// options: AI-summarizing strategies must follow them (a thread that hot
+// switched providers summarizes on the switched-to provider with the
+// thread's effective model), while neutral strategies ignore both. The
+// in-loop caller resolves both from the thread's config projection; manual
+// callers pass what they want used.
 type Compactor interface {
-	Compact(ctx context.Context, history []llm.Message, budget CompactionBudget) (CompactionResult, error)
+	Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)
 }
 
 // CompactFunc adapts a function to Compactor.
@@ -49,6 +55,8 @@ type CompactFunc func(
 	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
+	provider llm.Provider,
+	opts []llm.Option,
 ) (CompactionResult, error)
 
 // Compact delegates to f.
@@ -56,8 +64,10 @@ func (f CompactFunc) Compact(
 	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
+	provider llm.Provider,
+	opts []llm.Option,
 ) (CompactionResult, error) {
-	return f(ctx, history, budget)
+	return f(ctx, history, budget, provider, opts)
 }
 
 type historyGroup struct {
@@ -264,6 +274,8 @@ func (dropOldestToolGroupsCompactor) Compact(
 	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
+	_ llm.Provider, // neutral strategy: provider and options carry no meaning
+	_ []llm.Option,
 ) (CompactionResult, error) {
 	result := CompactionResult{
 		History:    copyMessages(history),
@@ -394,6 +406,8 @@ func (slidingWindowCompactor) Compact(
 	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
+	_ llm.Provider, // neutral strategy: provider and options carry no meaning
+	_ []llm.Option,
 ) (CompactionResult, error) {
 	result := CompactionResult{
 		History:    copyMessages(history),
@@ -459,19 +473,24 @@ func (slidingWindowCompactor) Compact(
 	return result, nil
 }
 
-type summarizationCompactor struct {
-	provider llm.Provider
+type summarizationCompactor struct{}
+
+// NewSummarizationCompactor returns a compactor that summarizes prior
+// conversation rounds. The provider and options of the summarization call
+// come from each Compact invocation, so the summary follows the thread's
+// effective provider (including cross-provider hot switches) and effective
+// model; a nil provider fails with the existing typed error and degrades
+// through the usual non-fatal compaction path.
+func NewSummarizationCompactor() Compactor {
+	return summarizationCompactor{}
 }
 
-// NewSummarizationCompactor returns a compactor that summarizes prior conversation rounds.
-func NewSummarizationCompactor(provider llm.Provider) Compactor {
-	return summarizationCompactor{provider: provider}
-}
-
-func (s summarizationCompactor) Compact(
+func (summarizationCompactor) Compact(
 	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
+	provider llm.Provider,
+	opts []llm.Option,
 ) (CompactionResult, error) {
 	result := CompactionResult{
 		History:    copyMessages(history),
@@ -494,13 +513,13 @@ func (s summarizationCompactor) Compact(
 	if len(span) == 0 {
 		return result, nil
 	}
-	if s.provider == nil {
+	if provider == nil {
 		return result, errors.New("agent: summarization provider is nil")
 	}
 
 	request := systemPrefix(groups)
 	request = append(request, llm.UserMessage(defaultSummarizationPrompt+"\n\n"+summarizationTranscript(span)))
-	response, _, err := s.provider.Chat(ctx, request, nil)
+	response, _, err := provider.Chat(ctx, request, nil, opts...)
 	if err != nil {
 		return result, err
 	}
@@ -594,6 +613,8 @@ func (c compactorChain) Compact(
 	ctx context.Context,
 	history []llm.Message,
 	budget CompactionBudget,
+	provider llm.Provider,
+	opts []llm.Option,
 ) (CompactionResult, error) {
 	result := CompactionResult{
 		History:    copyMessages(history),
@@ -605,7 +626,7 @@ func (c compactorChain) Compact(
 	}
 
 	for _, strategy := range c.strategies {
-		candidate, err := strategy.Compact(ctx, result.History, budget)
+		candidate, err := strategy.Compact(ctx, result.History, budget, provider, opts)
 		result.Strategies = append(result.Strategies, candidate.Strategies...)
 		if err != nil {
 			result.Errors = append(result.Errors, err)

@@ -87,7 +87,7 @@ func hasKind(t *testing.T, st store.Store, thread, kind string) bool {
 // compaction strategy that always shrinks below any budget.
 type compactKeepSystem struct{}
 
-func (compactKeepSystem) Compact(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+func (compactKeepSystem) Compact(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 	out := make([]llm.Message, 0, len(history))
 	for _, m := range history {
 		if m.Role == llm.RoleSystem {

@@ -249,7 +249,7 @@ func TestCompactorThresholdSemantics(t *testing.T) {
 			t.Parallel()
 
 			calls := 0
-			strategy := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+			strategy := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 				calls++
 				return CompactionResult{
 					History:    []llm.Message{input[0]},
@@ -261,6 +261,8 @@ func TestCompactorThresholdSemantics(t *testing.T) {
 				context.Background(),
 				history,
 				CompactionBudget{MaxRunes: tt.budget},
+				nil,
+				nil,
 			)
 			if err != nil {
 				t.Fatalf("Compact() unexpected error: %v", err)
@@ -312,6 +314,8 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 			context.Background(),
 			base,
 			CompactionBudget{MaxRunes: budget},
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -344,6 +348,8 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: 0},
+			nil,
+			nil,
 		)
 		if len(result.History) != 6 {
 			t.Fatalf("Compact() returned %d messages, want 6", len(result.History))
@@ -370,6 +376,8 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: 0},
+			nil,
+			nil,
 		)
 		if !errors.Is(err, ErrCompactionBudgetExceeded) {
 			t.Fatalf("Compact() error = %v, want ErrCompactionBudgetExceeded", err)
@@ -395,6 +403,8 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: 0},
+			nil,
+			nil,
 		)
 		text := compactorText(result.History[1])
 		if utf8.RuneCountInString(text) > 4096 {
@@ -413,12 +423,16 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 			context.Background(),
 			base,
 			CompactionBudget{MaxRunes: budget},
+			nil,
+			nil,
 		)
 		budget = estimateRunes(first.History)
 		second, err := NewDropOldestToolGroupsCompactor().Compact(
 			context.Background(),
 			first.History,
 			CompactionBudget{MaxRunes: budget},
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("second Compact() unexpected error: %v", err)
@@ -472,6 +486,8 @@ func TestCompactorSlidingWindow(t *testing.T) {
 				context.Background(),
 				history,
 				CompactionBudget{MaxRunes: tt.budget},
+				nil,
+				nil,
 			)
 			if tt.budget == 0 {
 				if !errors.Is(err, ErrCompactionBudgetExceeded) {
@@ -521,10 +537,12 @@ func TestCompactorSummarization(t *testing.T) {
 				llm.TextBlock{Type: "text", Text: "summary two"},
 			},
 		}}
-		result, err := NewSummarizationCompactor(provider).Compact(
+		result, err := NewSummarizationCompactor().Compact(
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: 0},
+			provider,
+			nil,
 		)
 		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -580,10 +598,12 @@ func TestCompactorSummarization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := NewSummarizationCompactor(tt.provider).Compact(
+			result, err := NewSummarizationCompactor().Compact(
 				context.Background(),
 				history,
 				CompactionBudget{MaxRunes: 0},
+				tt.provider,
+				nil,
 			)
 			if err == nil {
 				t.Fatal("Compact() error = nil, want error")
@@ -599,10 +619,12 @@ func TestCompactorSummarization(t *testing.T) {
 
 		provider := &compactorProvider{response: compactorMessagePointer(llm.AssistantMessage("unused"))}
 		shortHistory := []llm.Message{llm.SystemMessage("policy"), llm.UserMessage("only"), llm.AssistantMessage("final")}
-		result, err := NewSummarizationCompactor(provider).Compact(
+		result, err := NewSummarizationCompactor().Compact(
 			context.Background(),
 			shortHistory,
 			CompactionBudget{MaxRunes: 0},
+			provider,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -625,16 +647,16 @@ func TestCompactorChain(t *testing.T) {
 		t.Parallel()
 
 		calls := []string{}
-		first := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		first := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			calls = append(calls, "drop")
 			return CompactionResult{History: append([]llm.Message{}, input...), Strategies: []string{"drop"}}, nil
 		})
 		secondHistory := []llm.Message{history[0], history[2], history[3]}
-		second := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		second := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			calls = append(calls, "window")
 			return CompactionResult{History: secondHistory, Strategies: []string{"window"}, DroppedGroups: 1, Changed: true}, nil
 		})
-		third := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		third := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			calls = append(calls, "third")
 			return CompactionResult{History: input}, nil
 		})
@@ -642,6 +664,8 @@ func TestCompactorChain(t *testing.T) {
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: estimateRunes(secondHistory)},
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -661,17 +685,19 @@ func TestCompactorChain(t *testing.T) {
 		t.Parallel()
 
 		strategyErr := errors.New("summarizer offline")
-		failed := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		failed := CompactFunc(func(_ context.Context, input []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{History: input, Strategies: []string{"failed"}}, strategyErr
 		})
 		recoveredHistory := []llm.Message{history[0]}
-		recovery := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		recovery := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{History: recoveredHistory, Strategies: []string{"recovery"}, Changed: true}, nil
 		})
 		result, err := NewCompactorChain(failed, recovery).Compact(
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: estimateRunes(recoveredHistory)},
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact() returned strategy error: %v", err)
@@ -691,6 +717,8 @@ func TestCompactorChain(t *testing.T) {
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: 0},
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact() error = %v, want nil best-effort result", err)
@@ -705,10 +733,12 @@ func TestCompactorChain(t *testing.T) {
 
 		providerErr := errors.New("provider failed")
 		provider := &compactorProvider{err: providerErr}
-		result, err := NewCompactorChain(NewSummarizationCompactor(provider)).Compact(
+		result, err := NewCompactorChain(NewSummarizationCompactor()).Compact(
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: 0},
+			provider,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact() error = %v, want nil", err)
@@ -734,17 +764,18 @@ func TestCompactorCallerImmutability(t *testing.T) {
 	compactors := []struct {
 		name      string
 		compactor Compactor
+		provider  llm.Provider
 	}{
 		{name: "drop oldest tool groups", compactor: NewDropOldestToolGroupsCompactor()},
 		{name: "sliding window", compactor: NewSlidingWindowCompactor()},
-		{name: "summarization", compactor: NewSummarizationCompactor(&compactorProvider{response: compactorMessagePointer(llm.AssistantMessage("summary"))})},
+		{name: "summarization", compactor: NewSummarizationCompactor(), provider: &compactorProvider{response: compactorMessagePointer(llm.AssistantMessage("summary"))}},
 		{name: "standard chain", compactor: NewStandardCompactor()},
 	}
 	for _, tt := range compactors {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _ = tt.compactor.Compact(context.Background(), history, CompactionBudget{MaxRunes: 0})
+			_, _ = tt.compactor.Compact(context.Background(), history, CompactionBudget{MaxRunes: 0}, tt.provider, nil)
 			after, marshalErr := json.Marshal(history)
 			if marshalErr != nil {
 				t.Fatalf("json.Marshal(history after Compact): %v", marshalErr)
@@ -765,6 +796,8 @@ func TestCompactorStandardSingleProtectedToolGroup(t *testing.T) {
 		context.Background(),
 		history,
 		CompactionBudget{MaxRunes: 0},
+		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Compact() error = %v, want nil best effort", err)

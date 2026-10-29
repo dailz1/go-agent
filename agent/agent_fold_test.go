@@ -514,7 +514,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 						llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
-				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					return CompactionResult{History: history[:1], Strategies: []string{"stub-keep-first"}, DroppedGroups: 1, Changed: true}, nil
 				})
 				ag := New(p, registry, WithContextWindowTokens(200), WithCompactor(compactor), WithLogger(discardLogger()))

@@ -13,12 +13,28 @@ import (
 // ErrEmptyConfig rejects a SetThreadConfig call whose every field is nil.
 var ErrEmptyConfig = errors.New("agent: config change carries no fields")
 
+// ErrInvalidConfigChange rejects a SetThreadConfig call whose Provider
+// field is syntactically invalid: an empty provider name, or a provider
+// switch that does not carry a model name (the provider+model pair rule).
+var ErrInvalidConfigChange = errors.New("agent: invalid config change")
+
+// ErrUnknownProvider aborts a round whose thread configuration names a
+// provider that was not injected at construction (WithProviders). The run
+// stops fail-closed instead of silently falling back to the default
+// provider; the thread stays resumable, and a later SetThreadConfig with
+// a valid name repairs it (last write wins).
+var ErrUnknownProvider = errors.New("agent: unknown provider")
+
 // ConfigChange is a runtime config override for one thread. A nil field
 // leaves the corresponding value unchanged; a non-nil field overwrites it
 // for every subsequent provider request (last write wins across records).
+// Provider switches are paired with the model: a non-nil Provider must
+// carry a non-empty Model in the same record, and the folded model then
+// mechanically shadows any agent-level WithModel option.
 type ConfigChange struct {
 	Model    *string
 	Thinking *string
+	Provider *string
 }
 
 // SetThreadConfig durably retunes a thread's runtime config. Each call is a
@@ -31,6 +47,10 @@ type ConfigChange struct {
 // active run (and at the first round of the next run); it never interrupts
 // the in-flight request.
 //
+// A Provider switch names the target provider AND its model in one call;
+// the two land as one record and take effect atomically at the next round
+// boundary of an active run (and at the first round of the next run).
+//
 // After maxAttempts the error is ErrThreadBusy only when every failure was
 // a confirmed revision conflict; any other terminal store failure is
 // returned wrapped as-is. An inconclusive conflict means the change may or
@@ -40,10 +60,22 @@ func SetThreadConfig(ctx context.Context, st store.Store, thread string, ch Conf
 	if st == nil {
 		return ErrNoStore
 	}
-	if ch.Model == nil && ch.Thinking == nil {
+	if ch.Model == nil && ch.Thinking == nil && ch.Provider == nil {
 		return ErrEmptyConfig
 	}
-	payload := configChangedPayload{Model: ch.Model, Thinking: ch.Thinking}
+	// Cheap syntax checks the writer can do without an Agent: the provider
+	// name must be non-empty and paired with a model. Whether the name is
+	// actually injected is only knowable at round-top resolution, which
+	// fails closed with ErrUnknownProvider.
+	if ch.Provider != nil {
+		if *ch.Provider == "" {
+			return fmt.Errorf("agent: provider name must not be empty: %w", ErrInvalidConfigChange)
+		}
+		if ch.Model == nil || *ch.Model == "" {
+			return fmt.Errorf("agent: provider switch must carry a model name: %w", ErrInvalidConfigChange)
+		}
+	}
+	payload := configChangedPayload{Model: ch.Model, Thinking: ch.Thinking, Provider: ch.Provider}
 	id, err := newControlRecordID()
 	if err != nil {
 		return fmt.Errorf("agent: set thread config on %q: %w", thread, err)

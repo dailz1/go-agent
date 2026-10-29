@@ -45,7 +45,7 @@ func TestCompactorStrategiesObserveCancellation(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 
-				result, err := tt.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: 0})
+				result, err := tt.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: 0}, nil, nil)
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("Compact() error = %v, want context.Canceled", err)
 				}
@@ -73,6 +73,8 @@ func TestCompactorStrategiesObserveCancellation(t *testing.T) {
 					context.Background(),
 					small,
 					CompactionBudget{MaxRunes: estimateRunes(small)},
+					nil,
+					nil,
 				)
 				if err != nil {
 					t.Fatalf("Compact() unexpected error: %v", err)
@@ -98,7 +100,7 @@ func TestAgentCompaction(t *testing.T) {
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				calls := 0
-				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					calls++
 					return CompactionResult{History: history}, nil
 				})
@@ -143,7 +145,7 @@ func TestAgentCompaction(t *testing.T) {
 			llm.AssistantMessage(strings.Repeat("old", 1_000)),
 			llm.UserMessage("latest"),
 		}
-		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{
 				History:       []llm.Message{history[0], history[1], history[3], history[4]},
 				Strategies:    []string{"test_window"},
@@ -197,7 +199,7 @@ func TestAgentCompaction(t *testing.T) {
 		base := []llm.Message{llm.UserMessage("first"), llm.AssistantMessage(strings.Repeat("old", 500))}
 		current := append(copyMessages(base), llm.UserMessage("current"))
 		compacted := []llm.Message{current[0], current[2]}
-		compactor := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		compactor := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{
 				History:       compacted,
 				Strategies:    []string{"first", "second"},
@@ -249,7 +251,7 @@ func TestAgentCompaction(t *testing.T) {
 			assistant,
 			llm.ToolResultMessage("call", tool.NewTextResult("result")),
 		}
-		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			return CompactionResult{
 				History:    append(copyMessages(history[:2]), history[3:]...),
 				Strategies: []string{"deep_copy"},
@@ -307,7 +309,7 @@ func TestAgentCompaction(t *testing.T) {
 	t.Run("provider retries reuse one compacted history", func(t *testing.T) {
 		base := []llm.Message{llm.UserMessage("first"), llm.AssistantMessage(strings.Repeat("old", 500))}
 		calls := 0
-		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			calls++
 			return CompactionResult{History: []llm.Message{history[0], history[2]}, Strategies: []string{"once"}, Changed: true}, nil
 		})
@@ -389,7 +391,7 @@ func TestAgentCompaction(t *testing.T) {
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				calls := 0
-				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					calls++
 					return CompactionResult{History: []llm.Message{history[len(history)-1]}, Strategies: []string{"threshold"}, Changed: true}, nil
 				})
@@ -411,7 +413,7 @@ func TestAgentCompaction(t *testing.T) {
 		}
 
 		calls := 0
-		overflowCompactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		overflowCompactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			calls++
 			return CompactionResult{History: history}, nil
 		})
@@ -520,14 +522,14 @@ func TestAgentCompaction(t *testing.T) {
 		}{
 			{
 				name: "returned error",
-				compactor: CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+				compactor: CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					return CompactionResult{History: history}, compactorErr
 				}),
 				warning: "history compaction failed",
 			},
 			{
 				name: "invalid system prefix",
-				compactor: CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+				compactor: CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					return CompactionResult{History: history[1:], Strategies: []string{"invalid"}, Changed: true}, nil
 				}),
 				warning: "history compaction produced invalid history",
@@ -578,6 +580,8 @@ func TestAgentCompaction(t *testing.T) {
 			context.Background(),
 			history,
 			CompactionBudget{MaxRunes: estimateRunes(expected)},
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Compact returned error: %v", err)
@@ -589,7 +593,7 @@ func TestAgentCompaction(t *testing.T) {
 
 	t.Run("run and runstream remain equivalent", func(t *testing.T) {
 		newAgent := func() *Agent {
-			compactor := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+			compactor := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 				return CompactionResult{History: []llm.Message{llm.UserMessage("compacted")}, Strategies: []string{"equivalence"}, DroppedGroups: 1, Changed: true}, nil
 			})
 			return New(
@@ -641,10 +645,15 @@ func TestAgentCompaction(t *testing.T) {
 		budget := estimateRunes(append(copyMessages(protected[:2]), llm.AssistantMessage("[Summary]\nsummary text"), protected[2])) + 32
 
 		t.Run("success inserts summary", func(t *testing.T) {
-			summarizer := &compactionSummaryProvider{message: compactorMessagePointer(llm.AssistantMessage("summary text"))}
+			// The round provider plays both roles now: its first Chat serves
+			// the summarization call, its second Chat serves the conversation
+			// through the non-stream fallback.
 			requests := [][]llm.Message{}
 			provider := &messageCapturingMock{
-				inner: NewMockProvider(MsgResponse(llm.AssistantMessage("done"))),
+				inner: NewMockProvider(
+					MsgResponse(llm.AssistantMessage("summary text")),
+					MsgResponse(llm.AssistantMessage("done")),
+				),
 				onChat: func(messages []llm.Message) {
 					requests = append(requests, copyMessages(messages))
 				},
@@ -654,7 +663,7 @@ func TestAgentCompaction(t *testing.T) {
 				tool.NewRegistry(),
 				WithCompactor(NewCompactorChain(
 					NewDropOldestToolGroupsCompactor(),
-					NewSummarizationCompactor(summarizer),
+					NewSummarizationCompactor(),
 					NewSlidingWindowCompactor(),
 				)),
 				WithContextWindowTokens(budget),
@@ -664,18 +673,23 @@ func TestAgentCompaction(t *testing.T) {
 			if _, err := agent.RunWithHistory(context.Background(), base, "latest"); err != nil {
 				t.Fatalf("RunWithHistory returned error: %v", err)
 			}
-			if summarizer.calls != 1 || len(requests) != 1 || !historyContainsText(requests[0], "[Summary]\nsummary text") {
-				t.Errorf("summary calls/history = %d/%#v", summarizer.calls, requests)
+			if len(requests) != 2 {
+				t.Fatalf("provider calls = %d, want 2 (summarization + conversation)", len(requests))
+			}
+			if !historyContainsText(requests[0], "Summarize the following conversation:") {
+				t.Errorf("first provider call is not the summarization prompt: %#v", requests[0])
+			}
+			if !historyContainsText(requests[1], "[Summary]\nsummary text") {
+				t.Errorf("conversation history misses the summary: %#v", requests[1])
 			}
 		})
 
 		t.Run("failure degrades to window and logs error", func(t *testing.T) {
 			capture := &truncationLogCapture{}
 			summarizerErr := errors.New("summarizer failed")
-			summarizer := &compactionSummaryProvider{err: summarizerErr}
 			chain := NewCompactorChain(
 				NewDropOldestToolGroupsCompactor(),
-				NewSummarizationCompactor(summarizer),
+				NewSummarizationCompactor(),
 				NewSlidingWindowCompactor(),
 			)
 			current := append(copyMessages(base), llm.UserMessage("latest"))
@@ -683,6 +697,8 @@ func TestAgentCompaction(t *testing.T) {
 				context.Background(),
 				current,
 				CompactionBudget{MaxRunes: estimateRunes(protected) + 8},
+				&compactionSummaryProvider{err: summarizerErr},
+				nil,
 			)
 			if err != nil {
 				t.Fatalf("chain Compact returned error: %v", err)
@@ -692,7 +708,10 @@ func TestAgentCompaction(t *testing.T) {
 			}
 			requests := [][]llm.Message{}
 			provider := &messageCapturingMock{
-				inner: NewMockProvider(MsgResponse(llm.AssistantMessage("done"))),
+				inner: NewMockProvider(
+					ErrResponse(summarizerErr),
+					MsgResponse(llm.AssistantMessage("done")),
+				),
 				onChat: func(messages []llm.Message) {
 					requests = append(requests, copyMessages(messages))
 				},
@@ -711,11 +730,11 @@ func TestAgentCompaction(t *testing.T) {
 				t.Fatalf("RunStreamWithHistory errors = %v", errs)
 			}
 			compactions := compactionEvents(events)
-			if len(compactions) != 1 || len(requests) != 1 {
-				t.Fatalf("compactions/provider calls = %d/%d, want 1/1", len(compactions), len(requests))
+			if len(compactions) != 1 || len(requests) != 2 {
+				t.Fatalf("compactions/provider calls = %d/%d, want 1/2", len(compactions), len(requests))
 			}
-			if len(compactions[0].Strategies) != 3 || historyContainsText(requests[0], "old answer") {
-				t.Errorf("window fallback did not compact: event=%#v history=%#v", compactions[0], requests[0])
+			if len(compactions[0].Strategies) != 3 || historyContainsText(requests[1], "old answer") {
+				t.Errorf("window fallback did not compact: event=%#v history=%#v", compactions[0], requests[1])
 			}
 			if len(capture.recordsWithMessage("history compaction strategy failed")) == 0 {
 				t.Error("missing degraded compaction warning")
@@ -724,23 +743,22 @@ func TestAgentCompaction(t *testing.T) {
 
 		t.Run("cancellation during summarization ends run", func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// The round provider is also the summarizer: its Chat cancels the
+			// context, so the run must end at the post-compaction context
+			// check before any conversation request. ChatStream returning a
+			// plain error proves it was never reached: the run would have
+			// failed with that error instead of context.Canceled.
 			summarizer := &compactionSummaryProvider{errFunc: func() error {
 				cancel()
 				return ctx.Err()
 			}}
-			providerCalls := 0
-			provider := &messageCapturingMock{
-				inner: NewMockProvider(MsgResponse(llm.AssistantMessage("unused"))),
-				onChat: func(_ []llm.Message) {
-					providerCalls++
-				},
-			}
 			agent := New(
-				provider,
+				summarizer,
 				tool.NewRegistry(),
 				WithCompactor(NewCompactorChain(
 					NewDropOldestToolGroupsCompactor(),
-					NewSummarizationCompactor(summarizer),
+					NewSummarizationCompactor(),
 					NewSlidingWindowCompactor(),
 				)),
 				WithContextWindowTokens(estimateRunes(protected)+8),
@@ -751,8 +769,8 @@ func TestAgentCompaction(t *testing.T) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("RunWithHistory error = %v, want context.Canceled", err)
 			}
-			if providerCalls != 0 {
-				t.Errorf("main provider calls = %d, want 0", providerCalls)
+			if summarizer.calls != 1 {
+				t.Errorf("summarization calls = %d, want 1", summarizer.calls)
 			}
 		})
 	})

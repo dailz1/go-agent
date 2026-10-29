@@ -17,7 +17,7 @@ func TestRoundContextCompactionAndCancellation(t *testing.T) {
 	t.Run("same round compacts canonical history before adding overlay", func(t *testing.T) {
 		old := strings.Repeat("old", 300)
 		var compactedInput []llm.Message
-		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget) (CompactionResult, error) {
+		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			compactedInput = deepCopyMessages(history)
 			return CompactionResult{History: []llm.Message{history[len(history)-1]}, Changed: true}, nil
 		})
