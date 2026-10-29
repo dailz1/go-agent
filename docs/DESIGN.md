@@ -88,7 +88,7 @@
 
 ### P1 运行时安全
 - 工具结果截断：按上下文占比设上限（约 30% 规则），掐头留尾，入库前执行（已落地，见 §7）
-- 历史预算管理：`Compactor` 策略接口 + 最简实现；压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）（已落地，见 §7）
+- 历史预算管理：`Compactor` 策略接口 + 最简实现；`Compact` 调用面携带当轮生效 provider 与请求 options：循环内由内核自线程配置投影解析注入（线程热切换 provider 后，摘要压缩跟随新 provider 与线程生效模型）；手动调用者显式传参，摘要策略对 nil provider 走既有类型化错误并按非致命路径降级。对应 Go 契约：`Compactor.Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)`；`NewSummarizationCompactor()` 不再收 provider 参数。压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）（已落地，见 §7）
 - 会话持久化 `Store`：**逐调用显式持久化**（`WithStore` 构造选项 + `Run`/`RunStream`（`WithThread`） / `ResumeThread` / `SettleThread` / `SettlementTarget` 线程入口；`WithThread` 三态语义：缺省=一次性运行、空串=内核生成新线程、非空=续接（首调即创建）既有线程；不带 `WithThread` 零开销：即使配置了 store 也不生成线程 ID、不触碰持久化路径，单一执行路径不变；`RunOption` 是与构造 `Option` 独立的逐调用选项类型，在 `newRunConfig` 归一——重复 `WithThread` 后者胜）。数据形状：线程 = 规范记录日志，生命周期记录链每条带稳定 `run_id` / `round_id`：
   - `run_started`：运行输入（逐字节保留，不规范化）+ 线程初始系统提示词（回放以落库为准，与重启后 `WithSystemPrompt` 配置无关，防止历史上下文被静默篡改）；
   - `round_declared`：**原子**轮次宣告——完整助手消息（文本/推理 + 全部有序工具调用），先落库再执行任何工具、先于审批回调；
@@ -225,13 +225,15 @@ cancelled 快照读取都不启动执行，不新增该包装或退出回调。
 
 #### ① 运行时配置热更新（本批）
 
-新记录 kind `config_changed`（schema=2）：payload `{model,thinking}` 均为 nullable 字符串，nil = 不变；自记录的 replay 位置起线程生效配置按字段覆盖、后写赢，无记录时 = Agent 构造时的 `WithLLMOptions` 对应字段。v1 字段域仅 Model + Thinking（各 adapter 的实际支持差异由适配器文档如实承载，openairesponses 忽略 Thinking）。
+新记录 kind `config_changed`（schema=2）：payload `{model,thinking,provider}` 均为 nullable 字符串；不带 `provider` 的记录逐字段 nil = 不变；自记录的 replay 位置起线程生效配置按字段覆盖、后写赢，无记录时 = Agent 构造时的 `WithLLMOptions` 对应字段与默认 provider。字段域 Model + Thinking + Provider（各 adapter 的实际支持差异由适配器文档如实承载，openairesponses 忽略 Thinking）。**provider+model 成对切换语义**：携带非空 `provider` 的记录必须同时携带非空 `model`（写面拒绝该缺失形态；解码面视其为不合契约记录，`ErrIncompatibleLog`），两者同记录原子生效；provider 置位时 `thinking` 仍为可选覆盖。线程模型记录一经写入即权威：agent 级 `WithLLMOptions` 的模型设置被线程覆盖机械遮蔽（选项后写胜、适配器 options 模型优先），无抑制规则；`WithThinking` 与跨厂商选项（Stop/JSONMode/MaxTokens/Temperature）跟随线程、由目标适配器按既有契约处置——做热切换的 harness 不应在 agent 级放置这些调参。切换在下一轮顶部生效，永不打断在飞请求；同轮全部 retry attempt 复用同一 provider。解析到未注入的名字时该轮以 `ErrUnknownProvider` fail-closed 中止，线程可由后续配置记录修复。`agent.New` 位置参数 provider 为默认；`WithProviders(...llm.Provider)` 追加备用 provider（键 = `Provider.Name()`，重名后者胜）。跨 provider 回放的历史不改写：各适配器出站转换对厂商特定推理块按各自降级表处置（native 回放 / 外来静默跳过），文本与图像永远携带；工具调用与结果的携带以目标适配器既有校验为前提（codex 要求 tool call ID/Name 非空且 arguments 为合法 JSON，零参调用历史在其上每轮硬错直至压缩丢弃）。摘要压缩跟随线程生效 provider 与线程生效 options（`Compactor.Compact` 调用面扩展，见「P1 运行时安全」历史预算管理；失败按既有非致命路径降级）。旧二进制遇含 `provider` 字段的记录按 strict-decode 纪律 fail-loud（`ErrIncompatibleLog`）。
 
 新 API `SetThreadConfig(ctx, store, thread, ConfigChange) error`：外部写者，接受即落库——Append 前重读 head、同幂等键重试（bounded，超限 `ErrThreadBusy`）；全字段 nil 拒绝（`ErrEmptyConfig`）；未配置 Store 的调用返回 `ErrNoStore`。要求 Store 值可比较（同所有权登记规则）。
 
 runner 写点吸收协议（D6-a）：runner 不再盲信 session 缓存 head；每个写点（declare/commit/checkpoint/终态）Append 前重读日志尾，发现尾部的新 `config_changed` 则吸收进生效配置投影，遇白名单外的未知记录仍按冲突失败。生效读取点在每轮顶部：**读配置 → 压缩 → drain（②③批生效）→ 预算检查 → 请求**，本轮请求的 options = 叠加后配置覆盖 `a.llmOpts`，按轮快照不回写 `a.llmOpts`。
 
 checkpoint：codec_version 升至 3，快照新增 `effective_config` 投影；旧版本快照遇含新 kind 的日志按既有规则回退 `History(ctx, thread, fromSeq)` 全量重放，不得借旧快照绕过新语义。
+
+provider 热切换与降级契约（本批）：切换通道即 `SetThreadConfig`（`ConfigChange.Provider`），粒度为线程级持久记录；`configState`/checkpoint 配置投影扩展 `Provider` 字段（codec_version 不变，新读旧零影响）。降级规则落点在适配器出站转换层，内核 loop/store/重放零参与；契约表：openai 对 `ReasoningItemBlock` 跳过、对 `ReasoningBlock` 透传（reasoning_content）；glm 对两种推理块均 strip；openairesponses/codex 回放自有 `ReasoningItemBlock`（加密内容 + ID 原样、保序），丢弃/跳过外来 `ReasoningBlock`；任何适配器不因外来推理块硬错误（codex 对缺 ID 自有条目的既有严格性除外——该严格性针对的是我们自身 native 块的畸形形态，不是对外来块的拒绝，与本段外来块静默降级契约不冲突）；工具调用载荷方面，codex 对 ID/Name 缺空或非法 JSON arguments 的既有校验照旧 fail-loud（含 GLM 零参调用历史，可由压缩恢复）。**rs_ 条目保序约束**：截断/压缩丢弃历史时，Responses 族的 `ReasoningItemBlock` 必须与其后配对的 message/function_call 条目一起按序保留或丢弃，孤儿 rs_ 项会被 OpenAI 400（openclaw #1540 根因）；中立压缩按消息组工作天然满足，手工裁剪路径必须遵守。agent 级跨厂商选项（Stop/JSONMode/MaxTokens/Temperature/Thinking）随线程跨 provider 生效，目标适配器按其既有契约接受、显式拒绝（openairesponses 与 codex 对 Stop、codex 对 Temperature 类型化硬错）或静默忽略（codex 对 JSONMode；openairesponses 与 codex 对 Thinking）。模型设置是唯一例外：线程模型记录一经写入即机械遮蔽 agent 级 `WithModel`（provider+model 成对语义），无抑制规则。
 
 #### ② durable steering 队列（本批）
 
@@ -495,7 +497,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 模块 `github.com/dailz1/go-agent`，Go 1.26，git 已建（main，基线 `d5281c9`）；kernel package closure 维持 stdlib-only，MCP SDK 仅允许位于未来 `mcp/` packages。
 - 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm/openairesponses 适配、token 用量统计、完整测试（7 包全绿）。
 - 工具结果截断（单结果 ≤ max(128, WithContextWindowTokens×30%) rune，50/50 掐头留尾，默认窗口 8192）。
-- 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选显式注入 provider 的 AI 摘要；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
+- 历史预算管理（默认窗口 80% 触发压缩链：折叠老工具组→滑窗，可选 AI 摘要（provider 不在构造期注入，跟随 `Compact` 调用面携带的当轮生效 provider 与 options）；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。
 - 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
 - 事件/History 契约已更新：maxIter terminal tool calls 以 TC + deterministic skipped TR 公开，Store 与非 Store 的 Done History 相同且可 paired continuation。`DoneEvent.History` 是完全历史的 canonical snapshot；OpenAI Responses reasoning items 不单独成为 AgentEvent，故 consumer/test fold 在 Done snapshot reconciliation，而非宣称 raw event stream 独立编码所有 assistant blocks。覆盖位于 `agent_fold_test.go`、`reasoning_order_test.go` 及 persistence stream tests。
 - Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。Store v1 已实现并提交：agent 侧 16feb3b（WithStore/RunThread/ResumeThread/RunThreadStream），store 契约实现 dfb7803。
