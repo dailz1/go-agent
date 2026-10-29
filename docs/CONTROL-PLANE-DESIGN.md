@@ -54,7 +54,7 @@ type inputConsumedPayload struct {
 - 记录 ID：`"c-" + crypto-random hex(16)`。
 - 语义：canonical history 在**当前 replay 位置**插入 `len(Inputs)` 条 `role=user` 消息（内容 = envelope 包装后的实际 outbound 文本，与内存视图同源），紧接其后的 `round_declared` 的 assistant 对其可见。
 - **与宣告的时序关系（对现循环的校正）**：`round_declared` 在工具执行前写入（"durable before any call is announced"），而 drain 在下一轮顶部、`chat` 之前，故 `input_consumed` 永远落在前一轮 commit 之后、本轮宣告之前——独立的单记录 Append，**不与 `round_declared` 合批**（合批在设计上不可能，两时刻之间隔着一次完整 LLM 请求）。
-- 崩溃窗口：`input_consumed` 落库后、本轮 assistant 产生前崩溃 → Resume 重放历史含已消费插话，第 N 轮重新生成（at-least-once，模型重新看到插话，语义一致）；不存在"插话已消费但无任何后续宣告"的孤立态——它就是 history 的一部分，与 RunThread 初始输入同性质。
+- 崩溃窗口：`input_consumed` 落库后、本轮 assistant 产生前崩溃 → Resume 重放历史含已消费插话，第 N 轮重新生成（at-least-once，模型重新看到插话，语义一致）；不存在"插话已消费但无任何后续宣告"的孤立态——它就是 history 的一部分，与 `Run`（`WithThread`）初始输入同性质。
 
 ### 2.3 `config_changed`（schema=2）
 
@@ -80,7 +80,7 @@ func EnqueueInputWithID(ctx context.Context, s store.Store, thread, idempotencyK
 ```
 
 - **幂等键由调用方提供**（D10 裁决）：idempotencyKey 派生记录 ID，崩溃后以同 key 重试，store 前缀匹配命中即幂等确认——ack 丢失场景不产生双写。内核不做隐式哈希：幂等键的业务含义（"哪次调用算同一条消息的重试"）只有调用方知道。
-- 要求已配置 Store，否则 `ErrNoStore`（与 RunThread 等显式线程入口同规）。
+- 要求已配置 Store，否则 `ErrNoStore`（与 `WithThread` 等显式线程入口同规）。
 - 追加 `input_queued`。**run 活跃期间允许入队**（D6 裁决采纳方案 (a)）：Enqueue 走**乐观重试**——bounded 次数内重读 head、同幂等键重试；与 runner 写点的乐观吸收协议（§10-D6）配合，全局唯一修订推进。超限返回 `ErrThreadBusy`。ack 丢失的边界语义见 §10-D10。
 - **准入 = 硬限制（2026-10-28 评审后修订）**：input 以**序列化消息**（estimateRunes 计量，与压缩/drain 预算同单位，转义无法绕过）对照硬限制——有 RoundContextProvider 时为 canonicalContextCap、否则为 contextWindowTokens——超限即 `ErrInputTooLarge` 拒绝。准入只拒绝"物理装不进"的输入；**装得下但在 drain 时刻历史已贴近硬限制的输入会被延后**（留在队列，下一轮压缩腾出空间后注入）——已接受的输入可能迟到，但绝不会把 run 顶过硬限制。
 - 线程无 active run 时同样允许入队（成为下一 run 首轮的 follow-up）；消费时机见 §3.4。
@@ -141,7 +141,7 @@ run 内有且只有两处 drain：
 | D1 | 轮顶：读配置 → `compactHistoryRound` → **drain** → 预算检查 → provider 调用。drain 只消费序列化成本能塞进"硬限制 − 当前 history"的 FIFO 前缀，装不下的项**延后**（留在队列，随下一轮压缩/排水重试）——已接受的输入可能迟到但绝不把 run 顶过硬限制，预算护栏保持原始形态 | 独立单记录 Append（见 §2.2 时序校正） |
 | D2 | run 结束前（自然 Done 或 FinishRound End 的终态确认之后）：队列非空则**保留**，不消费、不落 input_consumed | 无 |
 
-未消费的 `input_queued` 由**下一个 run 首轮 D1** 消费（推荐语义，§9-D3）。这使 EnqueueInput 在无 active run 时天然成为 follow-up：RunThread 的新输入先入 history，D1 再把积压插话补进首轮请求之前。
+未消费的 `input_queued` 由**下一个 run 首轮 D1** 消费（推荐语义，§9-D3）。这使 EnqueueInput 在无 active run 时天然成为 follow-up：`Run`（`WithThread`）的新输入先入 history，D1 再把积压插话补进首轮请求之前。
 
 ## 4. 循环内变更点（runStreamInternal 精确标注）
 
