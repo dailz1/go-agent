@@ -1,37 +1,40 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-09-20
-**Commit:** f064c63
+**Generated:** 2026-10-29
+**Commit:** 65fea54 (基线；工作区含 provider 热换未提交改动)
 **Branch:** main
 
 ## OVERVIEW
-Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first tool-calling loop (agent/) over pluggable providers (llm/), durable threads (store/), tool registry + recursive JSON Schema (tool/). Satellites: agenttest/ (public test doubles), mcp/ (MCP client bridge), agenttool/ (agent-as-tool), examples/. Module `github.com/dailz1/go-agent`, Go 1.26.1.
+Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first tool-calling loop (agent/) over pluggable providers (llm/, cross-provider hot-swap via SetThreadConfig), durable threads (store/), tool registry + recursive JSON Schema (tool/), runtime control plane (steering queue, per-thread config hot-update, FinishRound). Satellites: agenttest/ (public test doubles), mcp/ (MCP client bridge), agenttool/ (agent-as-tool), skills/, harness/ (business-layer reference app), examples/. Module `github.com/dailz1/go-agent`, Go 1.26.1.
 
 ## STRUCTURE
 ```
 ./
 ├── docs/DESIGN.md        # design contract (Chinese) — interfaces change here FIRST
-├── agent/                # loop, events, compaction, truncation, persistence, C10 terminal skip
-├── llm/                  # Provider iface, Message/Chunk, HTTP+SSE, retry; adapters glm/ openai/ openairesponses/
+├── agent/                # loop, events, compaction, truncation, persistence, control plane (steering/config hot-update), provider hot-swap
+├── llm/                  # Provider iface, Message/Chunk, HTTP+SSE, retry; adapters glm/ openai/ openairesponses/ codex/
 ├── store/                # thread persistence: append-only log, checkpoints, JSONL + memory backends
 ├── tool/                 # Tool iface, soft-error ToolResult, Registry, recursive ParameterSchema
 ├── agenttest/            # public deterministic test doubles (scripted provider, record/replay)
 ├── agenttool/            # wraps a child Agent as a Tool
 ├── skills/               # skill-directory loader → distributor Tool (SKILL.md, stdlib-only)
 ├── mcp/                  # MCP client bridge — package name is mcpbridge; only SDK importer
-├── examples/             # 8 runnable mains (quickstart, agentcli, resume, parallel, ...)
+├── examples/             # runnable mains (quickstart, agentcli, resume, parallel, codexauth, ...)
+├── harness/              # business-layer reference application (TUI agent; NOT part of the kernel)
 └── scripts/              # CI guards: kernel-closure-guard.sh, check-readme-contract.sh
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Understand the loop | `runStreamInternal` agent/agent.go:361 | single execution path; `Run` :308 folds it, `RunStream` :357 |
+| Understand the loop | `runStreamInternal` agent/agent.go:388 | single execution path; `Run` :335 folds it, `RunStream` :384 |
+| Hot-swap provider/model | agent/config.go (`SetThreadConfig` :59, `ConfigChange{Model,Thinking,Provider}`) + `WithProviders` agent.go:227 | provider+model pair atomic per record; unknown name → ErrUnknownProvider fail-closed; degradation contract in DESIGN.md |
+| Runtime control plane | agent/steering.go (`EnqueueInputWithID` :70), agent/finishround.go, agent/round_context.go | steering FIFO drained post-compaction; FinishRound hook; per-round context provider |
 | Add a provider adapter | llm/glm or llm/openai | copy one; update BOTH (duplication is by design) |
 | Change Message/Chunk/Event types | docs/DESIGN.md, then llm/ + agent/ | docs-first; sealed interfaces |
 | Add a tool | tool/tool.go:14 + tool/registry.go:10 | Register validates schema |
 | Persist / resume threads | agent/persist_api.go:14,32,63,105 + store/ | WithThread per-call RunOption; ResumeThread; durable threads over store.Store |
-| Tune context | agent/compact.go, agent/truncate.go | compaction at 80% of window; tool results ~30% |
+| Tune context | agent/compact.go, agent/truncate.go | compaction at 80% of window; `Compact` carries round provider+opts (summarization follows thread config) |
 | Test doubles | agenttest/ | scripted provider, record/replay — NOT agent.MockProvider (unexported types) |
 | MCP bridge | mcp/bridge.go:24 + mcp/README.md | package `mcpbridge`; tools-line only |
 | Agent-as-tool | agenttool/agenttool.go:42 | stateless child Run per call |
@@ -41,7 +44,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 ## CODE MAP
 | Symbol | Type | Location | Role |
 |--------|------|----------|------|
-| agent.Agent / agent.New | type/func | agent/agent.go:110 / :243 | consumer entry; options normalized in New |
+| agent.Agent / agent.New | type/func | agent/agent.go:109 / :278 | consumer entry; options normalized in New; `WithProviders` :227 injects alternate providers |
 | runStreamInternal | method | agent/agent.go:347 | the loop; Run/RunStream both fold it |
 | AgentEvent (7 sealed variants) | iface | agent/event.go:15 | TC-first announcements; DoneEvent :97 authoritative |
 | iterationLimitResults | func | agent/max_iter.go:8 | C10: maxIter terminal skip results |
@@ -64,7 +67,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 - Docs-first: docs/DESIGN.md (Chinese) is the interface contract of record.
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- ANY third-party import inside kernel closure (agent, llm, store, tool) — guarded by scripts/kernel-closure-guard.sh; `go list -m all` = 14 lines expected (SDK lives only in mcp/).
+- ANY third-party import inside kernel closure (agent, llm, store, tool) — guarded by scripts/kernel-closure-guard.sh; `go list -m all` ≈ 40 lines (harness/ satellite deps incl. bubbletea; kernel adds none — guard is the authority, the old "14 lines" note predates harness/).
 - Retrying mid-stream SSE errors — only pre-stream failures retry (chatWithRetryAndFallback).
 - Reporting tool failures as Go errors — soft failures are `ToolResult{Status: ResultError}` fed back to the LLM.
 - Deduplicating glm/openai conversion helpers — duplicated by design; change both.
@@ -80,12 +83,12 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 ## COMMANDS
 ```bash
 go build ./... && go vet ./...
-go test -count=1 ./...                      # unit only, no network (16 packages)
+go test -count=1 ./...                      # unit only, no network (~31 packages)
 go test -race -shuffle=on -count=1 ./agent ./store
 gofmt -l .                                  # must print nothing
 bash scripts/kernel-closure-guard.sh        # kernel closure + SDK pin v1.7.0
 bash scripts/check-readme-contract.sh       # bilingual README contract
-go list -m all                              # expect 14 lines (module + SDK + transitives)
+go list -m all                              # ~40 lines incl. harness satellite deps; diff vs baseline before/after kernel changes
 go test -tags e2e ./...                     # real API; OPENAI_API_KEY required
 ```
 
@@ -95,4 +98,4 @@ go test -tags e2e ./...                     # real API; OPENAI_API_KEY required
 - GLM auth sniffing: an API key containing `.` selects JWT mode — a bearer key with a dot will misauthenticate.
 - Bounded I/O: response bodies 10MB, SSE lines 1MB, HTTP timeout 120s, MCP result envelope 1 MiB.
 - `dir mcp` holds package `mcpbridge` — import path ends /mcp, symbol name differs.
-- Subdirectory AGENTS.md: agent/, llm/, store/, tool/, agenttest/, mcp/, skills/. Anchors were grep-verified at f064c63; re-verify after structural refactors (they drift).
+- Subdirectory AGENTS.md: agent/, llm/, store/, tool/, agenttest/, mcp/, skills/. Anchors were grep-verified at 65fea54 (2026-10-29, provider hot-swap round); re-verify after structural refactors (they drift).
