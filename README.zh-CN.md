@@ -35,7 +35,7 @@ module path 是 `github.com/dailz1/go-agent`，本仓库要求 Go 1.26.1。将�
 ## 核心概念
 
 - **Agent** 执行模型/工具循环，可流式输出事件或返回完成结果。
-- **Provider** 是模型边界。可接入 OpenAI-compatible provider 或确定性的 test double。
+- **Provider** 是模型边界。可接入 OpenAI-compatible provider 或确定性的 test double。可通过 `WithProviders` 注入备选 provider，并用 `SetThreadConfig` 在线程中途切换（provider+model 对按记录原子切换，下一轮顶部生效）；适配器同步返回的流前建立错误会进入循环层重试（openai 与 glm 如此）。
 - **Tool** 暴露 JSON schema，并返回模型可见的 soft error 或 Go hard error。
 - **Event** 暴露文本增量、工具调用/结果、重试、压缩和终态结果，不引入 hook chain。
 - **Store** 为带 `WithThread` 的 `Run`/`RunStream` 与 `ResumeThread` 持久化显式 thread；不带 `WithThread` 时即使配置了 Store 也是一次性运行。
@@ -155,4 +155,4 @@ MCP bridge 是 client-only、tools-only。它使用静态发现（没有 refresh
 
 ## 项目状态与贡献
 
-项目已发布 [v0.1.0](https://github.com/dailz1/go-agent/releases/tag/v0.1.0)，采用 [MIT 许可证](LICENSE)。CI 在每次 push 到 `main` 时自动运行验证电池与内核闭包守卫。在独立规划的 v1.0 之前 API 仍可能演进；贡献应保持 [docs/DESIGN.md](docs/DESIGN.md) 的契约，并确保测试为确定性的。
+最新发布为 [v0.3.0](https://github.com/dailz1/go-agent/releases/tag/v0.3.0)，项目采用 [MIT 许可证](LICENSE)。CI 在每次 push 到 `main` 时自动运行验证电池与内核闭包守卫。在独立规划的 v1.0 之前 API 仍可能演进；贡献应保持 [docs/DESIGN.md](docs/DESIGN.md) 的契约，并确保测试为确定性的。

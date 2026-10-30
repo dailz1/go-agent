@@ -35,7 +35,7 @@ The module path is `github.com/dailz1/go-agent` and this repository requires Go 
 ## Core concepts
 
 - **Agent** runs the model/tool loop and can stream events or return a completed result.
-- **Provider** is the model boundary. Bring an OpenAI-compatible provider or a deterministic test double.
+- **Provider** is the model boundary. Bring an OpenAI-compatible provider or a deterministic test double. Alternates can be injected with `WithProviders` and switched mid-thread via `SetThreadConfig` (provider+model pair, atomic per record, effective at the next round top); pre-stream setup errors are retried by the loop when the adapter reports them synchronously (openai and glm do).
 - **Tool** exposes a JSON schema and returns either a model-visible soft error or a Go hard error.
 - **Event** exposes text deltas, tool calls/results, retries, compaction, and the terminal result without hook chains.
 - **Store** persists explicit threads for `Run`/`RunStream` with `WithThread` and for `ResumeThread`; without `WithThread` a run is ephemeral even when a Store is configured.
@@ -155,4 +155,4 @@ The MCP bridge is client-only and tools-only. It has static discovery (no refres
 
 ## Project status and contributing
 
-The project is released as [v0.1.0](https://github.com/dailz1/go-agent/releases/tag/v0.1.0) under the [MIT license](LICENSE). CI runs the verification battery and the kernel closure guard on every push to `main`. The API may still evolve before a separately planned v1.0; contributions should preserve the contracts in [docs/DESIGN.md](docs/DESIGN.md) and keep tests deterministic.
+The latest release is [v0.3.0](https://github.com/dailz1/go-agent/releases/tag/v0.3.0); the project is released under the [MIT license](LICENSE). CI runs the verification battery and the kernel closure guard on every push to `main`. The API may still evolve before a separately planned v1.0; contributions should preserve the contracts in [docs/DESIGN.md](docs/DESIGN.md) and keep tests deterministic.
