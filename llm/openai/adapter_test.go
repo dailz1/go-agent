@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,7 +97,7 @@ func TestProvider_StopRequestField(t *testing.T) {
 	}
 }
 
-func TestProvider_ChatStreamIsLazy(t *testing.T) {
+func TestProvider_ChatStreamSetupIsEager(t *testing.T) {
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -105,16 +106,18 @@ func TestProvider_ChatStreamIsLazy(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
-	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	seq, err := provider.ChatStream(ctx, []llm.Message{llm.UserMessage("hi")}, nil)
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
 	if seq == nil {
 		t.Fatal("ChatStream returned a nil iterator")
 	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("requests before ranging = %d, want 0", got)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests before ranging = %d, want 1 (eager setup)", got)
 	}
 }
 
@@ -150,7 +153,7 @@ func TestProvider_ChatStreamEarlyBreakClosesBody(t *testing.T) {
 	}
 }
 
-func TestProvider_ChatStreamSetupErrorIsLazy(t *testing.T) {
+func TestProvider_ChatStreamSetupErrorIsSync(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rejected", http.StatusBadGateway)
 	}))
@@ -158,22 +161,161 @@ func TestProvider_ChatStreamSetupErrorIsLazy(t *testing.T) {
 
 	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
 	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
-	if err != nil {
-		t.Fatalf("ChatStream returned eager error: %v", err)
+	if err == nil {
+		t.Fatal("ChatStream returned sync nil error, want setup error")
+	}
+	if seq != nil {
+		t.Fatal("ChatStream returned non-nil iterator with error")
+	}
+	var apiErr *llm.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("setup error = %T, want *llm.APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want 502", apiErr.StatusCode)
+	}
+}
+
+func TestProvider_ChatStreamSetupErrorIsRetryable(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err == nil {
+		t.Fatal("first ChatStream: want sync setup error")
+	}
+	if !llm.IsRetryableError(err) {
+		t.Fatalf("setup error not retryable: %v", err)
 	}
 
-	var yields int
+	seq, err = provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("second ChatStream after 503: %v", err)
+	}
+	var sawDone bool
 	for chunk, streamErr := range seq {
-		yields++
-		if chunk != nil {
-			t.Errorf("chunk = %T, want nil", chunk)
+		if streamErr != nil {
+			t.Fatalf("consume retry stream: %v", streamErr)
 		}
-		if streamErr == nil {
-			t.Error("stream error = nil, want setup error")
+		if _, ok := chunk.(llm.DoneChunk); ok {
+			sawDone = true
 		}
 	}
-	if yields != 1 {
-		t.Fatalf("yield count = %d, want 1", yields)
+	if !sawDone {
+		t.Fatal("retry stream ended without DoneChunk")
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("server hits = %d, want 2", got)
+	}
+}
+
+func TestProvider_ChatStreamEmptyPayloadAtEOFStillSentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Trailing bare `data:` with no blank line and no [DONE]: the
+		// EOF flush yields an empty payload, which the guard must skip —
+		// the stream must then end with the no-completion sentinel,
+		// not a decode error.
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n")
+		fmt.Fprint(w, "data:")
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	var lastErr error
+	for _, streamErr := range seq {
+		if streamErr != nil {
+			lastErr = streamErr
+		}
+	}
+	if lastErr == nil || !strings.Contains(lastErr.Error(), "stream ended without completion") {
+		t.Fatalf("final error = %v, want stream-ended-without-completion sentinel", lastErr)
+	}
+}
+
+func TestProvider_ChatStreamCancelWithoutRangeReleasesBody(t *testing.T) {
+	requestDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(requestDone)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	if _, err := provider.ChatStream(ctx, []llm.Message{llm.UserMessage("hi")}, nil); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	// The iterator is intentionally never ranged; ctx cancellation must
+	// release the held body via the request watchdog.
+	cancel()
+
+	select {
+	case <-requestDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("response body remained open after ctx cancellation without ranging")
+	}
+}
+
+func TestParseStreamPayload_EmptyPayloadSkipped(t *testing.T) {
+	for _, payload := range []string{"", " ", "\t"} {
+		chunks, err := parseStreamPayload(payload)
+		if err != nil {
+			t.Fatalf("parseStreamPayload(%q): %v", payload, err)
+		}
+		if len(chunks) != 0 {
+			t.Fatalf("parseStreamPayload(%q) chunks = %v, want none", payload, chunks)
+		}
+	}
+}
+
+func TestProvider_ChatStreamIgnoresEmptyDataFrames(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data:\n\n")
+		fmt.Fprint(w, ": ping\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+		fmt.Fprint(w, "data:\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("key", "model", WithBaseURL(srv.URL))
+	seq, err := provider.ChatStream(context.Background(), []llm.Message{llm.UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	var sawText, sawDone bool
+	for chunk, streamErr := range seq {
+		if streamErr != nil {
+			t.Fatalf("consume stream: %v", streamErr)
+		}
+		switch c := chunk.(type) {
+		case llm.TextDeltaChunk:
+			sawText = c.Text == "hello"
+		case llm.DoneChunk:
+			sawDone = true
+		}
+	}
+	if !sawText || !sawDone {
+		t.Fatalf("sawText=%v sawDone=%v, want both (empty keepalive frames must not abort the stream)", sawText, sawDone)
 	}
 }
 

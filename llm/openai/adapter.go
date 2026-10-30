@@ -162,13 +162,14 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 }
 
 // ChatStream sends a streaming chat completion request to OpenAI and returns
-// an iterator that lazily yields [llm.Chunk] values as SSE events arrive.
+// an iterator that yields [llm.Chunk] values as SSE events arrive.
 //
-// The caller ranges over the returned iterator to consume chunks. Breaking
-// out of the range early is safe — the response body is closed via defer.
-//
-// Request setup and network errors are yielded from the iterator when ranging
-// begins, preserving the provider's lazy-streaming contract.
+// The request is issued eagerly before the iterator is returned: connection
+// and non-2xx errors are returned synchronously, so the agent's pre-stream
+// retry loop covers them. Chunk delivery stays lazy — chunks are consumed
+// only while ranging, and breaking out of the range early is safe (the
+// response body is closed via defer). A successful return holds the body
+// open until the caller ranges or the context is cancelled.
 func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	o := llm.ApplyOptions(opts)
 
@@ -207,17 +208,17 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		"tools_count", len(reqBody.Tools),
 	)
 
+	result, err := llm.DoStreamRequest(ctx, p.httpClient, llm.RequestConfig{
+		Method:  http.MethodPost,
+		URL:     p.baseURL + "/chat/completions",
+		Headers: p.apiHeaders(),
+	}, reqBody)
+	if err != nil {
+		p.logger.Error("openai stream request failed", "error", err)
+		return nil, err
+	}
+
 	return func(yield func(llm.Chunk, error) bool) {
-		result, err := llm.DoStreamRequest(ctx, p.httpClient, llm.RequestConfig{
-			Method:  http.MethodPost,
-			URL:     p.baseURL + "/chat/completions",
-			Headers: p.apiHeaders(),
-		}, reqBody)
-		if err != nil {
-			p.logger.Error("openai stream request failed", "error", err)
-			yield(nil, err)
-			return
-		}
 		defer result.Cleanup()
 
 		yieldedDone := false
@@ -251,6 +252,10 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 // multiple chunks (e.g. both a TextDeltaChunk and a DoneChunk when the model
 // sends text content alongside a finish_reason).
 func parseStreamPayload(payload string) ([]llm.Chunk, error) {
+	if strings.TrimSpace(payload) == "" {
+		return nil, nil
+	}
+
 	var resp streamResponse
 	if err := json.Unmarshal([]byte(payload), &resp); err != nil {
 		return nil, fmt.Errorf("decode stream payload: %w", err)

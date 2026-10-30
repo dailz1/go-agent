@@ -60,7 +60,8 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 
 // ChatStream sends a streaming Responses request and yields semantic events
 // translated into the library's chunk model. The request is issued lazily
-// inside the iterator, matching the OpenAI adapter's laziness convention (iterator errors are not retried by the agent loop).
+// inside the iterator under the two-form ChatStream contract; setup errors
+// surface as the iterator's first error and are not retried by the agent loop.
 func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	o := llm.ApplyOptions(opts)
 

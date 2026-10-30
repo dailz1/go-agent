@@ -60,9 +60,10 @@
   - 包装器守则（P2-1）:
     - 观察型包装器默认透传完整 `ToolInfo`（名称、schema、`RequiresApproval`）。允许有意改名，但注册与广播都按包装体最终 `Info().Name`，注册名与模型可见名必须一致。
     - `Execute` 传递原 `ctx` 与 `args`；软错误 `ToolResult` 不得提升为 Go error，Go error 也不得降级为软结果；包装错误必须 `%w`，保持 `errors.Is/As` 对哨兵与 `*llm.APIError` 的识别（尤其不得吞 `ErrStreamingNotSupported`，否则非流回退与重试分类失效）。
-    - Provider 包装器原样传递 messages/tools/options/usage 与外层、迭代内错误；流式包装器不得预先 range，保持 `iter.Seq2` 惰性与早退安全；限流许可横跨迭代器生命周期（自然结束与早退都要释放）。
+    - Provider 包装器原样传递 messages/tools/options/usage 与外层、迭代内错误；流式包装器不得预先 range，保持 `iter.Seq2` 对消费者的惰性与早退安全（本守则约束的是 range 迭代器，不禁止适配器在 ChatStream 调用时同步完成建连）；限流许可横跨迭代器生命周期（自然结束与早退都要释放）。
     - 日志示例只记元数据（名称、ID、长度）或显式截断/脱敏载荷，不逐字复制 prompt/参数/结果。可运行示例见 `examples/middleware`。
     - `agenttool` 是行为包装器：原样传递 ctx；malformed input、子 Agent 截断或无最终文本是软 `ToolResult`，子 `Run` 的 Go error 必须 `%w` 硬传；外层与子层 approval 各自生效，禁止注入子事件。每个 `New` 返回的 adapter 用 context-aware 单槽 gate 串行其子 `Run`；同一 child 的多个 adapter 不互锁，调用方负责共享 Provider、Compactor、Store、Registry 与子 Tool 的并发安全。
+- **ChatStream 建连两形态契约。** 适配器可选择在 ChatStream 调用时同步建连（eager），或推迟到首次 range（lazy）；建连/鉴权/非 2xx 等流前失败 SHOULD 以同步 error 返回，使循环层 pre-stream 重试覆盖它们（仅同步通道可重试，见 "仅 ChatStream 直接返回的可重试 error 触发既有 retry"）；迭代器 yield 的错误仍是带内终态、永不重试。openai 与 glm 固定 eager；openairesponses 与 codex 维持 lazy（各自章节如实记载）。eager 形态下 ChatStream 成功返回即持有打开的响应体：调用方必须 range 至完成或早退（早退安全），或取消 ctx；推迟首次 range 会持续占用连接并消耗客户端超时预算，从不 range 且不取消会悬挂连接与看门狗 goroutine。
 - **流是执行原语，同步执行是衍生物。** 只维护一条模型/工具执行路径，`Run` 与恢复 active run 的 `ResumeThread` 是事件流的归并。`SettleThread` 是持久生命周期控制操作；`ResumeThread` 在最后一个 run 已 cancelled 时只读取终态快照，不执行循环，不制造 DoneEvent。
 - **默认安全。** 危险工具须审批；工具 panic 不外泄；结果截断；预算可设。
 - **每步可靠胜过整体聪明。** 每步 95% 可靠，连跑 10 步只剩 60%（误差复利）。内核的每一分投入都优先花在"每一步更可靠"上。
@@ -355,7 +356,8 @@ NonRetryable=true，未知 429 仍可重试。OAuth 不伪造推理 APIError。
 保留脱敏原因与 errors.Is(ErrLoginRequired)/context 身份。
 首次 HTTP 401 关闭响应后 Refresh(&used) 并最多重发一次；其他网络、
 429/5xx 不在 adapter 重试。惰性迭代内错误不会触发现有 agent 的
-外层 pre-stream RetryEvent；不能承诺自动恢复。
+外层 pre-stream RetryEvent；不能承诺自动恢复。（两形态 ChatStream
+契约下 codex 的既裁决惰性形态，见 §4「ChatStream 建连两形态契约」。）
 
 WithAuthSource 必填；WithBaseURL 校验地址无 userinfo/query/fragment，
 默认 HTTPS，允许显式 loopback HTTP。WithHTTPClient、WithLogger、

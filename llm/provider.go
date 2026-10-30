@@ -20,13 +20,24 @@ type Provider interface {
 	Name() string
 	Chat(ctx context.Context, messages []Message, tools []tool.ToolInfo, opts ...Option) (*Message, *Usage, error)
 	// ChatStream sends a streaming chat completion request and returns an
-	// iterator that lazily yields [Chunk] values as they arrive from the
-	// provider. Providers that do not support streaming should return
+	// iterator that yields [Chunk] values as they arrive from the provider.
+	// Providers that do not support streaming should return
 	// (nil, ErrStreamingNotSupported).
 	//
-	// The returned iter.Seq2[Chunk, error] is lazy — no network activity
-	// occurs until the caller begins ranging. Breaking out of the range
-	// early is safe.
+	// Request setup (connection, auth, non-2xx status) may be performed
+	// eagerly at call time or lazily when ranging begins, per adapter.
+	// Setup errors SHOULD be returned synchronously so caller-side retry
+	// loops cover them; this package's openai and glm adapters are eager,
+	// while openairesponses and codex are lazy (their setup errors surface
+	// as the iterator's first error and are not retried by the agent loop).
+	//
+	// Chunk delivery through the returned iter.Seq2[Chunk, error] is lazy:
+	// chunks are consumed only while the caller ranges, and breaking out
+	// of the range early is safe. Eager adapters hold the response body
+	// open from the successful return until the caller ranges (to
+	// completion or an early break) or cancels the context; deferring the
+	// first range holds the connection and consumes the client timeout
+	// budget.
 	ChatStream(ctx context.Context, messages []Message, tools []tool.ToolInfo, opts ...Option) (iter.Seq2[Chunk, error], error)
 }
 
