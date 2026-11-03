@@ -8,7 +8,13 @@ type RunInterruptedError struct {
 	ThreadID string
 	Err      error
 	// Settlement binds this session before ownership is released. Wait for
-	// the run to exit before using it; an uncertain write can leave it stale.
+	// the run to exit before using it; settling earlier fails fast with
+	// ErrThreadBusy. Waiting removes the concurrency window but not write
+	// uncertainty: an ambiguous write can leave this token behind the log,
+	// and SettleThread then fails with ErrRevisionConflict. Such a failure
+	// is final for this token — recover by taking a fresh SettlementTarget
+	// as a new explicit recovery decision, or prefer the WithRunExitFn
+	// token, which is sampled after all writes complete.
 	Settlement *SettlementToken
 }
 

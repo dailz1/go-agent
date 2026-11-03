@@ -30,7 +30,10 @@ func (p *persistence) settlementToken() SettlementToken {
 
 // SettlementTarget inspects the current incomplete run for a new explicit
 // recovery decision. It never executes or writes. It must not be used to
-// refresh the identity or revision of an earlier cancellation request.
+// refresh the identity or revision of an earlier cancellation request:
+// refreshing means aiming an old request's identity at a newer run. Taking
+// a fresh target after a settlement failed on a still-incomplete run is a
+// new decision, not a refresh.
 func (a *Agent) SettlementTarget(ctx context.Context, threadID string) (*SettlementToken, error) {
 	if err := a.acquireSettlement(ctx, threadID); err != nil {
 		return nil, err
@@ -55,6 +58,11 @@ func (a *Agent) SettlementTarget(ctx context.Context, threadID string) (*Settlem
 // A lost acknowledgement may be retried with the same token. Such a retry
 // confirms only the original cancellation, never cancels a successor run.
 // Settlement and accepting new input are separate durability boundaries.
+//
+// A revision conflict is final for the given token. While the run is still
+// incomplete, the legitimate exit is a fresh SettlementTarget taken as a
+// new explicit recovery decision; an already-terminal run reports
+// ErrNothingToSettle and needs no recovery.
 func (a *Agent) SettleThread(ctx context.Context, target SettlementToken) error {
 	if err := a.acquireSettlement(ctx, target.ThreadID); err != nil {
 		return err
