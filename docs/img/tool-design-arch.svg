@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" font-family="Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/>
+    </marker>
+  </defs>
+
+  <!-- upstream consumers -->
+  <rect x="30" y="40" width="180" height="46" rx="8" fill="#eef3fb" stroke="#5b7fb5"/>
+  <text x="120" y="59" text-anchor="middle" fill="#1a3a63" font-weight="bold">agent 循环 (kernel)</text>
+  <text x="120" y="77" text-anchor="middle" fill="#1a3a63">List → LLM → Get → Execute</text>
+
+  <rect x="30" y="130" width="180" height="46" rx="8" fill="#eef3fb" stroke="#5b7fb5"/>
+  <text x="120" y="149" text-anchor="middle" fill="#1a3a63" font-weight="bold">agenttest (测试替身)</text>
+  <text x="120" y="167" text-anchor="middle" fill="#1a3a63">scripted provider / replay</text>
+
+  <!-- seam -->
+  <rect x="300" y="30" width="330" height="500" rx="12" fill="#f6f8fa" stroke="#888" stroke-dasharray="6 4"/>
+  <text x="465" y="56" text-anchor="middle" fill="#333" font-weight="bold" font-size="16">tool 包（接缝）</text>
+
+  <!-- Tool iface -->
+  <rect x="330" y="75" width="270" height="80" rx="8" fill="#fff" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="465" y="97" text-anchor="middle" fill="#2e7d32" font-weight="bold">Tool 接口</text>
+  <text x="465" y="117" text-anchor="middle" fill="#333">Info() → 面向模型（自描述）</text>
+  <text x="465" y="137" text-anchor="middle" fill="#333">Execute(ctx, json.RawMessage) → 面向运行时</text>
+
+  <!-- ToolResult -->
+  <rect x="330" y="180" width="270" height="72" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="465" y="202" text-anchor="middle" fill="#2e7d32" font-weight="bold">ToolResult</text>
+  <text x="465" y="222" text-anchor="middle" fill="#333">Content（进历史/Store）+ Data（仅当次运行）</text>
+  <text x="465" y="242" text-anchor="middle" fill="#a94442">Status="error" = 软失败喂回模型</text>
+
+  <!-- ParameterSchema -->
+  <rect x="330" y="277" width="270" height="88" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="465" y="299" text-anchor="middle" fill="#2e7d32" font-weight="bold">ParameterSchema / Property（递归）</text>
+  <text x="465" y="319" text-anchor="middle" fill="#333">类型化字段 + Keywords 关键词载体</text>
+  <text x="465" y="339" text-anchor="middle" fill="#333">presence 标志消歧 · 保序 · 循环 fail-closed</text>
+  <text x="465" y="357" text-anchor="middle" fill="#777">只描述给模型，从不校验参数</text>
+
+  <!-- Registry -->
+  <rect x="330" y="390" width="270" height="70" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="465" y="412" text-anchor="middle" fill="#2e7d32" font-weight="bold">Registry（sync.RWMutex）</text>
+  <text x="465" y="432" text-anchor="middle" fill="#333">注册期校验 schema（锁外）· 重名拒绝</text>
+  <text x="465" y="452" text-anchor="middle" fill="#333">Get 活查 · List 排序 · Apply 原子换血</text>
+
+  <!-- note: no deps -->
+  <text x="465" y="495" text-anchor="middle" fill="#888">不依赖内核其他包 · 不 import 第三方</text>
+  <text x="465" y="515" text-anchor="middle" fill="#888">校验只在 Register 时发生，调用时参数原样透传</text>
+
+  <!-- downstream implementations -->
+  <rect x="720" y="75" width="170" height="46" rx="8" fill="#f3edf7" stroke="#7e57a4"/>
+  <text x="805" y="94" text-anchor="middle" fill="#4a2d6b" font-weight="bold">mcp（卫星）</text>
+  <text x="805" y="112" text-anchor="middle" fill="#4a2d6b">远程 MCP 工具 → remoteTool</text>
+
+  <rect x="720" y="150" width="170" height="46" rx="8" fill="#f3edf7" stroke="#7e57a4"/>
+  <text x="805" y="169" text-anchor="middle" fill="#4a2d6b" font-weight="bold">skills（卫星）</text>
+  <text x="805" y="187" text-anchor="middle" fill="#4a2d6b">技能目录 → distributor</text>
+
+  <rect x="720" y="225" width="170" height="46" rx="8" fill="#f3edf7" stroke="#7e57a4"/>
+  <text x="805" y="244" text-anchor="middle" fill="#4a2d6b" font-weight="bold">agenttool（卫星）</text>
+  <text x="805" y="262" text-anchor="middle" fill="#4a2d6b">子 Agent → 工具</text>
+
+  <rect x="720" y="300" width="170" height="46" rx="8" fill="#f3edf7" stroke="#7e57a4"/>
+  <text x="805" y="319" text-anchor="middle" fill="#4a2d6b" font-weight="bold">用户自定义工具</text>
+  <text x="805" y="337" text-anchor="middle" fill="#4a2d6b">实现 Tool 接口</text>
+
+  <!-- edges -->
+  <line x1="210" y1="63" x2="326" y2="100" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="258" y="70" text-anchor="middle" fill="#555" font-size="12">消费</text>
+  <line x1="210" y1="153" x2="326" y2="120" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="465" y1="155" x2="465" y2="176" stroke="#888" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="465" y1="252" x2="465" y2="273" stroke="#888" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="465" y1="365" x2="465" y2="386" stroke="#888" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="716" y1="98" x2="604" y2="110" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="716" y1="173" x2="604" y2="125" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="716" y1="248" x2="604" y2="135" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="716" y1="318" x2="620" y2="150" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="672" y="300" text-anchor="middle" fill="#555" font-size="12">实现 Tool / 注册进 Registry</text>
+</svg>

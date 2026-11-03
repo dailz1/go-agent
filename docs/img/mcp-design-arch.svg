@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="520" font-family="Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/>
+    </marker>
+  </defs>
+
+  <!-- remote MCP server -->
+  <rect x="30" y="200" width="190" height="120" rx="10" fill="#fdf3e7" stroke="#c9862b"/>
+  <text x="125" y="228" text-anchor="middle" fill="#7a4d0e" font-weight="bold">远程 MCP server</text>
+  <text x="125" y="252" text-anchor="middle" fill="#7a4d0e">tools/list（翻页）</text>
+  <text x="125" y="274" text-anchor="middle" fill="#7a4d0e">tools/call</text>
+  <text x="125" y="298" text-anchor="middle" fill="#a97b2f" font-size="12">资源/prompt/sampling 等不接</text>
+
+  <!-- SDK -->
+  <rect x="270" y="180" width="160" height="160" rx="10" fill="#eef3fb" stroke="#5b7fb5"/>
+  <text x="350" y="208" text-anchor="middle" fill="#1a3a63" font-weight="bold">官方 SDK v1.7.0</text>
+  <text x="350" y="230" text-anchor="middle" fill="#1a3a63">transport / session</text>
+  <text x="350" y="252" text-anchor="middle" fill="#1a3a63">握手 · JSON-RPC</text>
+  <text x="350" y="284" text-anchor="middle" fill="#a94442" font-size="12">已知边界：非法 x-mcp-header</text>
+  <text x="350" y="302" text-anchor="middle" fill="#a94442" font-size="12">的工具被静默丢弃</text>
+  <text x="350" y="326" text-anchor="middle" fill="#888" font-size="12">仅 mcp 包可 import（守卫强制）</text>
+
+  <!-- bridge -->
+  <rect x="480" y="60" width="220" height="330" rx="12" fill="#f6f8fa" stroke="#888" stroke-dasharray="6 4"/>
+  <text x="590" y="86" text-anchor="middle" fill="#333" font-weight="bold" font-size="16">Bridge（mcpbridge）</text>
+
+  <rect x="500" y="100" width="180" height="58" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="590" y="122" text-anchor="middle" fill="#2e7d32" font-weight="bold">Connect：全量预检</text>
+  <text x="590" y="142" text-anchor="middle" fill="#333">翻页 list → 校名/查重/schema 投影 → 失败全回滚</text>
+
+  <rect x="500" y="172" width="180" height="52" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="590" y="192" text-anchor="middle" fill="#2e7d32" font-weight="bold">remoteTool × N</text>
+  <text x="590" y="212" text-anchor="middle" fill="#333">静态包装器，owned 表记账</text>
+
+  <rect x="500" y="238" width="180" height="58" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="590" y="260" text-anchor="middle" fill="#2e7d32" font-weight="bold">结果投影</text>
+  <text x="590" y="280" text-anchor="middle" fill="#333">text 拼 newline；媒体类 → 占位 + Data 信封（1 MiB）</text>
+
+  <rect x="500" y="310" width="180" height="62" rx="8" fill="#fff" stroke="#2e7d32"/>
+  <text x="590" y="330" text-anchor="middle" fill="#2e7d32" font-weight="bold">lifecycle 门禁</text>
+  <text x="590" y="350" text-anchor="middle" fill="#333">Close: 置门 → 排水 → 身份校验注销</text>
+  <text x="590" y="366" text-anchor="middle" fill="#333">Refresh: 原子对账（Apply）</text>
+
+  <!-- registry -->
+  <rect x="760" y="170" width="160" height="110" rx="10" fill="#f3edf7" stroke="#7e57a4"/>
+  <text x="840" y="198" text-anchor="middle" fill="#4a2d6b" font-weight="bold">tool.Registry</text>
+  <text x="840" y="222" text-anchor="middle" fill="#4a2d6b">名字: github__create_issue</text>
+  <text x="840" y="244" text-anchor="middle" fill="#4a2d6b">审批默认 fail-closed</text>
+  <text x="840" y="264" text-anchor="middle" fill="#4a2d6b">（read-only 且非 destructive 才可放宽）</text>
+
+  <!-- agent loop -->
+  <rect x="760" y="330" width="160" height="56" rx="8" fill="#eef3fb" stroke="#5b7fb5"/>
+  <text x="840" y="352" text-anchor="middle" fill="#1a3a63" font-weight="bold">agent 循环</text>
+  <text x="840" y="372" text-anchor="middle" fill="#1a3a63">Get 活查 → Execute</text>
+
+  <!-- edges -->
+  <line x1="220" y1="242" x2="266" y2="252" stroke="#444" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="430" y1="248" x2="476" y2="140" stroke="#444" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="448" y="185" text-anchor="middle" fill="#555" font-size="12">ListTools / CallTool</text>
+  <line x1="680" y1="126" x2="756" y2="192" stroke="#444" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="716" y="150" text-anchor="middle" fill="#555" font-size="12">Register</text>
+  <line x1="756" y1="240" x2="684" y2="200" stroke="#444" stroke-width="1.5" marker-end="url(#arrow2)" stroke-dasharray="5 3"/>
+  <text x="718" y="228" text-anchor="middle" fill="#555" font-size="12">注销（身份校验）</text>
+  <line x1="840" y1="284" x2="840" y2="326" stroke="#444" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="476" y1="356" x2="430" y2="300" stroke="#444" stroke-width="1.5" marker-end="url(#arrow2)"/>
+</svg>
