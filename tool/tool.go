@@ -90,9 +90,18 @@ const (
 	ResultError   ResultStatus = "error"
 )
 
+// Image is a model-visible image attachment on a ToolResult: either a URL
+// or inline bytes with a MIME type (adapters encode as needed).
+type Image struct {
+	URL      string
+	MIMEType string
+	Data     []byte
+}
+
 type ToolResult struct {
 	Content string          `json:"content"`
 	Data    json.RawMessage `json:"data,omitempty"`
+	Images  []Image         `json:"images,omitempty"`
 	Status  ResultStatus    `json:"status,omitempty"`
 }
 
@@ -122,6 +131,14 @@ func NewDataResult(content string, data any) (*ToolResult, error) {
 		Content: content,
 		Data:    raw,
 	}, nil
+}
+
+// NewImageResult returns a text result with model-visible image attachments.
+func NewImageResult(content string, images ...Image) *ToolResult {
+	return &ToolResult{
+		Content: content,
+		Images:  images,
+	}
 }
 
 // --- Schema builder helpers ---

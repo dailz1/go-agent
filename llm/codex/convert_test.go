@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
@@ -104,5 +105,49 @@ func TestConvertNilPointers(t *testing.T) {
 		if _, _, err := convertMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentBlock{block}}}); err == nil {
 			t.Fatalf("accepted nil %T", block)
 		}
+	}
+}
+
+// TestToolResultImageParts pins the codex tool-result union: images emit an
+// ordered input_text + input_image array under the same image whitelist as
+// user-side attachments; empty content without images keeps the pre-union
+// `"output":""` byte shape.
+func TestToolResultImageParts(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleTool, Content: []llm.ContentBlock{
+			llm.ToolResultBlock{ToolUseID: "call_1", Content: "shot",
+				Images: []llm.ImageBlock{{URL: "https://example.com/a.png"}, {MIMEType: "image/png", Data: []byte("png")}}},
+		}},
+		{Role: llm.RoleTool, Content: []llm.ContentBlock{
+			llm.ToolResultBlock{ToolUseID: "call_2"},
+		}},
+	}
+	items, _, err := convertMessages(messages)
+	if err != nil {
+		t.Fatalf("convertMessages: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	first, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(first), `"output":[{"type":"input_text","text":"shot"},{"type":"input_image","image_url":"https://example.com/a.png"},{"type":"input_image","image_url":"data:image/png;base64,cG5n"}]`) {
+		t.Errorf("image wire = %s", first)
+	}
+	second, err := json.Marshal(items[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(second), `"output":""`) {
+		t.Errorf("empty wire = %s, want \"output\":\"\" preserved", second)
+	}
+	// The image whitelist applies to tool-result attachments too.
+	rejected := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
+		llm.ToolResultBlock{ToolUseID: "call_3", Images: []llm.ImageBlock{{URL: "data:garbage"}}},
+	}}}
+	if _, _, err := convertMessages(rejected); err == nil {
+		t.Fatal("accepted garbage image source")
 	}
 }

@@ -416,13 +416,21 @@ func convertAssistant(m llm.Message) (chatMessage, error) {
 }
 
 // convertToolResult maps a ToolResultBlock to OpenAI's role:"tool" message format.
+// Image attachments have no wire channel on Chat Completions (tool messages
+// support text parts only): they degrade to a text placeholder appended to
+// the content, never a hard error — a hot-swapped thread carrying images
+// must keep running, and the model must know information was omitted.
 func convertToolResult(m llm.Message) (chatMessage, error) {
 	for _, block := range m.Content {
 		if tr, ok := block.(llm.ToolResultBlock); ok {
+			content := tr.Content
+			if n := len(tr.Images); n > 0 {
+				content += fmt.Sprintf("\n[%d image attachment(s) omitted: not supported on this wire]", n)
+			}
 			return chatMessage{
 				Role:       "tool",
 				ToolCallID: tr.ToolUseID,
-				Content:    tr.Content,
+				Content:    content,
 			}, nil
 		}
 	}

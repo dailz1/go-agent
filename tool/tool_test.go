@@ -273,3 +273,39 @@ func TestToolResult_JSONRoundTrip(t *testing.T) {
 		t.Error("IsError() = true for success result, want false")
 	}
 }
+
+func TestNewImageResult(t *testing.T) {
+	imgs := []Image{
+		{URL: "https://example.com/a.png"},
+		{MIMEType: "image/png", Data: []byte("png-bytes")},
+	}
+	r := NewImageResult("screenshot taken", imgs...)
+	if r.Content != "screenshot taken" || len(r.Images) != 2 || r.IsError() {
+		t.Fatalf("result = %+v", r)
+	}
+	if r.Images[0].URL != "https://example.com/a.png" || r.Images[1].MIMEType != "image/png" {
+		t.Errorf("images = %+v", r.Images)
+	}
+
+	// No-image path: JSON bytes identical to the pre-Images schema.
+	textJSON, err := json.Marshal(NewTextResult("plain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(textJSON) != `{"content":"plain"}` {
+		t.Errorf("text result JSON = %s, want byte-identical to pre-Images schema", textJSON)
+	}
+
+	// Image path carries the images array; Data round-trips as base64.
+	imgJSON, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ToolResult
+	if err := json.Unmarshal(imgJSON, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Images) != 2 || back.Images[0].URL != "https://example.com/a.png" || string(back.Images[1].Data) != "png-bytes" {
+		t.Errorf("round-trip images = %+v", back.Images)
+	}
+}

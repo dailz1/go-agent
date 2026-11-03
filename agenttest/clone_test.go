@@ -54,3 +54,17 @@ func TestStrictRequestPreservesNilAndEmptyValues(t *testing.T) {
 		t.Fatalf("nil/empty request matched: %v", err)
 	}
 }
+
+func TestCloneToolResultBlockValueImages(t *testing.T) {
+	src := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
+		llm.ToolResultBlock{ToolUseID: "call_1", Content: "shot",
+			Images: []llm.ImageBlock{{URL: "https://example.com/a.png", Data: []byte("png")}}},
+	}}}
+	cloned := cloneMessages(src)
+	src[0].Content[0].(llm.ToolResultBlock).Images[0].URL = "mutated"
+	src[0].Content[0].(llm.ToolResultBlock).Images[0].Data[0] = 'X'
+	got := cloned[0].Content[0].(llm.ToolResultBlock)
+	if got.Images[0].URL != "https://example.com/a.png" || string(got.Images[0].Data) != "png" {
+		t.Errorf("clone leaked source mutation: %+v", got.Images)
+	}
+}

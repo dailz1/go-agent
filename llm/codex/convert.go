@@ -95,7 +95,23 @@ func convertMessages(messages []llm.Message) ([]inputItem, string, error) {
 				if m.Role != llm.RoleTool || b.ToolUseID == "" {
 					return nil, "", capabilityError("tool_result")
 				}
-				item = inputItem{Type: "function_call_output", CallID: b.ToolUseID, Output: &b.Content}
+				out := &outputContent{text: b.Content}
+				if len(b.Images) > 0 {
+					parts := make([]contentPart, 0, len(b.Images)+1)
+					if b.Content != "" {
+						text := b.Content
+						parts = append(parts, contentPart{Type: "input_text", Text: &text})
+					}
+					for _, img := range b.Images {
+						source, imgErr := toolImageRef(img)
+						if imgErr != nil {
+							return nil, "", imgErr
+						}
+						parts = append(parts, contentPart{Type: "input_image", ImageURL: source})
+					}
+					out = &outputContent{parts: parts}
+				}
+				item = inputItem{Type: "function_call_output", CallID: b.ToolUseID, Output: out}
 			default:
 				return nil, "", capabilityError("content_block")
 			}
@@ -109,6 +125,31 @@ func convertMessages(messages []llm.Message) ([]inputItem, string, error) {
 		}
 	}
 	return items, strings.Join(instructions, "\n\n"), nil
+}
+
+// toolImageRef validates a ToolResult image attachment with the same URL /
+// data-URL whitelist as user-side ImageBlock and returns its wire reference.
+func toolImageRef(img llm.ImageBlock) (string, error) {
+	source := img.URL
+	if source == "" && strings.HasPrefix(img.MIMEType, "image/") && len(img.Data) > 0 {
+		source = "data:" + img.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
+	}
+	u, err := url.Parse(source)
+	if err != nil || source == "" || (u.Scheme != "https" && u.Scheme != "http" && u.Scheme != "data") ||
+		((u.Scheme == "https" || u.Scheme == "http") && u.Host == "") {
+		return "", capabilityError("image_source")
+	}
+	if u.Scheme == "data" {
+		header, data, ok := strings.Cut(source, ",")
+		if !ok || !strings.HasPrefix(header, "data:image/") || !strings.HasSuffix(header, ";base64") {
+			return "", capabilityError("image_source")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(data)
+		if err != nil || len(decoded) == 0 {
+			return "", capabilityError("image_source")
+		}
+	}
+	return source, nil
 }
 
 func convertTools(tools []tool.ToolInfo) ([]toolDef, error) {

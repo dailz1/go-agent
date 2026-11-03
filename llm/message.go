@@ -82,10 +82,11 @@ func (ReasoningItemBlock) blockType() string { return "reasoning_item" }
 
 // ToolResultBlock represents the result of a tool execution, fed back to the LLM.
 type ToolResultBlock struct {
-	Type      string `json:"type"`
-	ToolUseID string `json:"tool_use_id"`
-	Content   string `json:"content"`
-	IsError   bool   `json:"is_error,omitempty"`
+	Type      string       `json:"type"`
+	ToolUseID string       `json:"tool_use_id"`
+	Content   string       `json:"content"`
+	Images    []ImageBlock `json:"images,omitempty"`
+	IsError   bool         `json:"is_error,omitempty"`
 }
 
 func (ToolResultBlock) blockType() string { return "tool_result" }
@@ -127,6 +128,13 @@ func ToolResultMessage(toolUseID string, result *tool.ToolResult) Message {
 	if result == nil {
 		result = tool.NewErrorResult("tool returned nil result")
 	}
+	var images []ImageBlock // nil when absent: existing tests DeepEqual against nil-Images literals
+	if len(result.Images) > 0 {
+		images = make([]ImageBlock, len(result.Images))
+		for i, img := range result.Images {
+			images[i] = ImageBlock{Type: "image", URL: img.URL, MIMEType: img.MIMEType, Data: img.Data}
+		}
+	}
 	return Message{
 		Role: RoleTool,
 		Content: []ContentBlock{
@@ -134,6 +142,7 @@ func ToolResultMessage(toolUseID string, result *tool.ToolResult) Message {
 				Type:      "tool_result",
 				ToolUseID: toolUseID,
 				Content:   result.Content,
+				Images:    images,
 				IsError:   result.IsError(),
 			},
 		},

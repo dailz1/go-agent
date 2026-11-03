@@ -2,7 +2,9 @@ package agenttest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
@@ -56,4 +58,33 @@ func TestReplayerVerifyReportsActiveStream(t *testing.T) {
 
 func streamWire(chunks, fields string) string {
 	return `{"version":1,"exchanges":[{"method":"chat_stream","request":` + validWireRequest + `,"stream":{"chunks":` + chunks + `,` + fields + `}}]}`
+}
+
+// TestDecodeWireBlockToolResultImages pins that the strict wire decoder
+// accepts the additive images key on tool_result blocks and still rejects
+// unknown keys.
+func TestDecodeWireBlockToolResultImages(t *testing.T) {
+	withImages := `{"type":"tool_result","tool_use_id":"call_1","content":"shot","images":[{"type":"image","url":"https://example.com/a.png"}]}`
+	block, err := decodeWireBlock(json.RawMessage(withImages))
+	if err != nil {
+		t.Fatalf("decode with images: %v", err)
+	}
+	tr := block.(llm.ToolResultBlock)
+	if len(tr.Images) != 1 || tr.Images[0].URL != "https://example.com/a.png" {
+		t.Errorf("images = %+v", tr.Images)
+	}
+
+	withoutImages := `{"type":"tool_result","tool_use_id":"call_1","content":"shot"}`
+	block, err = decodeWireBlock(json.RawMessage(withoutImages))
+	if err != nil {
+		t.Fatalf("decode without images: %v", err)
+	}
+	if block.(llm.ToolResultBlock).Images != nil {
+		t.Errorf("images = %+v, want nil", block.(llm.ToolResultBlock).Images)
+	}
+
+	unknown := `{"type":"tool_result","tool_use_id":"call_1","content":"shot","bogus":1}`
+	if _, err = decodeWireBlock(json.RawMessage(unknown)); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("err = %v, want unknown-field rejection", err)
+	}
 }

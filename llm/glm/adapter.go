@@ -513,10 +513,14 @@ func convertAssistant(m llm.Message) (chatMessage, error) {
 func convertToolResult(m llm.Message) (chatMessage, error) {
 	for _, block := range m.Content {
 		if tr, ok := block.(llm.ToolResultBlock); ok {
+			content := tr.Content
+			if n := len(tr.Images); n > 0 {
+				content += fmt.Sprintf("\n[%d image attachment(s) omitted: not supported on this wire]", n)
+			}
 			return chatMessage{
 				Role:       "tool",
 				ToolCallID: tr.ToolUseID,
-				Content:    tr.Content,
+				Content:    content,
 			}, nil
 		}
 	}

@@ -234,10 +234,18 @@ func fallbackBlockSize(block llm.ContentBlock) int {
 			return len(typed.Name) + len(typed.Input)
 		}
 	case llm.ToolResultBlock:
-		return len(typed.Content)
+		n := len(typed.Content)
+		for _, img := range typed.Images {
+			n += len(img.Data)
+		}
+		return n
 	case *llm.ToolResultBlock:
 		if typed != nil {
-			return len(typed.Content)
+			n := len(typed.Content)
+			for _, img := range typed.Images {
+				n += len(img.Data)
+			}
+			return n
 		}
 	case llm.ReasoningBlock:
 		return len(typed.Content)

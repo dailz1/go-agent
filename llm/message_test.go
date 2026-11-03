@@ -585,3 +585,38 @@ func TestMessageJSONRoundTrip_ReasoningBlock(t *testing.T) {
 		t.Errorf("block[1] text: expected %q, got %q", "The answer is 42", tb.Text)
 	}
 }
+
+func TestToolResultMessageImages(t *testing.T) {
+	result := tool.NewImageResult("screenshot", tool.Image{URL: "https://example.com/a.png"}, tool.Image{MIMEType: "image/jpeg", Data: []byte("jpg")})
+	msg := ToolResultMessage("call_1", result)
+	if len(msg.Content) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(msg.Content))
+	}
+	block, ok := msg.Content[0].(ToolResultBlock)
+	if !ok {
+		t.Fatalf("block type %T, want ToolResultBlock", msg.Content[0])
+	}
+	if len(block.Images) != 2 || block.Images[0].URL != "https://example.com/a.png" ||
+		block.Images[1].MIMEType != "image/jpeg" || string(block.Images[1].Data) != "jpg" {
+		t.Errorf("images = %+v", block.Images)
+	}
+
+	// No images: nil slice so existing DeepEqual(nil) assertions keep holding.
+	plain := ToolResultMessage("call_1", tool.NewTextResult("done"))
+	blockPlain := plain.Content[0].(ToolResultBlock)
+	if blockPlain.Images != nil {
+		t.Errorf("images = %+v, want nil for text-only result", blockPlain.Images)
+	}
+}
+
+func TestToolResultBlockDecodeImages(t *testing.T) {
+	data := `{"role":"tool","content":[{"type":"tool_result","tool_use_id":"call_1","content":"shot","images":[{"type":"image","url":"https://example.com/a.png"}]}]}`
+	var msg Message
+	if err := json.Unmarshal([]byte(data), &msg); err != nil {
+		t.Fatal(err)
+	}
+	block := msg.Content[0].(ToolResultBlock)
+	if len(block.Images) != 1 || block.Images[0].URL != "https://example.com/a.png" {
+		t.Errorf("images = %+v", block.Images)
+	}
+}

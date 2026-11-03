@@ -1,6 +1,9 @@
 package codex
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type createRequest struct {
 	Model        string      `json:"model"`
@@ -13,16 +16,16 @@ type createRequest struct {
 }
 
 type inputItem struct {
-	Type             string        `json:"type"`
-	Role             string        `json:"role,omitempty"`
-	Content          []contentPart `json:"content,omitempty"`
-	CallID           string        `json:"call_id,omitempty"`
-	Name             string        `json:"name,omitempty"`
-	Arguments        *string       `json:"arguments,omitempty"`
-	Output           *string       `json:"output,omitempty"`
-	ID               string        `json:"id,omitempty"`
-	EncryptedContent string        `json:"encrypted_content,omitempty"`
-	Summary          []summaryPart `json:"summary,omitempty"`
+	Type             string         `json:"type"`
+	Role             string         `json:"role,omitempty"`
+	Content          []contentPart  `json:"content,omitempty"`
+	CallID           string         `json:"call_id,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	Arguments        *string        `json:"arguments,omitempty"`
+	Output           *outputContent `json:"output,omitempty"`
+	ID               string         `json:"id,omitempty"`
+	EncryptedContent string         `json:"encrypted_content,omitempty"`
+	Summary          []summaryPart  `json:"summary,omitempty"`
 }
 
 type contentPart struct {
@@ -35,6 +38,35 @@ type contentPart struct {
 type summaryPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// outputContent is the function_call_output payload: a JSON string (text
+// only) or an ordered array of typed parts (text + images). Pointer nil
+// omits the field; empty text without images still marshals as "" so the
+// pre-union `"output":""` byte shape is preserved.
+type outputContent struct {
+	text  string
+	parts []contentPart
+}
+
+func (c outputContent) MarshalJSON() ([]byte, error) {
+	if len(c.parts) == 0 {
+		return json.Marshal(c.text)
+	}
+	return json.Marshal(c.parts)
+}
+
+func (c *outputContent) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if strings.HasPrefix(trimmed, "\"") {
+		return json.Unmarshal(data, &c.text)
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return err
+	}
+	c.parts = parts
+	return nil
 }
 
 type toolDef struct {

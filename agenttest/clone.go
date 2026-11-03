@@ -54,6 +54,7 @@ func cloneBlocks(in []llm.ContentBlock) []llm.ContentBlock {
 		case *llm.ReasoningItemBlock:
 			out[i] = cloneReasoningItemBlock(value)
 		case llm.ToolResultBlock:
+			value.Images = cloneImageBlocks(value.Images)
 			out[i] = value
 		case *llm.ToolResultBlock:
 			out[i] = cloneToolResultBlock(value)

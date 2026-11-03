@@ -79,3 +79,36 @@ func TestProviderThreadModelShadowsConstructorModel(t *testing.T) {
 		t.Fatalf("wire model = %q, want thread-model shadowing constructor-model", body.Model)
 	}
 }
+
+// TestConvertToolResultImagesDegrade pins the frozen degradation-table row:
+// GLM tool messages carry text only, so image attachments degrade to a text
+// placeholder appended to the content — never a hard error, and the model is
+// told what was omitted.
+func TestConvertToolResultImagesDegrade(t *testing.T) {
+	messages := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
+		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "shot done",
+			Images: []llm.ImageBlock{{Type: "image", URL: "https://example.com/a.png"}}},
+	}}}
+	converted, err := convertMessages(messages)
+	if err != nil {
+		t.Fatalf("convertMessages: %v", err)
+	}
+	toolMsg := converted[0]
+	if toolMsg.Role != "tool" || toolMsg.ToolCallID != "call_1" {
+		t.Fatalf("message = %+v", toolMsg)
+	}
+	if !strings.Contains(toolMsg.Content.(string), "shot done") ||
+		!strings.Contains(toolMsg.Content.(string), "[1 image attachment(s) omitted: not supported on this wire]") {
+		t.Errorf("content = %q, want original text + placeholder", toolMsg.Content)
+	}
+
+	// No images: content unchanged.
+	plain, err := convertMessages([]llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
+		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_2", Content: "plain"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain[0].Content != "plain" {
+		t.Errorf("content = %q, want unchanged without images", plain[0].Content)
+	}
+}

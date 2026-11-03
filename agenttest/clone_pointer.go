@@ -50,5 +50,18 @@ func cloneToolResultBlock(in *llm.ToolResultBlock) llm.ContentBlock {
 		return (*llm.ToolResultBlock)(nil)
 	}
 	out := *in
+	out.Images = cloneImageBlocks(in.Images)
 	return &out
+}
+
+func cloneImageBlocks(images []llm.ImageBlock) []llm.ImageBlock {
+	if images == nil {
+		return nil
+	}
+	out := make([]llm.ImageBlock, len(images))
+	for i, img := range images {
+		img.Data = cloneBytes(img.Data)
+		out[i] = img
+	}
+	return out
 }

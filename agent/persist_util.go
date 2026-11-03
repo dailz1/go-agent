@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/dailz1/go-agent/llm"
@@ -121,7 +122,7 @@ func (v *threadView) applyCancellation(r store.Record) error {
 			return incompatible(r, "cancellation result count does not match declaration")
 		}
 		for i, result := range p.Results {
-			if result.Content[0].(llm.ToolResultBlock) != want[i].Content[0].(llm.ToolResultBlock) {
+			if !reflect.DeepEqual(result.Content[0].(llm.ToolResultBlock), want[i].Content[0].(llm.ToolResultBlock)) {
 				return incompatible(r, "cancellation result is not the declared call's canonical unknown outcome")
 			}
 		}

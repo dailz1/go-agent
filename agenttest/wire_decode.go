@@ -153,7 +153,7 @@ func decodeWireMessage(raw json.RawMessage) (llm.Message, error) {
 	return out, nil
 }
 func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
-	object, err := wireObject(raw, "type", "text", "content", "url", "mime_type", "data", "id", "name", "input", "encrypted_content", "summary", "tool_use_id", "is_error")
+	object, err := wireObject(raw, "type", "text", "content", "url", "mime_type", "data", "id", "name", "input", "encrypted_content", "summary", "tool_use_id", "is_error", "images")
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
 	if err = wireValue(object, "type", &typ); err != nil {
 		return nil, err
 	}
-	allowed := map[string][]string{"text": {"type", "text"}, "reasoning": {"type", "content"}, "image": {"type", "url", "mime_type", "data"}, "tool_use": {"type", "id", "name", "input"}, "reasoning_item": {"type", "id", "encrypted_content", "summary"}, "tool_result": {"type", "tool_use_id", "content", "is_error"}}
+	allowed := map[string][]string{"text": {"type", "text"}, "reasoning": {"type", "content"}, "image": {"type", "url", "mime_type", "data"}, "tool_use": {"type", "id", "name", "input"}, "reasoning_item": {"type", "id", "encrypted_content", "summary"}, "tool_result": {"type", "tool_use_id", "content", "images", "is_error"}}
 	if !wireOnly(object, allowed[typ]) {
 		return nil, incompatiblef("unknown content block type or field %q", typ)
 	}
@@ -199,6 +199,9 @@ func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
 		value := llm.ToolResultBlock{Type: typ}
 		if err = wireValue(object, "tool_use_id", &value.ToolUseID); err == nil {
 			err = wireValue(object, "content", &value.Content)
+		}
+		if err == nil {
+			err = wireOptional(object, "images", &value.Images)
 		}
 		if err == nil {
 			err = wireOptional(object, "is_error", &value.IsError)

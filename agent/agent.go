@@ -56,9 +56,13 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 					cloned.Summary = append([]string(nil), cloned.Summary...)
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
+			case llm.ToolResultBlock:
+				typed.Images = cloneImageBlocks(typed.Images)
+				dst[messageIndex].Content[blockIndex] = typed
 			case *llm.ToolResultBlock:
 				if typed != nil {
 					cloned := *typed
+					cloned.Images = cloneImageBlocks(cloned.Images)
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
 			case llm.ToolUseBlock:
@@ -83,6 +87,20 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 		}
 	}
 	return dst
+}
+
+// cloneImageBlocks deep-copies a ToolResultBlock's image attachments so the
+// cloned history shares no backing arrays with the caller's slices.
+func cloneImageBlocks(images []llm.ImageBlock) []llm.ImageBlock {
+	if images == nil {
+		return nil
+	}
+	out := make([]llm.ImageBlock, len(images))
+	for i, img := range images {
+		img.Data = bytes.Clone(img.Data)
+		out[i] = img
+	}
+	return out
 }
 
 func validateCompacted(original []llm.Message, compacted []llm.Message) error {

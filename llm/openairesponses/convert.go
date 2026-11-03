@@ -31,16 +31,45 @@ type createRequest struct {
 // omitempty fields covers the four item kinds the adapter produces: message,
 // function_call, function_call_output, and reasoning.
 type inputItem struct {
-	Type             string        `json:"type"`
-	Role             string        `json:"role,omitempty"`
-	Content          []contentPart `json:"content,omitempty"`
-	CallID           string        `json:"call_id,omitempty"`
-	Name             string        `json:"name,omitempty"`
-	Arguments        string        `json:"arguments,omitempty"`
-	Output           string        `json:"output,omitempty"`
-	ID               string        `json:"id,omitempty"`
-	EncryptedContent string        `json:"encrypted_content,omitempty"`
-	Summary          []summaryPart `json:"summary,omitempty"`
+	Type             string         `json:"type"`
+	Role             string         `json:"role,omitempty"`
+	Content          []contentPart  `json:"content,omitempty"`
+	CallID           string         `json:"call_id,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	Arguments        string         `json:"arguments,omitempty"`
+	Output           *outputContent `json:"output,omitempty"`
+	ID               string         `json:"id,omitempty"`
+	EncryptedContent string         `json:"encrypted_content,omitempty"`
+	Summary          []summaryPart  `json:"summary,omitempty"`
+}
+
+// outputContent is the function_call_output payload: a plain string (text
+// only, wire-identical to today) or ordered typed parts (text + images).
+// Pointer semantics: nil Output omits the field entirely, preserving the
+// previous `Output string` + omitempty behavior for empty content.
+type outputContent struct {
+	text  string
+	parts []contentPart // input_text / input_image
+}
+
+func (c outputContent) MarshalJSON() ([]byte, error) {
+	if len(c.parts) == 0 {
+		return json.Marshal(c.text)
+	}
+	return json.Marshal(c.parts)
+}
+
+func (c *outputContent) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if strings.HasPrefix(trimmed, "\"") {
+		return json.Unmarshal(data, &c.text)
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return err
+	}
+	c.parts = parts
+	return nil
 }
 
 type contentPart struct {
@@ -184,11 +213,29 @@ func assistantItems(m llm.Message) ([]inputItem, error) {
 func toolOutputItem(m llm.Message) (inputItem, error) {
 	for _, blk := range m.Content {
 		if tr, ok := blk.(llm.ToolResultBlock); ok {
-			return inputItem{
-				Type:   "function_call_output",
-				CallID: tr.ToolUseID,
-				Output: tr.Content,
-			}, nil
+			item := inputItem{Type: "function_call_output", CallID: tr.ToolUseID}
+			if len(tr.Images) == 0 {
+				// Wire-identical to the previous `Output string` + omitempty:
+				// non-empty text marshals as a JSON string; empty content omits
+				// the field entirely (nil pointer).
+				if tr.Content != "" {
+					item.Output = &outputContent{text: tr.Content}
+				}
+				return item, nil
+			}
+			parts := make([]contentPart, 0, len(tr.Images)+1)
+			if tr.Content != "" {
+				parts = append(parts, contentPart{Type: "input_text", Text: tr.Content})
+			}
+			for _, img := range tr.Images {
+				url := img.URL
+				if url == "" && img.MIMEType != "" && len(img.Data) > 0 {
+					url = "data:" + img.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
+				}
+				parts = append(parts, contentPart{Type: "input_image", ImageURL: url})
+			}
+			item.Output = &outputContent{parts: parts}
+			return item, nil
 		}
 	}
 	return inputItem{}, fmt.Errorf("tool message has no tool_result block")
