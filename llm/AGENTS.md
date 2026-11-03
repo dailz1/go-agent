@@ -16,7 +16,7 @@ Provider-agnostic LLM seam: Provider iface, Message/ContentBlock/Chunk sealed un
 - Adapters: `openai.NewProvider` adapter.go:50, `glm.NewProvider` :104 (of llm/glm/adapter.go), `openairesponses.NewProvider` :56 — all satisfy Provider.
 - glm: API key containing `.` selects self-signed JWT auth (adapter.go:105-108) — bearer key with a dot WILL misauthenticate; `WithTopP` is the only option that clamps in place (:77-86); `timeNow` seam (auth.go:13-14).
 - openai: eager-setup streaming contract — `DoStreamRequest` runs inside ChatStream (glm template); setup/non-2xx errors return synchronously and enter the agent's pre-stream retry; chunk delivery stays lazy; `StreamOptions.IncludeUsage`.
-- openairesponses: typed items, store:false + full item-history replay per call, reasoning via encrypted_content; v1 exclusions documented in adapter.go:1-16 (no built-in tools, text.format, previous_response_id, WS).
+- openairesponses: typed items, store:false + full item-history replay per call, reasoning via encrypted_content; v1 exclusions documented in adapter.go:1-16 (no built-in tools, text.format, previous_response_id, WS); eager-setup streaming — setup errors sync-return into the agent's pre-stream retry.
 - Bounded I/O + 120s default client timeout in all three adapters.
 
 ## ANTI-PATTERNS (THIS PACKAGE)

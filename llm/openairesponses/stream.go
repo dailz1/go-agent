@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
+	"strings"
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/tool"
@@ -59,9 +60,10 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 }
 
 // ChatStream sends a streaming Responses request and yields semantic events
-// translated into the library's chunk model. The request is issued lazily
-// inside the iterator under the two-form ChatStream contract; setup errors
-// surface as the iterator's first error and are not retried by the agent loop.
+// translated into the library's chunk model. The request is issued eagerly
+// before the iterator is returned: connection and non-2xx errors return
+// synchronously and enter the agent's pre-stream retry. Chunk delivery stays
+// lazy; breaking out of the range early is safe.
 func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	o := llm.ApplyOptions(opts)
 
@@ -85,17 +87,17 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		"tools_count", len(reqBody.Tools),
 	)
 
+	result, err := llm.DoStreamRequest(ctx, p.httpClient, llm.RequestConfig{
+		Method:  http.MethodPost,
+		URL:     p.baseURL + "/responses",
+		Headers: p.apiHeaders(),
+	}, reqBody)
+	if err != nil {
+		p.logger.Error("openairesponses stream request failed", "error", err)
+		return nil, err
+	}
+
 	return func(yield func(llm.Chunk, error) bool) {
-		result, err := llm.DoStreamRequest(ctx, p.httpClient, llm.RequestConfig{
-			Method:  http.MethodPost,
-			URL:     p.baseURL + "/responses",
-			Headers: p.apiHeaders(),
-		}, reqBody)
-		if err != nil {
-			p.logger.Error("openairesponses stream request failed", "error", err)
-			yield(nil, err)
-			return
-		}
 		defer result.Cleanup()
 
 		// Reasoning items already delivered via output_item.done; used by the
@@ -142,6 +144,10 @@ type streamEvent struct {
 // parseStreamEvent translates one Responses SSE event into zero or more
 // chunks. Unknown event types produce no chunks (forward compatibility).
 func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) ([]llm.Chunk, error) {
+	if strings.TrimSpace(payload) == "" {
+		return nil, nil
+	}
+
 	var ev streamEvent
 	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 		return nil, fmt.Errorf("decode stream event: %w", err)

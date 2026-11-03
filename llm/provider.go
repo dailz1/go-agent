@@ -27,9 +27,9 @@ type Provider interface {
 	// Request setup (connection, auth, non-2xx status) may be performed
 	// eagerly at call time or lazily when ranging begins, per adapter.
 	// Setup errors SHOULD be returned synchronously so caller-side retry
-	// loops cover them; this package's openai and glm adapters are eager,
-	// while openairesponses and codex are lazy (their setup errors surface
-	// as the iterator's first error and are not retried by the agent loop).
+	// loops cover them; all four adapters in this package (glm, openai,
+	// openairesponses, codex) are eager — codex resolves OAuth credentials
+	// and performs its one-shot 401 recovery during this synchronous setup.
 	//
 	// Chunk delivery through the returned iter.Seq2[Chunk, error] is lazy:
 	// chunks are consumed only while the caller ranges, and breaking out

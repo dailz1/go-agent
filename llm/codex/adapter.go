@@ -1,8 +1,8 @@
 // Package codex implements ChatGPT subscription Responses requests.
-// Authentication and network activity start only when the stream is consumed.
-// Chat folds that same stream. Only a pre-stream 401 is recovered, once; other
-// HTTP and stream failures are not retried (the agent's outer retry loop does
-// not retry lazy iterator errors). All system text blocks become instructions,
+// ChatStream connects eagerly: OAuth resolution, the request, and the one-shot
+// 401 recovery all happen synchronously at call time, so pre-stream network
+// and 429/5xx failures enter the agent's outer pre-stream retry. Chat folds
+// that same stream. All system text blocks become instructions,
 // separated by blank lines, unlike openairesponses' last-system behavior.
 //
 // MaxTokens is accepted but never transmitted: the service controls the output
@@ -86,7 +86,7 @@ func NewProvider(model string, options ...ProviderOption) *Provider {
 
 func (p *Provider) Name() string { return "codex" }
 
-// ChatStream prepares locally, then authenticates and sends only when ranged.
+// ChatStream prepares and connects eagerly at call time; chunk delivery stays lazy.
 func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, options ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	o := llm.ApplyOptions(options)
 	model := p.model
@@ -122,18 +122,18 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 	if err != nil {
 		return nil, err
 	}
+	if o.MaxTokens > 0 {
+		p.warnLimit.Do(func() {
+			p.logger.WarnContext(ctx, "Codex uses the server output limit",
+				"configured_max_output_tokens", o.MaxTokens, "output_limit_mode", "server_default")
+		})
+	}
+	result, err := p.openStream(ctx, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+
 	return func(yield func(llm.Chunk, error) bool) {
-		if o.MaxTokens > 0 {
-			p.warnLimit.Do(func() {
-				p.logger.WarnContext(ctx, "Codex uses the server output limit",
-					"configured_max_output_tokens", o.MaxTokens, "output_limit_mode", "server_default")
-			})
-		}
-		result, err := p.openStream(ctx, endpoint, body)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
 		defer result.Cleanup()
 		for chunk, err := range scanResponse(ctx, result.Body) {
 			if !yield(chunk, err) {

@@ -4,7 +4,8 @@
 // codex/auth.Source. Refresh owns authentication and persistence; Token is only a
 // read-only snapshot. Interactive login and file storage belong to codexauth.
 //
-// Codex streams lazily, including authentication, and Chat folds that same stream.
+// Codex connects eagerly at ChatStream call time, including authentication, and
+// Chat folds that same stream.
 // Unlike public OpenAI Responses, it merges all system instructions and omits
 // output-cap fields even for positive MaxTokens. Its structured warning discloses
 // that the configured cap is not a server-enforced limit. Iterator errors do not

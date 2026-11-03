@@ -36,7 +36,7 @@ func (s *testSource) Refresh(_ context.Context, rejected *auth.Token) (auth.Toke
 
 const emptyCompletion = `{"type":"response.completed","response":{"status":"completed","output":[]}}`
 
-func TestProviderLazyWireAndOutputLimit(t *testing.T) {
+func TestProviderEagerWireAndOutputLimit(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -66,13 +66,17 @@ func TestProviderLazyWireAndOutputLimit(t *testing.T) {
 	provider := NewProvider("model", WithAuthSource(source), WithBaseURL(server.URL+"/responses/"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 	for _, limit := range []int{0, 4096, 8} {
 		before := requests.Load()
+		warnedBefore := strings.Contains(logs.String(), `"output_limit_mode":"server_default"`)
 		logSize := logs.Len()
 		seq, err := provider.ChatStream(t.Context(), nil, nil, llm.WithMaxTokens(limit), llm.WithModel("override"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if source.refreshes.Load() != before || requests.Load() != before || logs.Len() != logSize {
-			t.Fatal("eager refresh, request, or warning")
+		if source.refreshes.Load() != before+1 || requests.Load() != before+1 {
+			t.Fatal("setup must be eager: refresh and request due at call time before ranging")
+		}
+		if limit > 0 && !warnedBefore && logs.Len() == logSize {
+			t.Fatal("output-limit warning must fire at call time on first positive-limit setup")
 		}
 		for _, err := range seq {
 			if err != nil {
@@ -204,5 +208,75 @@ func TestProviderWirePreservesSeparateMessages(t *testing.T) {
 	p := NewProvider("m", WithAuthSource(&testSource{}), WithBaseURL(server.URL))
 	if _, _, err := p.Chat(t.Context(), []llm.Message{llm.UserMessage("a"), llm.UserMessage("b")}, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --- eager setup (C series) ---
+
+// TestChatStreamSetupErrorIsSync pins that a non-2xx setup failure surfaces
+// synchronously as a retryable *llm.APIError with Retry-After consumed.
+func TestChatStreamSetupErrorIsSync(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, `{"error":{"code":"rate_limit_exceeded"}}`, http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	seq, err := NewProvider("m", WithAuthSource(&testSource{}), WithBaseURL(server.URL)).ChatStream(t.Context(), nil, nil)
+	if err == nil {
+		t.Fatal("ChatStream err = nil, want synchronous setup error")
+	}
+	if seq != nil {
+		t.Fatal("ChatStream seq != nil on setup error")
+	}
+	var api *llm.APIError
+	if !errors.As(err, &api) || api.StatusCode != http.StatusServiceUnavailable || !api.Retryable() || api.RetryAfter != 2e9 {
+		t.Fatalf("err=%v api=%+v, want retryable 503 with Retry-After=2s", err, api)
+	}
+}
+
+// TestChatStream401RecoveryAtCallTime pins that the one-shot 401 recovery
+// completes synchronously during the eager setup: by the time ChatStream
+// returns, the token has been rotated and the retried request is in flight.
+func TestChatStream401RecoveryAtCallTime(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, `{"error":{"code":"invalid_token"}}`, http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, sse(emptyCompletion))
+	}))
+	defer server.Close()
+	source := &testSource{}
+	seq, err := NewProvider("m", WithAuthSource(source), WithBaseURL(server.URL)).ChatStream(t.Context(), nil, nil)
+	if err != nil {
+		t.Fatalf("ChatStream with 401 recovery: %v", err)
+	}
+	if source.refreshes.Load() != 2 || requests.Load() != 2 {
+		t.Fatalf("refreshes=%d requests=%d, want 2/2 (initial + forced rotation)", source.refreshes.Load(), requests.Load())
+	}
+	for _, err := range seq {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestScanResponseEmptyPayloadSkipped pins the codex-side empty-payload
+// guard: bare keepalive frames must not reach the JSON decoder.
+func TestScanResponseEmptyPayloadSkipped(t *testing.T) {
+	body := "data: \n\n" + ": ping\n\n" + "data:   \n\n" + "data: " + emptyCompletion + "\n\n"
+	done := false
+	for c, err := range scanResponse(context.Background(), strings.NewReader(body)) {
+		if err != nil {
+			t.Fatalf("scanResponse: %v", err)
+		}
+		if _, ok := c.(llm.DoneChunk); ok {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("no DoneChunk")
 	}
 }

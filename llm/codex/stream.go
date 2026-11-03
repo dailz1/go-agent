@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 
 	"github.com/dailz1/go-agent/llm"
 )
@@ -27,6 +28,9 @@ func scanResponse(ctx context.Context, body io.Reader) iter.Seq2[llm.Chunk, erro
 				return
 			}
 			var event streamEvent
+			if strings.TrimSpace(payload) == "" {
+				continue
+			}
 			if err := json.Unmarshal([]byte(payload), &event); err != nil {
 				yield(nil, protocolError("decode SSE: %w", err))
 				return
