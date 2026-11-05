@@ -81,6 +81,8 @@
 
   `UnmarshalJSON` 是唯一产生 explicit-empty type/description/`$ref` 等 pathological exact-presence state 的路径。
 
+  事件交付契约：七种 sealed 事件是单消费者、同步、单播投递（`iter.Seq2`，break 即停止投递），轮内全序为 Retry* → Compaction? → delta* → TC 连续批 → TR 配对批 →（下一轮或）Done；durable-before-visible（事件到达即状态可回放）；DoneEvent 只保证投递给完整消费流，`DoneEvent.History` 是权威快照；唯一 precommit 例外是 maxIter 终端 skip 批（break 只停投递，线程已 closed）。完整逐事件契约表见 docs/EVENT-CONTRACT.md。
+
 ## 5. 路线图
 
 ### P0 结构统一（已完成 2026-09-10）
