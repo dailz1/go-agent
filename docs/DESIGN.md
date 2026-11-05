@@ -451,6 +451,14 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 注册时序列化失败即注册失败、零变更：现有校验严格覆盖序列化前置条件，该分支正常不可达，
   属防御性前置——把理论上可能的请求期失败移到注册期带工具名显式失败。
 
+### Embedder（llm 包，冻结契约 2026-11-05，issue #5）
+
+- **定位**：embedding 与 chat 同层，都是 provider 端点调用面；`llm.Embedder` 是独立小接口（非 `Provider` 的扩展方法），chat-only 适配器不受影响，不支持 embedding 的 provider 不实现它。agent 循环本身不消费 embedding；本契约服务于复用同一套 provider 管理（鉴权/baseURL/错误分类）的应用层。
+- **接口**：`llm.Embedder{ Name() string; Embed(ctx, input []string, opts ...EmbedOption) ([][]float32, llm.Usage, error) }`。选项独立于 `llm.Option`：`EmbedOptions{Model, Dimensions}`（`WithEmbedModel` / `WithDimensions`），构造器给默认 model。返回向量统一 `float32`。
+- **交付契约**：返回切片按**响应 index 字段重排**与输入逐位对齐，绝不按到达序（RAG 对齐硬约束，测试 pin）；adapter 必须校验 index 恰好覆盖 `[0,n)` 一次，否则类型化错误，不静默错位。一层 `Embed` 调用对应一次 HTTP 请求，**不自动切批**（如 OpenAI 单请求上限 2048 条输入，由调用方切批）。空 `input` 不发请求直接返回错误。
+- **错误与用量**：非 2xx 复用 `*llm.APIError`（叶子错误，`Retryable()` 分类继承）；网络错误包裹返回。usage 映射到 `llm.Usage`（embedding 只有输入侧：`InputTokens`）。
+- **实现范围**：`llm/openai` 提供 openai 兼容实现（`NewEmbedder` 复用 `ProviderOption` 与既有 HTTP 基础设施），同时覆盖 DeepSeek / Ollama(`/v1/embeddings`) / Jina 等兼容端点；glm 端点形状不同，不实现，需要时单独 adapter（duplication by design）。agent 循环、store、tool 均不引用本接口。
+
 ### P3 生态
 - MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 分页发现并一次性注册 wrapper；变更前置由「Registry fresh、未发布且完全静止」放宽为「Connect/Refresh 期间不得有并发的外部 Registry 变更作用于同一 namespace」（文档语言，不加锁强制；越界操作由 `Apply` 查重兜底报错）。不自动订阅 list-changed：`Refresh(ctx)` 手动重新分页并对账**自有集合**（新增注册、消失反注册、变化 Replace，一次 `Registry.Apply` 原子落地并同步改写自有集合）；拉取或 Apply 失败时注册表与自有集合双双保旧。非自有 `ns__` 前缀名（`Register` 只拒绝完全重名、前缀不设防）永不触碰：撞名列入 Refresh 摘要冲突清单、该名不落地、其余照常。未 Refresh 窗口内 stale tool 的 protocol error 是硬错误；Refresh 后注册表未命中走内核软错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。
 
