@@ -15,6 +15,7 @@ type chatRequest struct {
 	// object.
 	Stream     bool     `json:"stream,omitempty"`
 	TopP       *float64 `json:"top_p,omitempty"`
+	ToolChoice *string  `json:"tool_choice,omitempty"`
 	ToolStream bool     `json:"tool_stream,omitempty"`
 	Stop       []string `json:"stop,omitempty"`
 	RequestID  string   `json:"request_id,omitempty"`

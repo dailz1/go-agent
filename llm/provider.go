@@ -43,6 +43,32 @@ type Provider interface {
 
 type Option func(*Options)
 
+// ToolChoiceMode selects how the provider constrains tool calling for a
+// request: none, auto, or required.
+type ToolChoiceMode string
+
+const (
+	// ToolChoiceNone forbids the model from calling tools.
+	ToolChoiceNone ToolChoiceMode = "none"
+	// ToolChoiceAuto lets the model decide (provider default with tools).
+	ToolChoiceAuto ToolChoiceMode = "auto"
+	// ToolChoiceRequired forces the model to produce at least one tool
+	// call. Footgun: an agent loop driven entirely by required choices
+	// never sees a tool-free terminal reply, so it can only terminate via
+	// its iteration limit.
+	ToolChoiceRequired ToolChoiceMode = "required"
+)
+
+// ToolChoice constrains the model's tool calling. Name non-empty selects a
+// specific tool (serialized as the provider's named-function form); Name
+// empty selects by Mode. The zero value means "no constraint" and is never
+// serialized. Use the WithToolChoice* option constructors instead of struct
+// literals: they cannot express invalid combinations.
+type ToolChoice struct {
+	Mode ToolChoiceMode
+	Name string
+}
+
 type Options struct {
 	Model       string
 	MaxTokens   int
@@ -55,6 +81,34 @@ type Options struct {
 	// JSONMode requests JSON-object output via response_format on adapters
 	// that support it.
 	JSONMode bool
+
+	// MaxCompletionTokens sets the provider's max_completion_tokens wire
+	// field (OpenAI o-series/gpt-5 family rejects legacy max_tokens). When
+	// set, adapters suppress MaxTokens entirely: the two are mutually
+	// exclusive on the wire. Adapters whose wire format lacks the field
+	// (GLM) ignore it.
+	MaxCompletionTokens *int64
+	// TopP sets the top_p sampling parameter. Adapters that already carry
+	// a constructor-level top_p keep it as the default and let this
+	// call-level value override it.
+	TopP *float64
+	// Seed requests best-effort deterministic sampling: repeated requests
+	// with the same seed and parameters tend to return the same result,
+	// but determinism is NOT guaranteed and depends on the provider
+	// (OpenAI marks the field beta/deprecated on its newest models;
+	// DeepSeek/Ollama/vLLM-compatible endpoints honor it).
+	Seed *int64
+	// PresencePenalty sets the presence_penalty sampling parameter.
+	PresencePenalty *float64
+	// FrequencyPenalty sets the frequency_penalty sampling parameter.
+	FrequencyPenalty *float64
+	// ParallelToolCalls constrains whether the model may request multiple
+	// tool calls in a single reply. It is independent of the agent layer's
+	// own parallel tool execution.
+	ParallelToolCalls *bool
+	// ToolChoice constrains the model's tool calling (see ToolChoice).
+	// Construct it only via WithToolChoiceNone/Auto/Required/Tool.
+	ToolChoice *ToolChoice
 }
 
 func WithModel(model string) Option {
@@ -83,6 +137,65 @@ func WithThinking(t string) Option {
 // WithJSONMode requests JSON-object output from the model.
 func WithJSONMode() Option {
 	return func(o *Options) { o.JSONMode = true }
+}
+
+// WithMaxCompletionTokens sets max_completion_tokens (OpenAI o-series/gpt-5
+// family). Setting it suppresses MaxTokens on adapters that send both.
+func WithMaxCompletionTokens(n int64) Option {
+	return func(o *Options) { o.MaxCompletionTokens = &n }
+}
+
+// WithTopP sets the top_p sampling parameter for the call.
+func WithTopP(p float64) Option {
+	return func(o *Options) { o.TopP = &p }
+}
+
+// WithSeed requests best-effort deterministic sampling (see Options.Seed).
+func WithSeed(n int64) Option {
+	return func(o *Options) { o.Seed = &n }
+}
+
+// WithPresencePenalty sets the presence_penalty sampling parameter.
+func WithPresencePenalty(p float64) Option {
+	return func(o *Options) { o.PresencePenalty = &p }
+}
+
+// WithFrequencyPenalty sets the frequency_penalty sampling parameter.
+func WithFrequencyPenalty(p float64) Option {
+	return func(o *Options) { o.FrequencyPenalty = &p }
+}
+
+// WithParallelToolCalls constrains whether the model may request multiple
+// tool calls in a single reply.
+func WithParallelToolCalls(b bool) Option {
+	return func(o *Options) { o.ParallelToolCalls = &b }
+}
+
+// WithToolChoiceNone forbids the model from calling tools this request.
+func WithToolChoiceNone() Option {
+	return func(o *Options) { o.ToolChoice = &ToolChoice{Mode: ToolChoiceNone} }
+}
+
+// WithToolChoiceAuto lets the model decide whether to call tools.
+func WithToolChoiceAuto() Option {
+	return func(o *Options) { o.ToolChoice = &ToolChoice{Mode: ToolChoiceAuto} }
+}
+
+// WithToolChoiceRequired forces the model to produce at least one tool
+// call. Footgun: an agent loop driven entirely by required choices never
+// sees a tool-free terminal reply and can only end via its iteration
+// limit.
+func WithToolChoiceRequired() Option {
+	return func(o *Options) { o.ToolChoice = &ToolChoice{Mode: ToolChoiceRequired} }
+}
+
+// WithToolChoiceTool forces the model to call the named tool. An empty name
+// sets nothing (an empty name cannot address a tool).
+func WithToolChoiceTool(name string) Option {
+	if name == "" {
+		return func(o *Options) {}
+	}
+	return func(o *Options) { o.ToolChoice = &ToolChoice{Name: name} }
 }
 
 func ApplyOptions(opts []Option) Options {

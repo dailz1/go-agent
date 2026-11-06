@@ -102,7 +102,8 @@ func decodeWireRequest(raw json.RawMessage, version int) (dtoRequest, error) {
 	return out, nil
 }
 func decodeWireOptions(raw json.RawMessage) (llm.Options, error) {
-	object, err := wireObject(raw, "Model", "MaxTokens", "Temperature", "Stop", "Thinking", "JSONMode")
+	object, err := wireObject(raw, "Model", "MaxTokens", "Temperature", "Stop", "Thinking", "JSONMode",
+		"MaxCompletionTokens", "TopP", "Seed", "PresencePenalty", "FrequencyPenalty", "ParallelToolCalls", "ToolChoice")
 	if err != nil {
 		return llm.Options{}, err
 	}
@@ -123,6 +124,27 @@ func decodeWireOptions(raw json.RawMessage) (llm.Options, error) {
 		return out, err
 	}
 	if err = wireOptional(object, "JSONMode", &out.JSONMode); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "MaxCompletionTokens", &out.MaxCompletionTokens); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "TopP", &out.TopP); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "Seed", &out.Seed); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "PresencePenalty", &out.PresencePenalty); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "FrequencyPenalty", &out.FrequencyPenalty); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "ParallelToolCalls", &out.ParallelToolCalls); err != nil {
+		return out, err
+	}
+	if err = wireOptional(object, "ToolChoice", &out.ToolChoice); err != nil {
 		return out, err
 	}
 	return out, nil

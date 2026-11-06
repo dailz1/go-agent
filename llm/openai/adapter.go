@@ -91,6 +91,7 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		Temperature: o.Temperature,
 		Stop:        o.Stop,
 	}
+	applySamplingToolOptions(o, &reqBody)
 	if o.Thinking != "" {
 		reqBody.Thinking = &thinkingConfig{Type: o.Thinking}
 	}
@@ -181,6 +182,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
+	applySamplingToolOptions(o, &reqBody)
 	if o.Thinking != "" {
 		reqBody.Thinking = &thinkingConfig{Type: o.Thinking}
 	}
@@ -504,7 +506,39 @@ func convertUsage(u *chatUsage) *llm.Usage {
 	if u.CompletionTokensDetails != nil {
 		usage.ReasoningTokens = int64(u.CompletionTokensDetails.ReasoningTokens)
 	}
+	if u.PromptTokensDetails != nil {
+		usage.CachedTokens = int64(u.PromptTokensDetails.CachedTokens)
+	}
 	return usage
+}
+
+// applySamplingToolOptions maps the shared llm.Options sampling and tool
+// parameters onto the Chat Completions wire. Called by Chat and ChatStream.
+func applySamplingToolOptions(o llm.Options, req *chatRequest) {
+	if o.MaxCompletionTokens != nil {
+		req.MaxCompletionTokens = o.MaxCompletionTokens
+		req.MaxTokens = 0
+	}
+	req.TopP = o.TopP
+	req.Seed = o.Seed
+	req.PresencePenalty = o.PresencePenalty
+	req.FrequencyPenalty = o.FrequencyPenalty
+	req.ParallelToolCalls = o.ParallelToolCalls
+	if o.ToolChoice != nil && (o.ToolChoice.Mode != "" || o.ToolChoice.Name != "") {
+		req.ToolChoice = toolChoiceWire(*o.ToolChoice)
+	}
+}
+
+// toolChoiceWire renders a ToolChoice in Chat Completions wire form: a
+// named-function object for a specific tool, otherwise the mode string.
+func toolChoiceWire(tc llm.ToolChoice) any {
+	if tc.Name != "" {
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]string{"name": tc.Name},
+		}
+	}
+	return string(tc.Mode)
 }
 
 func firstNonEmpty(ss ...string) string {

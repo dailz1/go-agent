@@ -8,7 +8,16 @@ type chatRequest struct {
 	Tools       []toolDef     `json:"tools,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
+	TopP        *float64      `json:"top_p,omitempty"`
 	Stop        []string      `json:"stop,omitempty"`
+	// MaxCompletionTokens is the o-series/gpt-5 token budget; when set,
+	// MaxTokens is suppressed entirely (o-series rejects max_tokens).
+	MaxCompletionTokens *int64   `json:"max_completion_tokens,omitempty"`
+	Seed                *int64   `json:"seed,omitempty"`
+	PresencePenalty     *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    *float64 `json:"frequency_penalty,omitempty"`
+	ParallelToolCalls   *bool    `json:"parallel_tool_calls,omitempty"`
+	ToolChoice          any      `json:"tool_choice,omitempty"`
 	// Thinking carries the GLM-style thinking configuration (OpenAI-compatible
 	// endpoints such as GLM accept it); nil omits the field entirely.
 	Thinking *thinkingConfig `json:"thinking,omitempty"`

@@ -85,6 +85,12 @@ func TestUsageAdd(t *testing.T) {
 			expected: Usage{InputTokens: 300, OutputTokens: 125, ReasoningTokens: 30},
 		},
 		{
+			name:     "accumulates cached tokens",
+			a:        Usage{InputTokens: 100, CachedTokens: 80},
+			b:        Usage{InputTokens: 200, CachedTokens: 64},
+			expected: Usage{InputTokens: 300, OutputTokens: 0, ReasoningTokens: 0, CachedTokens: 144},
+		},
+		{
 			name:     "negative values",
 			a:        Usage{InputTokens: 100, OutputTokens: 50, ReasoningTokens: 10},
 			b:        Usage{InputTokens: -50, OutputTokens: -25, ReasoningTokens: -5},
@@ -142,6 +148,11 @@ func TestUsageIsZero(t *testing.T) {
 		{
 			name:     "non-zero reasoning tokens",
 			usage:    Usage{ReasoningTokens: 1},
+			expected: false,
+		},
+		{
+			name:     "non-zero cached tokens",
+			usage:    Usage{CachedTokens: 1},
 			expected: false,
 		},
 		{

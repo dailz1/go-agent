@@ -424,7 +424,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 
 `ToolFunc` 直接暴露 `Definition tool.ToolInfo` 与 `ExecuteFunc func(context.Context, json.RawMessage) (*tool.ToolResult, error)`；每次 Execute 先深拷贝记录 args，`Calls` 返回受 mutex 保护的深拷贝快照。nil handler 返回普通 Go error，panic 原样透传，便于测试 Agent 的既有边界。
 
-录制 bytes 是显式版本化契约：既有 **v1/v2** 录制继续按各自冻结 grammar 读取；Recorder 写 **v3**，Replayer 读取 v1/v2/v3（错误扩展见 Codex 节）。v2/v3 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。
+录制 bytes 是显式版本化契约：既有 **v1/v2** 录制继续按各自冻结 grammar 读取；Recorder 写 **v3**，Replayer 读取 v1/v2/v3（错误扩展见 Codex 节）。v2/v3 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。v3 的 options/usage 键集按可选超集在原版本内演进（2026-11-05 Chat Completions 参数契约）：新增 llm.Options/Usage 字段进入允许清单并以可选键解码，旧 v3 录制缺键照常回放，`recordingVersion` 保持 3。
 
 #### 工具热变更（P2-4，已裁决后生效）
 
@@ -458,6 +458,15 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - **交付契约**：返回切片按**响应 index 字段重排**与输入逐位对齐，绝不按到达序（RAG 对齐硬约束，测试 pin）；adapter 必须校验 index 恰好覆盖 `[0,n)` 一次，否则类型化错误，不静默错位。一层 `Embed` 调用对应一次 HTTP 请求，**不自动切批**（如 OpenAI 单请求上限 2048 条输入，由调用方切批）。空 `input` 不发请求直接返回错误。
 - **错误与用量**：非 2xx 复用 `*llm.APIError`（叶子错误，`Retryable()` 分类继承）；网络错误包裹返回。usage 映射到 `llm.Usage`（embedding 只有输入侧：`InputTokens`）。
 - **实现范围**：`llm/openai` 提供 openai 兼容实现（`NewEmbedder` 复用 `ProviderOption` 与既有 HTTP 基础设施），同时覆盖 DeepSeek / Ollama(`/v1/embeddings`) / Jina 等兼容端点；glm 端点形状不同，不实现，需要时单独 adapter（duplication by design）。agent 循环、store、tool 均不引用本接口。
+
+### Chat Completions 采样与工具参数（llm 包，冻结契约 2026-11-05，issue #6）
+
+- **定位**：`llm.Options` 是 provider 无关的盲传载体——agent 循环从 `llmOpts` 经 `configState.apply`（只追加 Model/Thinking 覆盖）到 `ChatStream/Chat` 全程不解释、不过滤字段。本契约只扩展 llm 层类型与 openai/glm 两个 Chat Completions 适配器的序列化面；agent、store、tool 零引用。
+- **类型**：`Options` 增量字段全部指针三态(nil = 不发送):`MaxCompletionTokens *int64`、`TopP *float64`、`Seed *int64`、`PresencePenalty/FrequencyPenalty *float64`、`ParallelToolCalls *bool`、`ToolChoice *ToolChoice`。`ToolChoice{Mode ToolChoiceMode; Name string}`，Mode ∈ none/auto/required，Name 非空时序列化为指定工具对象形式 `{"type":"function","function":{"name":…}}`，否则为 Mode 的字符串形态；nil 与零值字面量 `&llm.ToolChoice{}`（空 Mode 且空 Name）均整体省略；四个命名构造函数使非法组合在选项层不可表示，`WithToolChoiceTool("")` 为不设置的 no-op。`Usage` 增 `CachedTokens int64`（`Add` 求和、`IsZero` 纳入、`String` 格式不变）。
+- **优先级与语义**：`MaxCompletionTokens` 非空时完全压制 `max_tokens`（o 系列拒绝 max_tokens，两者并存同被拒绝；`MaxTokens` 保留给旧模型与兼容端点）。`Seed` 尽力而为、随 provider 而异（OpenAI Beta 且官方 schema 已标 deprecated，最新模型可能忽略或拒绝；DeepSeek/Ollama/vLLM 等兼容端点仍有效）。`WithToolChoiceRequired` 的 footgun：required 阻止模型产出终止性文本，agent 循环终态判定是"本轮无工具调用"，故循环只能由 maxIter 终止。`ParallelToolCalls` 约束模型单轮产出形态，与 agent 层工具并行执行（P2-2）相互独立。
+- **适配器范围**:openai 序列化全部新字段。glm 仅序列化 GLM 线格式存在的参数:`top_p` 读共享字段、调用级优先于构造器级 `glm.WithTopP`(后者保留签名、不再 clamp,值原样透传,越界由服务端拒绝,文档区间 [0.01,1.0] 限两位小数);`tool_choice` 仅发送 GLM 文档支持的 "auto",其余值丢弃并记 Debug 日志(对齐热换降级契约:线程不因参数不适配中断);`MaxCompletionTokens/Seed/presence_penalty/frequency_penalty/parallel_tool_calls` 在 glm 端不发送（GLM 线格式无此参数，字段惰性）。转换 helper 双适配器各留一份（duplication by design）。参数级热换降级以本节「适配器范围」条款为准——既有降级契约表只约束推理内容块（ReasoningBlock/ReasoningItemBlock）的出站转换，不覆盖线格式参数；`config_changed` 字段域冻结为 {model,thinking,provider}，参数不适配时 glm 丢弃而非报错，是内容块降级“线程必须活”原则在参数层的对应物。
+- **观测**：`Usage.CachedTokens` ← openai `prompt_tokens_details.cached_tokens`（非流式与流式最终 usage 块均有）；glm 同名响应字段（非流式有、流式 chunk 无 details，缺省为零）。`finish_reason` 的唯一暴露面是既有 `DoneChunk.FinishReason`（openai/glm 流式均填充；glm 先将 network_error/model_context_window_exceeded 升级为 APIError）；非流式 `Chat` 不返回 finish_reason（openai 记日志丢弃、glm 错误分类后丢弃），agent 非流式回退按内容合成 stop/tool_calls，循环终态判定从不消费 finish_reason。
+- **测试**：wire 级 httptest、表驱动、stdlib-only：每个新字段"设置时在场、nil 时缺席"（ParallelToolCalls 的 false 必须在场）；MaxCompletionTokens 压制 max_tokens；glm 非 auto tool_choice 丢弃；CachedTokens 双路径映射；双适配器测试文件与 helper 各自独立维护。
 
 ### P3 生态
 - MCP 桥（基于官方 `modelcontextprotocol/go-sdk`，独立子包；P3-3 review 修订中）。`mcp` 的 Go package 名为 `mcpbridge`，是 client-only、tools-only 的静态发现桥：`Connect(ctx, registry, transport, Config{Namespace}, opts...)` 分页发现并一次性注册 wrapper；变更前置由「Registry fresh、未发布且完全静止」放宽为「Connect/Refresh 期间不得有并发的外部 Registry 变更作用于同一 namespace」（文档语言，不加锁强制；越界操作由 `Apply` 查重兜底报错）。不自动订阅 list-changed：`Refresh(ctx)` 手动重新分页并对账**自有集合**（新增注册、消失反注册、变化 Replace，一次 `Registry.Apply` 原子落地并同步改写自有集合）；拉取或 Apply 失败时注册表与自有集合双双保旧。非自有 `ns__` 前缀名（`Register` 只拒绝完全重名、前缀不设防）永不触碰：撞名列入 Refresh 摘要冲突清单、该名不落地、其余照常。未 Refresh 窗口内 stale tool 的 protocol error 是硬错误；Refresh 后注册表未命中走内核软错误。SDK `MultiRoundTrip.Disabled=true` 是冻结前提，`NeedsInput` 映射为一次软错误且 bridge 零 retry。最终工具名为 literal `${Namespace}__${remoteName}`，namespace 与最终名必须匹配 `^[A-Za-z0-9_-]{1,64}$`（namespace 还不得含 `__`）；不转义、截断或加后缀。

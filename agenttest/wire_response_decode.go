@@ -158,7 +158,7 @@ func decodeWireChunk(raw json.RawMessage) (dtoChunk, error) {
 	return out, nil
 }
 func decodeWireUsage(raw json.RawMessage) (llm.Usage, error) {
-	object, err := wireObject(raw, "InputTokens", "OutputTokens", "ReasoningTokens")
+	object, err := wireObject(raw, "InputTokens", "OutputTokens", "ReasoningTokens", "CachedTokens")
 	if err != nil {
 		return llm.Usage{}, err
 	}
@@ -168,6 +168,9 @@ func decodeWireUsage(raw json.RawMessage) (llm.Usage, error) {
 	}
 	if err == nil {
 		err = wireValue(object, "ReasoningTokens", &out.ReasoningTokens)
+	}
+	if err == nil {
+		err = wireOptional(object, "CachedTokens", &out.CachedTokens)
 	}
 	return out, err
 }

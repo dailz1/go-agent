@@ -813,15 +813,17 @@ func TestWithToolStream(t *testing.T) {
 }
 
 func TestWithTopP(t *testing.T) {
+	// Clamp was removed (frozen contract 2026-11-05): values pass through
+	// as-is and GLM rejects out-of-range values server-side.
 	tests := []struct {
 		name  string
 		value float64
 		want  float64
 	}{
 		{name: "within range", value: 0.9, want: 0.9},
-		{name: "zero clamps to minimum", value: 0, want: 0.01},
-		{name: "below minimum clamps to minimum", value: -1, want: 0.01},
-		{name: "above maximum clamps to maximum", value: 2, want: 1},
+		{name: "zero passes through", value: 0, want: 0},
+		{name: "below minimum passes through", value: -1, want: -1},
+		{name: "above maximum passes through", value: 2, want: 2},
 	}
 
 	for _, tt := range tests {

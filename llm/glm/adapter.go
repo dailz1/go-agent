@@ -74,14 +74,10 @@ func WithToolStream() ProviderOption {
 	return func(p *Provider) { p.toolStream = true }
 }
 
-// WithTopP sets the top_p sampling parameter. Values outside GLM's accepted
-// range are normalized to the nearest boundary in [0.01, 1.0].
+// WithTopP sets the constructor-level top_p sampling parameter. The value
+// is sent as-is; GLM rejects out-of-range values server-side (documented
+// range [0.01, 1.0]). A call-level llm.WithTopP overrides this per request.
 func WithTopP(p float64) ProviderOption {
-	if p < 0.01 {
-		p = 0.01
-	} else if p > 1.0 {
-		p = 1.0
-	}
 	return func(provider *Provider) { provider.topP = &p }
 }
 
@@ -149,12 +145,13 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		Model:       firstNonEmpty(o.Model, p.model),
 		MaxTokens:   o.MaxTokens,
 		Temperature: o.Temperature,
-		TopP:        p.topP,
+		TopP:        topPWire(o, p.topP),
 		DoSample:    p.doSample,
 		Thinking:    p.thinking,
 		RequestID:   p.requestID,
 		UserID:      p.userID,
 	}
+	applyToolChoice(o, p, &reqBody)
 	// Call-level thinking overrides the constructor-level setting; when the
 	// call does not set one, the constructor config (including ClearThinking)
 	// applies unchanged.
@@ -256,11 +253,12 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		MaxTokens:   o.MaxTokens,
 		Temperature: o.Temperature,
 		Stream:      true,
-		TopP:        p.topP,
+		TopP:        topPWire(o, p.topP),
 		DoSample:    p.doSample,
 		RequestID:   p.requestID,
 		UserID:      p.userID,
 	}
+	applyToolChoice(o, p, &reqBody)
 
 	// Map Stop, truncating to 1 item max
 	if len(o.Stop) > 0 {
@@ -595,10 +593,45 @@ func firstNonEmpty(ss ...string) string {
 // GLM never returns ReasoningTokens — always 0.
 // Returns non-nil even when API returns zero values.
 func convertUsage(u usageInfo) *llm.Usage {
-	return &llm.Usage{
+	usage := &llm.Usage{
 		InputTokens:  int64(u.PromptTokens),
 		OutputTokens: int64(u.CompletionTokens),
 	}
+	if u.PromptTokensDetails != nil {
+		usage.CachedTokens = int64(u.PromptTokensDetails.CachedTokens)
+	}
+	return usage
+}
+
+// topPWire resolves the effective top_p: the call-level value wins; the
+// constructor-level value applies when the call does not set one.
+func topPWire(o llm.Options, ctor *float64) *float64 {
+	if o.TopP != nil {
+		return o.TopP
+	}
+	return ctor
+}
+
+// applyToolChoice maps tool_choice for GLM. GLM only documents "auto";
+// any other constraint is dropped with a Debug log instead of being sent
+// (hot-swapped threads must not break on parameter mismatch — base llmOpts
+// cannot be cleared at runtime, so an error here would brick the thread).
+func applyToolChoice(o llm.Options, p *Provider, req *chatRequest) {
+	if o.ToolChoice == nil {
+		return
+	}
+	if o.ToolChoice.Name == "" && o.ToolChoice.Mode == "" {
+		return
+	}
+	if o.ToolChoice.Name == "" && o.ToolChoice.Mode == llm.ToolChoiceAuto {
+		auto := string(llm.ToolChoiceAuto)
+		req.ToolChoice = &auto
+		return
+	}
+	p.logger.Debug("glm drops unsupported tool_choice",
+		"mode", string(o.ToolChoice.Mode),
+		"name", o.ToolChoice.Name,
+	)
 }
 
 func encodeBase64(data []byte) string {

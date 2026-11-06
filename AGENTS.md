@@ -60,7 +60,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 
 ## CONVENTIONS
 - Errors: `fmt.Errorf("lowercase context: %w", err)`; sentinels via `errors.Is`; `*llm.APIError` via `errors.As` — leaf, no Unwrap.
-- Functional options at 4 levels (agent.New `Option`, per-call `RunOption`, `llm.Option`, adapter options); value normalization lives in constructors (`agent.New` for Option, `newRunConfig` for RunOption), sole exception glm `WithTopP` clamps in place.
+- Functional options at 4 levels (agent.New `Option`, per-call `RunOption`, `llm.Option`, adapter options); value normalization lives in constructors (`agent.New` for Option, `newRunConfig` for RunOption) — no adapter normalizes values in place (the former glm `WithTopP` clamp was removed 2026-11-05, frozen contract in DESIGN.md "Chat Completions 采样与工具参数").
 - Sealed interfaces via unexported marker methods; type switches must handle value AND pointer forms.
 - Streaming is `iter.Seq2[T, error]`; no channels in public APIs; early-break safe.
 - Tests: stdlib `testing` only, table-driven, white-box in-package; test seams are package vars (`sleepFor`, `timeNow`).

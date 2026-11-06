@@ -84,6 +84,34 @@ func cloneOptions(in llm.Options) llm.Options {
 		value := *in.Temperature
 		out.Temperature = &value
 	}
+	if in.MaxCompletionTokens != nil {
+		value := *in.MaxCompletionTokens
+		out.MaxCompletionTokens = &value
+	}
+	if in.TopP != nil {
+		value := *in.TopP
+		out.TopP = &value
+	}
+	if in.Seed != nil {
+		value := *in.Seed
+		out.Seed = &value
+	}
+	if in.PresencePenalty != nil {
+		value := *in.PresencePenalty
+		out.PresencePenalty = &value
+	}
+	if in.FrequencyPenalty != nil {
+		value := *in.FrequencyPenalty
+		out.FrequencyPenalty = &value
+	}
+	if in.ParallelToolCalls != nil {
+		value := *in.ParallelToolCalls
+		out.ParallelToolCalls = &value
+	}
+	if in.ToolChoice != nil {
+		value := *in.ToolChoice
+		out.ToolChoice = &value
+	}
 	out.Stop = cloneStrings(in.Stop)
 	return out
 }
