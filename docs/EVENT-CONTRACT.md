@@ -1,6 +1,7 @@
 # 事件交付契约（EVENT-CONTRACT）
 
 **状态**：冻结契约 v1（2026-11-05）
+**修订**：issue #7 逐工具结果持久化；普通 TR 的保存依据从轮末批提交明确为 `round_result`，事件种类与可回放保证不变。
 **来源**：issue #4「事件语义未正式化」；DESIGN.md 是 contract of record，本页是事件流交付语义的完整表，冲突时以 DESIGN.md 指向的版本为准。
 **非目标**：不引入钩子/扩展系统、不改变七种 sealed 事件、不给事件加确认/回压机制。
 
@@ -11,7 +12,7 @@
 - **单消费者、同步投递**。事件流是 `iter.Seq2[AgentEvent, error]`：内核逐个 `yield` 给唯一消费者，`yield` 返回 `false`（消费者 break）即停止投递且 run 不再产生任何事件。事件是单播的；多消费方（可观测性 + 对账等）各自 tee 是调用方的职责，内核不做 fan-out。
 - **惰性启动**。`RunStream`（含 `WithThread`）返回的迭代器体在首次 range 才执行：ownership、回放、输入提交都发生在第一次迭代。从不 range 的调用无可观察副作用。
 - **错误是终态**。`yield(nil, err)` 至多出现一次，其后不再有事件。错误来自 provider（流前失败重试耗尽、流内 SSE 错误）、持久化写入、ctx 取消等系统级失败；工具级错误是软 `ToolResult`，不走错误通道。
-- **durable-before-visible**。一条事件只在其对应状态已持久化（配置 Store 时）之后才投递：轮次先 `round_declared` 再宣告 TC；结果先 `round_committed` 再投 TR；压缩先 checkpoint 再投 CompactionEvent；终态先落库再投 Done。消费者看到的每个事件都意味着它描述的状态已能从日志回放。
+- **durable-before-visible**。持久线程中，与可持久状态对应的事件在该状态保存之后才投递：轮次先 `round_declared` 再宣告 TC；普通可执行轮的结果先 `round_result`、再记入 history、再投 TR，轮末 `round_committed` 保存完整结果并关闭轮；maxIter 终端 skip 批则先整体提交结果与终态再投递 TC/TR；压缩先 checkpoint 再投 CompactionEvent；终态先落库再投 Done。消费者看到的这些事件意味着其对应状态已能从日志回放；文本/推理增量与 RetryEvent 的尽力通知例外见 §3。
 - **`Run` 是归并**。`Run` 完整消费流并把 DoneEvent 折叠为 `RunResult`，事件不外露；`Run` 消费者不存在"错过 Done"问题。未知事件类型中止 fold（类型化错误）；流结束而无 Done 是错误（`agent stream ended without a done event`）。
 
 ## 2. 轮内全序
@@ -44,9 +45,9 @@ DoneEvent                      （恒为最后一个事件）
 - **maxIter 终端例外**（唯一 precommit 例外）：`i == maxIter-1` 时，全部 skip 结果与终态在**第一条终端 TC 之前**已写完（`truncateRun`）。TC/TR/Done 纯粹是事后投递；消费者在任何终端 TC 或 TR 上 break 只影响自己的投递，线程已 closed，`ResumeThread` 返回 `ErrNothingToResume`。C10 旧例外（宣告前返回）已消除：终端轮同样宣告全部 TC。
 
 ### ToolResultEvent
-- **何时发**：一个调用的结果（成功、软失败、审批拒绝、未知工具、恢复的 panic、iteration-limit skip）记入 history 后投递，恰好一条。
+- **何时发**：一个调用的结果（成功、软失败、审批拒绝、未知工具、恢复的 panic、iteration-limit skip）记入 history 后投递，恰好一条。持久线程的普通可执行轮先写该调用的 `round_result`，终端 skip 批沿用完整批提交；非持久运行直接记入 history。
 - **到达保证**：durable-before-visible——事件到达即结果已可回放。轮内投递顺序 = 宣告顺序；**执行完成顺序绝不泄漏到事件顺序**（并行执行时后完成的调用不插队）。
-- **break 行为**：同 TC——普通轮 break 保持 resumable；终端 skip 批 break 只停投递。
+- **break 行为**：普通轮 break 保持 resumable；恢复保留已记录结果，只对未记录调用补 outcome-unknown，不重投历史 TR。最后一个 TR 上 break 也可能留下未关闭轮，此时恢复只补轮关闭。终端 skip 批 break 只停投递。
 
 ### RetryEvent
 - **何时发**：仅流前失败（连接/鉴权/非 2xx）触发的每次重试尝试前一条。流内 SSE 错误永不重试、永不发 RetryEvent。

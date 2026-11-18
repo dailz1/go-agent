@@ -29,7 +29,7 @@ func TestRunPersistsRoundLifecycle(t *testing.T) {
 		t.Errorf("ThreadID = %q, want t1", res.ThreadID)
 	}
 	equalKinds(t, logKinds(t, st, "t1"),
-		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindAgentEvent)
+		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted, store.KindAgentEvent)
 
 	records := logRecords(t, st, "t1")
 	var declared roundDeclaredPayload
@@ -39,8 +39,15 @@ func TestRunPersistsRoundLifecycle(t *testing.T) {
 	if len(toolUseBlocks(declared.Message)) != 1 || toolUseBlocks(declared.Message)[0].ID != "c1" {
 		t.Errorf("declared message = %+v, want one call c1", declared.Message)
 	}
+	var saved roundResultPayload
+	if err := strictDecode(records[2].Payload, &saved); err != nil {
+		t.Fatalf("round_result payload: %v", err)
+	}
+	if saved.Index != 0 || saved.Round != 0 || saved.RunID == "" {
+		t.Errorf("round_result = %+v, want round 0 index 0 with a run id", saved)
+	}
 	var committed roundCommittedPayload
-	if err := strictDecode(records[2].Payload, &committed); err != nil {
+	if err := strictDecode(records[3].Payload, &committed); err != nil {
 		t.Fatalf("committed payload: %v", err)
 	}
 	if len(committed.Results) != 1 {
@@ -51,7 +58,7 @@ func TestRunPersistsRoundLifecycle(t *testing.T) {
 		t.Errorf("result = %+v, want non-error result for c1", blocks)
 	}
 	var done doneEventPayload
-	if err := strictDecode(envelopeOf(t, records[3]).Payload, &done); err != nil {
+	if err := strictDecode(envelopeOf(t, records[4]).Payload, &done); err != nil {
 		t.Fatalf("done payload: %v", err)
 	}
 	if done.Truncated {
@@ -287,5 +294,5 @@ func TestRoundTopScanRejectsForeignRecord(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 1 (the abort precedes the second request)", len(provider.AllMessages))
 	}
 	equalKinds(t, logKinds(t, st, "t"),
-		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindError)
+		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted, store.KindError)
 }

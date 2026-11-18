@@ -349,6 +349,79 @@ func decodeRoundCommitted(r store.Record) (roundCommittedPayload, error) {
 	return p, nil
 }
 
+// roundResultPayload durably records one declared call's result while the
+// round is still open: the per-call durability unit that makes every
+// delivered ToolResultEvent replayable before round_committed lands.
+type roundResultPayload struct {
+	RunID  string      `json:"run_id"`
+	Round  int         `json:"round"`
+	Index  int         `json:"index"`
+	Result llm.Message `json:"result"`
+}
+
+// decodeRoundResult strictly decodes a round_result payload. The wire shape
+// mirrors decodeRunCancelled: concrete tool-result blocks, pointer ints to
+// distinguish a missing round/index from a legitimate zero.
+func decodeRoundResult(r store.Record) (roundResultPayload, error) {
+	var wire struct {
+		RunID  string `json:"run_id"`
+		Round  *int   `json:"round"`
+		Index  *int   `json:"index"`
+		Result *struct {
+			Role    llm.Role              `json:"role"`
+			Content []llm.ToolResultBlock `json:"content"`
+		} `json:"result"`
+	}
+	if err := strictDecode(r.Payload, &wire); err != nil {
+		return roundResultPayload{}, fmt.Errorf("%w: round_result seq %d: %v", ErrIncompatibleLog, r.Seq, err)
+	}
+	if r.Schema != store.SchemaV1 || wire.RunID == "" || wire.Round == nil || wire.Index == nil || wire.Result == nil {
+		return roundResultPayload{}, fmt.Errorf("%w: round_result seq %d: requires schema 1 and run_id/round/index/result", ErrIncompatibleLog, r.Seq)
+	}
+	if *wire.Round < 0 || *wire.Index < 0 {
+		return roundResultPayload{}, fmt.Errorf("%w: round_result seq %d: negative round/index", ErrIncompatibleLog, r.Seq)
+	}
+	if wire.Result.Role != llm.RoleTool || len(wire.Result.Content) != 1 {
+		return roundResultPayload{}, fmt.Errorf("%w: round_result seq %d: must be a single tool-result message", ErrIncompatibleLog, r.Seq)
+	}
+	if wire.Result.Content[0].Type != "tool_result" {
+		return roundResultPayload{}, fmt.Errorf("%w: round_result seq %d: block type must be tool_result", ErrIncompatibleLog, r.Seq)
+	}
+	return roundResultPayload{
+		RunID:  wire.RunID,
+		Round:  *wire.Round,
+		Index:  *wire.Index,
+		Result: llm.Message{Role: wire.Result.Role, Content: []llm.ContentBlock{canonicalResultBlock(wire.Result.Content[0])}},
+	}, nil
+}
+
+// canonicalResultBlock normalizes a decoded tool-result block so marshal and
+// decode agree across round trips: encoding/json drops empty slices through
+// omitempty, so a decoded non-nil empty Images slice or empty image Data
+// would fail the recorded-vs-batch DeepEqual on the next replay.
+func canonicalResultBlock(b llm.ToolResultBlock) llm.ToolResultBlock {
+	if len(b.Images) == 0 {
+		b.Images = nil
+	}
+	for i, img := range b.Images {
+		if len(img.Data) == 0 {
+			img.Data = nil
+		}
+		b.Images[i] = img
+	}
+	return b
+}
+
+func canonicalResultMessage(m llm.Message) llm.Message {
+	out := m
+	for i, block := range out.Content {
+		if rb, ok := block.(llm.ToolResultBlock); ok {
+			out.Content[i] = canonicalResultBlock(rb)
+		}
+	}
+	return out
+}
+
 // decodeAgentEvent strictly decodes an agent_event envelope. Only the done
 // event exists in v1; unknown types and any envelope version other than the
 // current one are compatibility errors, never silently ignored.

@@ -69,7 +69,7 @@ func TestParallelStoreCommitsResultsInDeclarationOrder(t *testing.T) {
 	}
 }
 
-func TestParallelInterruptedResultBatchResumesWithOrderedUnknowns(t *testing.T) {
+func TestParallelInterruptedBatchResumesWithRecordedPrefix(t *testing.T) {
 	st := store.NewMemory()
 	reg := tool.NewRegistry()
 	for _, name := range []string{"one", "two"} {
@@ -99,11 +99,14 @@ func TestParallelInterruptedResultBatchResumesWithOrderedUnknowns(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ResumeThread: %v", err)
 	}
-	unknown := historyResultBlocks(result.History)
-	if len(unknown) < 2 || unknown[0].ToolUseID != "c1" || unknown[1].ToolUseID != "c2" ||
-		!unknown[0].IsError || !unknown[1].IsError ||
-		!strings.Contains(unknown[0].Content, "outcome unknown") || !strings.Contains(unknown[1].Content, "outcome unknown") {
-		t.Fatalf("recovered results = %#v, want ordered unknown c1/c2", unknown)
+	got := historyResultBlocks(result.History)
+	if len(got) < 2 || got[0].ToolUseID != "c1" || got[1].ToolUseID != "c2" ||
+		got[0].IsError || !strings.Contains(got[0].Content, "one") ||
+		!got[1].IsError || !strings.Contains(got[1].Content, "outcome unknown") {
+		t.Fatalf("recovered results = %#v, want c1's recorded result and unknown c2", got)
+	}
+	if !hasKind(t, st, "t", store.KindRoundResult) {
+		t.Fatal("the delivered first result must be durably recorded before the break")
 	}
 }
 
@@ -142,7 +145,7 @@ func TestParallelCommitFailureLeavesOpenRound(t *testing.T) {
 		executed.Add(1)
 		return tool.NewTextResult("one"), nil
 	}})
-	failed := &failAppendStore{Store: store.NewMemory(), failOnCall: 3}
+	failed := &failAppendStore{Store: store.NewMemory(), failKind: store.KindRoundCommitted}
 	agent := New(parallelProvider(parallelToolCalls("one")), reg,
 		WithStore(failed), WithToolConcurrency(2), WithLogger(discardLogger()))
 	seq, err := agent.RunStream(context.Background(), "go", WithThread("failure"))
@@ -162,6 +165,37 @@ func TestParallelCommitFailureLeavesOpenRound(t *testing.T) {
 		t.Fatal("commit failure did not preserve delivered events and an open declaration")
 	}
 
+}
+
+// A failed round_result append aborts before delivering the event: the
+// result is never visible without its durable record.
+func TestParallelResultAppendFailureDeliversNothing(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.MustRegister(&parallelTestTool{info: tool.ToolInfo{Name: "one"}, execute: func(context.Context, json.RawMessage) (*tool.ToolResult, error) {
+		return tool.NewTextResult("one"), nil
+	}})
+	failed := &failAppendStore{Store: store.NewMemory(), failKind: store.KindRoundResult}
+	agent := New(parallelProvider(parallelToolCalls("one")), reg,
+		WithStore(failed), WithToolConcurrency(2), WithLogger(discardLogger()))
+	seq, err := agent.RunStream(context.Background(), "go", WithThread("failure"))
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	seenResult := false
+	for event, streamErr := range seq {
+		if _, ok := event.(ToolResultEvent); ok {
+			seenResult = true
+		}
+		if streamErr != nil {
+			break
+		}
+	}
+	if seenResult || hasKind(t, failed, "failure", store.KindRoundCommitted) {
+		t.Fatal("a failed round_result append must abort before delivering the event or committing")
+	}
+	if !hasKind(t, failed, "failure", store.KindRoundDeclared) {
+		t.Fatal("the declaration must stay open for recovery")
+	}
 }
 
 func TestParallelHistoryEntrypointsRemainNonPersistent(t *testing.T) {

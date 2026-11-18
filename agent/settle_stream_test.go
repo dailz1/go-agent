@@ -121,7 +121,17 @@ func TestSettleStreamExit(t *testing.T) {
 			if wantLen == 4 {
 				for i, id := range []string{"c1", "c2"} {
 					results := toolResultBlocks(res.History[2+i])
-					if len(results) != 1 || results[0].ToolUseID != id || !results[0].IsError || !strings.Contains(results[0].Content, "unknown") {
+					if len(results) != 1 || results[0].ToolUseID != id {
+						t.Fatalf("result %d = %#v", i, results)
+					}
+					if test.stop == "result" && i == 0 {
+						// The delivered first result is durable and stays real.
+						if results[0].IsError || !strings.Contains(results[0].Content, "executed") {
+							t.Fatalf("result %d = %#v, want the delivered real result", i, results)
+						}
+						continue
+					}
+					if !results[0].IsError || !strings.Contains(results[0].Content, "unknown") {
 						t.Fatalf("result %d = %#v", i, results)
 					}
 				}

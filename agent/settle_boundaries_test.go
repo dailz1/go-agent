@@ -147,8 +147,8 @@ func TestSettleAfterCooperativeEndDoesNotReopen(t *testing.T) {
 	if _, err := agent.Run(ctx, "compute", WithThread("t")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if token.ExpectedHead != 4 {
-		t.Fatalf("exit token ExpectedHead = %d, want 4 (run_closed included)", token.ExpectedHead)
+	if token.ExpectedHead != 5 {
+		t.Fatalf("exit token ExpectedHead = %d, want 5 (run_closed included)", token.ExpectedHead)
 	}
 	if err := agent.SettleThread(ctx, token); err != ErrNothingToSettle {
 		t.Fatalf("Settle after cooperative end = %v, want ErrNothingToSettle", err)
@@ -160,7 +160,7 @@ func TestSettleAfterCooperativeEndDoesNotReopen(t *testing.T) {
 		t.Fatalf("Settle with the stale token after a later append = %v, want store.ErrRevisionConflict", err)
 	}
 	equalKinds(t, logKinds(t, st, "t"),
-		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted,
+		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted,
 		store.KindRunClosed, store.KindInputQueued)
 }
 

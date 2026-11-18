@@ -351,6 +351,24 @@ func (p *persistence) closeRun(ctx context.Context, toolCalls int, usage, total 
 	return p.append(ctx, rec)
 }
 
+// recordRoundResult durably saves one declared call's result while the round
+// is still open, before the result joins history or is delivered: this is
+// the per-call durability unit behind durable-before-visible for
+// ToolResultEvent. A failed append aborts the run exactly like a failed
+// commit; the failure never yields the result event.
+func (p *persistence) recordRoundResult(ctx context.Context, round, index int, result llm.Message) error {
+	r := p.roundBase + round
+	if p.open != r {
+		return errors.New("agent: result without an open declaration")
+	}
+	rec, err := encodeRecord(store.KindRoundResult, recordID(p.runID, "-r"+strconv.Itoa(r)+"-"+strconv.Itoa(index)),
+		roundResultPayload{RunID: p.runID, Round: r, Index: index, Result: result})
+	if err != nil {
+		return err
+	}
+	return p.append(ctx, rec)
+}
+
 // commitRound durably closes the round with its ordered results.
 func (p *persistence) commitRound(ctx context.Context, round int, results []llm.Message) error {
 	r := p.roundBase + round
@@ -362,8 +380,11 @@ func (p *persistence) commitRound(ctx context.Context, round int, results []llm.
 	if err != nil {
 		return err
 	}
+	if err := p.append(ctx, rec); err != nil {
+		return err
+	}
 	p.open = -1
-	return p.append(ctx, rec)
+	return nil
 }
 
 // truncateRun closes a maxIter-truncated round: the declared calls are known

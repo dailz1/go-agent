@@ -40,10 +40,13 @@ func TestSettleE32PreservesEarlierCommittedRound(t *testing.T) {
 		if len(results) != 3 || results[0].ToolUseID != "first" || results[0].IsError {
 			t.Fatalf("earlier committed result changed: %#v", results)
 		}
-		for i, id := range []string{"second", "third"} {
-			if results[i+1].ToolUseID != id || !results[i+1].IsError || !strings.Contains(results[i+1].Content, "unknown") {
-				t.Fatalf("open round result = %#v", results[i+1])
-			}
+		// "second" was delivered before the break: its recorded result is
+		// preserved; only "third" resolves to unknown.
+		if results[1].ToolUseID != "second" || results[1].IsError || results[1].Content != "echoed" {
+			t.Fatalf("delivered second result lost: %#v", results[1])
+		}
+		if results[2].ToolUseID != "third" || !results[2].IsError || !strings.Contains(results[2].Content, "unknown") {
+			t.Fatalf("open round result = %#v", results[2])
 		}
 		if ag.provider.(*MockProvider).index != 2 {
 			t.Fatal("settlement executed the model")

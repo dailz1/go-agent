@@ -52,8 +52,9 @@ func (a *Agent) SettlementTarget(ctx context.Context, threadID string) (*Settlem
 // SettleThread explicitly cancels the precise incomplete run bound by target.
 // First cancel and join its executor, then use a fresh bounded context and the
 // original token. Settlement neither signals cancellation nor waits for work.
-// It atomically pairs any open declaration with unknown results and closes the
-// run, without executing tools, producing Done, or rolling back side effects.
+// It atomically pairs any open declaration with its recorded results and
+// unknown results only for unrecorded calls, then closes the run without
+// executing tools, producing Done, or rolling back side effects.
 //
 // A lost acknowledgement may be retried with the same token. Such a retry
 // confirms only the original cancellation, never cancels a successor run.

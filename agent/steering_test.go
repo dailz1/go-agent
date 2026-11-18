@@ -420,7 +420,7 @@ func TestSteeringEnqueuedInEndHookConsumedByNextRun(t *testing.T) {
 	// The enqueue landed between the round commit and closeRun: the run_closed
 	// append conflicts, absorbs the input, and closes behind it.
 	equalKinds(t, logKinds(t, st, "t"),
-		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted,
+		store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted,
 		store.KindInputQueued, store.KindRunClosed)
 
 	provider2 := NewMockStreamingProvider([][]llm.Chunk{textChunks("done2")})

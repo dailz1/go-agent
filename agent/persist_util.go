@@ -117,13 +117,15 @@ func (v *threadView) applyCancellation(r store.Record) error {
 		if p.OpenRound == nil || *p.OpenRound != v.open.round {
 			return incompatible(r, "cancellation does not identify the open round")
 		}
-		want := unknownResults(v.open.declared)
+		want := v.open.resultsWithUnknown()
 		if len(p.Results) != len(want) {
 			return incompatible(r, "cancellation result count does not match declaration")
 		}
 		for i, result := range p.Results {
-			if !reflect.DeepEqual(result.Content[0].(llm.ToolResultBlock), want[i].Content[0].(llm.ToolResultBlock)) {
-				return incompatible(r, "cancellation result is not the declared call's canonical unknown outcome")
+			got := canonicalResultBlock(result.Content[0].(llm.ToolResultBlock))
+			want := canonicalResultBlock(want[i].Content[0].(llm.ToolResultBlock))
+			if !reflect.DeepEqual(got, want) {
+				return incompatible(r, "cancellation result does not match the recorded or canonical unknown outcome")
 			}
 		}
 		v.history = append(v.history, v.open.declared)

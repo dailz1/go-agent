@@ -44,6 +44,7 @@ const (
 	KindAgentEvent     = "agent_event"     // payload: versioned AgentEvent envelope
 	KindRoundDeclared  = "round_declared"  // payload: the round's full assistant message
 	KindRoundCommitted = "round_committed" // payload: the round's ordered model-visible results
+	KindRoundResult    = "round_result"    // payload: one declared call's result (agent-owned)
 	KindError          = "error"           // payload: terminal stream error description
 	KindCheckpoint     = "checkpoint"      // payload: Checkpoint
 	KindConfigChanged  = "config_changed"  // payload: runtime config override (agent-owned)
@@ -215,7 +216,7 @@ func planAppend(log []Record, expected int64, batch []Record) (apply []Record, h
 
 func validateRecord(r *Record) error {
 	switch r.Kind {
-	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindError, KindCheckpoint, KindConfigChanged, KindInputQueued, KindInputConsumed, KindRunClosed:
+	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindRoundResult, KindError, KindCheckpoint, KindConfigChanged, KindInputQueued, KindInputConsumed, KindRunClosed:
 	default:
 		return ErrUnknownKind
 	}
@@ -226,6 +227,9 @@ func validateRecord(r *Record) error {
 		return ErrUnsupportedSchema
 	}
 	if (r.Kind == KindRunCancelled || r.Kind == KindConfigChanged || r.Kind == KindInputQueued || r.Kind == KindInputConsumed || r.Kind == KindRunClosed) && r.Schema != SchemaV2 {
+		return ErrUnsupportedSchema
+	}
+	if r.Kind == KindRoundResult && r.Schema != SchemaV1 {
 		return ErrUnsupportedSchema
 	}
 	if len(r.Payload) == 0 {

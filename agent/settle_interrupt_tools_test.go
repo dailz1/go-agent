@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -100,15 +101,34 @@ func TestSettleInterruptTools(t *testing.T) {
 				if got := settleInterruptAwait(t, exit); got != token {
 					t.Fatalf("exit token = %+v, want %+v", got, token)
 				}
-				equalKinds(t, logKinds(t, st, "t"), store.KindRunStarted, store.KindRoundDeclared)
+				wantKinds := []string{store.KindRunStarted, store.KindRoundDeclared}
+				if tc.partial {
+					// The delivered fast result is already durable when the
+					// cancel lands.
+					wantKinds = append(wantKinds, store.KindRoundResult)
+				}
+				equalKinds(t, logKinds(t, st, "t"), wantKinds...)
 				beforeExecutions, beforeApprovals := executions.Load(), approvals.Load()
 				snapshot := settleInterruptSnapshot(t, a, token)
 				ids := []string{"c1"}
 				if tc.partial {
 					ids = append(ids, "c2")
 				}
-				settleInterruptUnknown(t, snapshot.History, ids...)
-				equalKinds(t, logKinds(t, st, "t"), store.KindRunStarted, store.KindRoundDeclared, "run_cancelled")
+				if tc.partial {
+					// The delivered fast result is recorded; only the
+					// interrupted slow call resolves to unknown.
+					blocks := historyResultBlocks(snapshot.History)
+					if len(blocks) != 2 || blocks[0].ToolUseID != "c1" || blocks[0].IsError ||
+						blocks[0].Content != "live success" ||
+						blocks[1].ToolUseID != "c2" || !blocks[1].IsError ||
+						!strings.Contains(blocks[1].Content, "outcome unknown") {
+						t.Fatalf("recovered results = %#v, want recorded c1 and unknown c2", blocks)
+					}
+				} else {
+					settleInterruptUnknown(t, snapshot.History, ids...)
+				}
+				wantKinds = append(wantKinds, "run_cancelled")
+				equalKinds(t, logKinds(t, st, "t"), wantKinds...)
 				if executions.Load() != beforeExecutions || approvals.Load() != beforeApprovals {
 					t.Fatal("settlement executed or approved tools again")
 				}

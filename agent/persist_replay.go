@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strconv"
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
@@ -10,11 +12,13 @@ import (
 )
 
 // openRound is a durable declaration without a commit: the interrupted-round
-// state recovery must resolve.
+// state recovery must resolve. results is the round_result confirmed prefix
+// in declaration order; slots beyond it have no durable outcome.
 type openRound struct {
 	runID    string
 	round    int
 	declared llm.Message
+	results  []llm.Message
 }
 
 // threadView is the replayed durable state of a thread. systemSet records
@@ -41,11 +45,21 @@ type threadView struct {
 // The results are returned so the caller can persist them as the round's
 // commit, which keeps the log canonical without a second synthesis pass.
 func (v *threadView) closeUnknown() []llm.Message {
-	results := unknownResults(v.open.declared)
+	results := v.open.resultsWithUnknown()
 	v.history = append(v.history, v.open.declared)
 	v.history = append(v.history, results...)
 	v.open = nil
 	return results
+}
+
+// resultsWithUnknown merges the recorded round_result prefix with the
+// canonical unknown outcomes: recorded positions keep their real result,
+// unrecorded positions get unknownResults' canonical form. It returns a
+// fresh slice and never mutates the recorded prefix.
+func (o *openRound) resultsWithUnknown() []llm.Message {
+	all := unknownResults(o.declared)
+	copy(all[:len(o.results)], o.results)
+	return all
 }
 
 func unknownResults(declared llm.Message) []llm.Message {
@@ -64,7 +78,7 @@ func (v threadView) cancelRecord() (store.Record, error) {
 	if v.open != nil {
 		round := v.open.round
 		payload.OpenRound = &round
-		payload.Results = unknownResults(v.open.declared)
+		payload.Results = v.open.resultsWithUnknown()
 	}
 	r, err := encodeRecord(store.KindRunCancelled, recordID(v.runID, "-cancel"), payload)
 	r.Schema = store.SchemaV2
@@ -145,6 +159,14 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 // Checkpoints are accelerators only; callers supply their already-decoded base.
 func replayRecords(v threadView, records []store.Record) (threadView, error) {
 	v.history = deepCopyMessages(v.history)
+	if v.open != nil {
+		// Finite-prefix replays (settlement confirmation) must not mutate the
+		// caller's projection: copy the open declaration and its recorded
+		// results just like the history above.
+		open := *v.open
+		open.results = deepCopyMessages(open.results)
+		v.open = &open
+	}
 	for i := range records {
 		r := records[i]
 		if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV3 {
@@ -218,6 +240,38 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 			}
 			v.open = &openRound{runID: p.RunID, round: p.Round, declared: p.Message}
 			v.lastRound = p.Round
+		case store.KindRoundResult:
+			p, err := decodeRoundResult(r)
+			if err != nil {
+				return v, err
+			}
+			if v.open == nil {
+				return v, incompatible(r, "round result without an open declaration")
+			}
+			if p.RunID != v.open.runID || p.Round != v.open.round {
+				return v, incompatible(r, fmt.Sprintf("round result run/round %s/%d does not match declaration %s/%d",
+					p.RunID, p.Round, v.open.runID, v.open.round))
+			}
+			// The recorded prefix is contiguous by construction (every write
+			// goes through the declaration-ordered settle), so the next index
+			// must be exactly len(results): this one check rejects gaps,
+			// duplicates, reordering, and out-of-range indexes.
+			if p.Index != len(v.open.results) {
+				return v, incompatible(r, fmt.Sprintf("round result index %d breaks the recorded prefix (next expected %d)",
+					p.Index, len(v.open.results)))
+			}
+			calls := toolUseBlocks(v.open.declared)
+			if p.Index >= len(calls) {
+				return v, incompatible(r, fmt.Sprintf("round result index %d exceeds the declared calls (%d)", p.Index, len(calls)))
+			}
+			blocks := toolResultBlocks(p.Result)
+			if len(blocks) != 1 || blocks[0].ToolUseID != calls[p.Index].ID {
+				return v, incompatible(r, fmt.Sprintf("round result %d does not pair with declared call %q", p.Index, calls[p.Index].ID))
+			}
+			if want := recordID(p.RunID, "-r"+strconv.Itoa(p.Round)+"-"+strconv.Itoa(p.Index)); r.ID != want {
+				return v, incompatible(r, fmt.Sprintf("round_result record id %q does not match its payload (want %q)", r.ID, want))
+			}
+			v.open.results = append(v.open.results, p.Result)
 		case store.KindRoundCommitted:
 			p, err := decodeRoundCommitted(r)
 			if err != nil {
@@ -232,6 +286,16 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 			}
 			if err := validateResultBatch(v.open.declared, p.Results); err != nil {
 				return v, incompatible(r, err.Error())
+			}
+			// A batch closing a round with recorded results must match them
+			// position for position: the batch and the records are two views
+			// of the same outcomes, never two versions of the truth. Both
+			// sides are canonicalized first: empty slices round-trip through
+			// omitempty as nil, which must not read as a changed result.
+			for i, saved := range v.open.results {
+				if !reflect.DeepEqual(canonicalResultMessage(saved), canonicalResultMessage(p.Results[i])) {
+					return v, incompatible(r, fmt.Sprintf("committed batch alters recorded result %d", i))
+				}
 			}
 			v.history = append(v.history, v.open.declared)
 			v.history = append(v.history, p.Results...)
@@ -325,6 +389,15 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 			// whose outcome stays unknown exactly like an interruption.
 			if !v.runActive {
 				return v, incompatible(r, "error record without an active run")
+			}
+			if v.open != nil && len(v.open.results) > 0 {
+				// Recorded results are real outcomes and must not disappear:
+				// complete the declaration/results history via the merge rule,
+				// then close. The legacy no-records behavior is kept verbatim.
+				// The resulting terminal state still refuses Resume.
+				results := v.open.resultsWithUnknown()
+				v.history = append(v.history, v.open.declared)
+				v.history = append(v.history, results...)
 			}
 			v.open = nil
 			v.runActive = false

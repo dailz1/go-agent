@@ -421,9 +421,9 @@ func TestRunClosedWriteBoundaries(t *testing.T) {
 					t.Fatal("a run whose run_closed never landed must not deliver a success Done")
 				}
 				equalKinds(t, logKinds(t, st, "t"),
-					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted)
-				if token.ExpectedHead != 3 {
-					t.Fatalf("exit token ExpectedHead = %d, want 3 (after the commit)", token.ExpectedHead)
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted)
+				if token.ExpectedHead != 4 {
+					t.Fatalf("exit token ExpectedHead = %d, want 4 (after the result and the commit)", token.ExpectedHead)
 				}
 				v, rerr := agent.replayThread(context.Background(), "t")
 				if rerr != nil || !v.runActive {
@@ -437,7 +437,7 @@ func TestRunClosedWriteBoundaries(t *testing.T) {
 					t.Fatalf("Run = %v, %v: the durable terminal must not be undone by a later cancel", res, err)
 				}
 				equalKinds(t, logKinds(t, st, "t"),
-					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindRunClosed)
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted, store.KindRunClosed)
 				if _, err := agent.ResumeThread(context.Background(), "t"); err != ErrNothingToResume {
 					t.Fatalf("Resume after the closed run = %v, want ErrNothingToResume", err)
 				}
@@ -451,9 +451,9 @@ func TestRunClosedWriteBoundaries(t *testing.T) {
 				}
 				kinds := logKinds(t, st, "t")
 				equalKinds(t, kinds,
-					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted, store.KindRunClosed)
-				if token.ExpectedHead != 3 {
-					t.Fatalf("exit token ExpectedHead = %d, want 3 (the session head never advanced past the commit)", token.ExpectedHead)
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundCommitted, store.KindRunClosed)
+				if token.ExpectedHead != 4 {
+					t.Fatalf("exit token ExpectedHead = %d, want 4 (the session head never advanced past the commit)", token.ExpectedHead)
 				}
 				v, rerr := agent.replayThread(context.Background(), "t")
 				if rerr != nil || v.runActive {

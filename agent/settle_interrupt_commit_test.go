@@ -77,7 +77,7 @@ func TestSettleInterruptCommittedResults(t *testing.T) {
 				token := settleInterruptToken(t, err, context.Canceled)
 				before := logRecords(t, st, "t")
 				equalKinds(t, logKinds(t, st, "t"),
-					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundCommitted)
+					store.KindRunStarted, store.KindRoundDeclared, store.KindRoundResult, store.KindRoundResult, store.KindRoundCommitted)
 				if live != 2 || p.index != 1 {
 					t.Fatalf("live results=%d provider calls=%d", live, p.index)
 				}

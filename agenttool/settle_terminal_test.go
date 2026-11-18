@@ -2,6 +2,7 @@ package agenttool_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/dailz1/go-agent/agent"
@@ -37,12 +38,16 @@ func TestSettleE56AlreadyTerminalChild(t *testing.T) {
 				t.Fatal(err)
 			}
 			sawResult := false
+			var deliveredContent string
+			var deliveredIsError bool
 			for event, err := range seq {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, ok := event.(agent.ToolResultEvent); ok {
+				if ev, ok := event.(agent.ToolResultEvent); ok {
 					sawResult = true
+					deliveredContent = ev.Result.Content
+					deliveredIsError = ev.Result.IsError()
 					break
 				}
 			}
@@ -60,7 +65,29 @@ func TestSettleE56AlreadyTerminalChild(t *testing.T) {
 			if err := parent.SettleThread(t.Context(), parentToken); err != nil {
 				t.Fatal(err)
 			}
-			settleCancelled(t, parent, parentToken, "parent-call")
+			// The parent broke at its first delivered result: that result is
+			// recorded and the settlement must preserve it verbatim.
+			snapshot, err := parent.ResumeThread(t.Context(), parentToken.ThreadID)
+			if err != nil || snapshot == nil || !snapshot.Cancelled {
+				t.Fatalf("cancelled snapshot = %+v, %v", snapshot, err)
+			}
+			if len(snapshot.History) != 3 || !reflect.DeepEqual(snapshot.Message, llm.Message{}) {
+				t.Fatalf("cancellation imported child history or fabricated an answer: %+v", snapshot)
+			}
+			var blocks []llm.ToolResultBlock
+			for _, message := range snapshot.History {
+				for _, block := range message.Content {
+					if rb, ok := block.(llm.ToolResultBlock); ok {
+						blocks = append(blocks, rb)
+					}
+				}
+			}
+			if len(blocks) != 1 || blocks[0].ToolUseID != "parent-call" {
+				t.Fatalf("result = %#v, want the delivered parent-call result", blocks)
+			}
+			if blocks[0].Content != deliveredContent || blocks[0].IsError != deliveredIsError {
+				t.Fatalf("delivered result not preserved: %#v, want %q isError=%v", blocks[0], deliveredContent, deliveredIsError)
+			}
 			settleUnchanged(t, childStore, childToken.ThreadID, before)
 			if gate.calls.Load() != 0 || len(provider.requests) != 1 || len(parentProvider.requests) != 1 {
 				t.Fatal("terminal cleanup executed child work")

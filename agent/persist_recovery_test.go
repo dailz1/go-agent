@@ -13,15 +13,23 @@ import (
 )
 
 // failAppendStore fails the n-th Append, simulating a durability crash at an
-// exact commit point.
+// exact commit point, or the first append carrying failKind when set.
 type failAppendStore struct {
 	store.Store
-	failOnCall int
-	calls      int
+	failOnCall   int
+	failKind     string
+	failKindSeen bool
+	calls        int
 }
 
 func (f *failAppendStore) Append(ctx context.Context, thread string, expected int64, records ...store.Record) (int64, error) {
 	f.calls++
+	for _, r := range records {
+		if f.failKind != "" && r.Kind == f.failKind && !f.failKindSeen {
+			f.failKindSeen = true
+			return 0, errors.New("disk on fire")
+		}
+	}
 	if f.calls == f.failOnCall {
 		return 0, errors.New("disk on fire")
 	}
