@@ -646,7 +646,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}
 				history = append(history, skipped...)
 				for _, call := range toolBlocks {
-					if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: call.Input}, nil) {
+					if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: bytes.Clone(call.Input)}, nil) {
 						return
 					}
 				}
@@ -689,7 +689,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			// leave an appended assistant message partially announced and
 			// impossible to reconstruct.
 			for _, call := range toolBlocks {
-				if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: call.Input}, nil) {
+				if !yield(ToolCallEvent{ID: call.ID, Name: call.Name, Args: bytes.Clone(call.Input)}, nil) {
 					return
 				}
 			}

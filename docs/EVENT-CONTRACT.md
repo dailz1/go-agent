@@ -1,7 +1,7 @@
 # 事件交付契约（EVENT-CONTRACT）
 
 **状态**：冻结契约 v1（2026-11-05）
-**修订**：issue #7 逐工具结果持久化；普通 TR 的保存依据从轮末批提交明确为 `round_result`，事件种类与可回放保证不变。
+**修订**：issue #7 逐工具结果持久化；普通 TR 的保存依据从轮末批提交明确为 `round_result`，事件种类与可回放保证不变。issue #8 ToolCallEvent.Args 载荷隔离（广播时克隆，消费者改写不影响执行/审批/history）。
 **来源**：issue #4「事件语义未正式化」；DESIGN.md 是 contract of record，本页是事件流交付语义的完整表，冲突时以 DESIGN.md 指向的版本为准。
 **非目标**：不引入钩子/扩展系统、不改变七种 sealed 事件、不给事件加确认/回压机制。
 
@@ -40,7 +40,8 @@ DoneEvent                      （恒为最后一个事件）
 
 ### ToolCallEvent
 - **何时发**：模型回复含工具调用时。普通可执行轮：整轮宣告持久化之后、任何调用执行之前，逐条投递；**宣告批次内没有 ctx 检查**（拆批会留下半宣告、不可重建的 assistant）。
-- **到达保证**：同轮全部调用必然连续到达（ TC-first）；批次连续性 = 同一 assistant 的标记。语义是"模型请求的宣告"，不是"已执行"。
+- **到达保证**：同轮全部调用必然连续到达（ TC-first）；批次连续性 = 同一 assistant 的标记。语义是“模型请求的宣告”，不是“已执行”。
+- **载荷隔离**：`Args` 是内核原始字节的隔离拷贝（广播时 `bytes.Clone`），消费者原地读写它不影响审批入参、工具执行与内存 history；nil/空语义与内核执行的原始字节一致。内存 history 与持久日志中的原始字节不受事件消费影响。
 - **break 行为**：普通轮在宣告期 break → 任何工具未执行，轮已 durable，线程保持 incomplete/resumable（恢复时对未提交调用合成"结果未知"结果）。
 - **maxIter 终端例外**（唯一 precommit 例外）：`i == maxIter-1` 时，全部 skip 结果与终态在**第一条终端 TC 之前**已写完（`truncateRun`）。TC/TR/Done 纯粹是事后投递；消费者在任何终端 TC 或 TR 上 break 只影响自己的投递，线程已 closed，`ResumeThread` 返回 `ErrNothingToResume`。C10 旧例外（宣告前返回）已消除：终端轮同样宣告全部 TC。
 
