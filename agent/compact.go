@@ -37,6 +37,26 @@ type CompactionResult struct {
 	Strategies    []string
 	Changed       bool
 	Errors        []error
+	// RecordedContextCancellation reports whether Errors already records
+	// the CALLER's context cancellation (as opposed to a strategy's private
+	// same-sentinel diagnostic, e.g. its own timeout wrapper). Set by this
+	// package's own boundary checks; nested chains read it to deduplicate
+	// the caller's cancellation exactly once. Zero value is the safe
+	// default: unrecorded strategies never suppress the caller's record.
+	// Known limitation: the marker identifies a cancellation of the context
+	// this Compact invocation received. A wrapper that runs an inner chain
+	// on a private child context and forwards the inner result carries the
+	// child's marker; the outer caller's cancellation diagnostic may then
+	// be suppressed (or duplicated for %w-wrapped forwarding) — a
+	// log-cosmetic residual on contrived compositions; the returned error
+	// contract is unaffected.
+	RecordedContextCancellation bool
+	// ReturnedError is the error this result is being returned with, when
+	// the producer declares it (chain machinery sets it; zero means the
+	// producer makes no declaration). Consumers use it to distinguish "the
+	// candidate already recorded its own returned error" from "a private
+	// same-sentinel diagnostic that merely matches the returned error".
+	ReturnedError error
 }
 
 // Compactor reduces message history while preserving valid message groups.
@@ -65,6 +85,16 @@ type CompactionResult struct {
 // recorded as a diagnostic. Neither case terminates the chain early. An
 // accepted candidate is deep-copied at adoption, so the stage cannot mutate
 // the chain's working history through retained references.
+//
+// Cancellation at stage boundaries (issue #14): the real context is checked
+// before each stage and again after it returns; a confirmed cancellation
+// returns (result, ctx.Err()) without invoking later stages. A stage
+// reporting a cancellation-class error while the context is alive belongs to
+// the stage's own internal context (e.g. a private timeout wrapper) and is
+// handled as an ordinary strategy error, so later stages still run. Nested
+// chains' Errors are merged into the result on every stage return,
+// independent of adoption; a returned error the candidate already recorded
+// is not recorded twice.
 type Compactor interface {
 	Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)
 }
@@ -285,9 +315,37 @@ func fallbackBlockSize(block llm.ContentBlock) int {
 func compactionContextErr(ctx context.Context, result *CompactionResult) error {
 	if err := ctx.Err(); err != nil {
 		result.Errors = append(result.Errors, err)
+		result.RecordedContextCancellation = true
 		return err
 	}
 	return nil
+}
+
+// sameErrorObject reports whether a and b are the same error object. The
+// interface comparison can panic for identical non-comparable dynamic types
+// (e.g. a named slice implementing error); such errors cannot be tested for
+// identity, and are treated as distinct — both diagnostics are kept rather
+// than dropped on a comparison technicality.
+func sameErrorObject(a, b error) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
+}
+
+// containsIdentical reports whether errs record the exact same error object
+// as target (identity, not errors.Is: a joined or wrapped error can
+// partially match a sentinel while carrying an independent cause). Panic
+// for non-comparable dynamic types is contained by sameErrorObject.
+func containsIdentical(errs []error, target error) bool {
+	for _, recorded := range errs {
+		if sameErrorObject(recorded, target) {
+			return true
+		}
+	}
+	return false
 }
 
 type dropOldestToolGroupsCompactor struct{}
@@ -546,7 +604,15 @@ func (summarizationCompactor) Compact(
 
 	request := systemPrefix(groups)
 	request = append(request, llm.UserMessage(defaultSummarizationPrompt+"\n\n"+summarizationTranscript(span)))
-	response, _, err := provider.Chat(ctx, deepCopyMessages(request), nil, opts...)
+	// Clone first, then check, then dispatch (issue #14): the request copy
+	// can be sizable, so a context canceled during it must not reach
+	// provider.Chat — the check sits directly ahead of the call on the
+	// already-prepared request.
+	clonedRequest := deepCopyMessages(request)
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	response, _, err := provider.Chat(ctx, clonedRequest, nil, opts...)
 	if err != nil {
 		return result, err
 	}
@@ -619,6 +685,11 @@ func joinedText(message llm.Message) string {
 	return strings.Join(texts, "\n")
 }
 
+// compactionAdoptionHook, when non-nil, runs at each adoption-gate entry.
+// Test seam (same pattern as sleepFor/timeNow): it marks the point where
+// adoption work starts, so tests can cancel the context inside the gate.
+var compactionAdoptionHook func()
+
 type compactorChain struct {
 	strategies []Compactor
 }
@@ -649,17 +720,78 @@ func (c compactorChain) Compact(
 		Errors:     []error{},
 	}
 	if estimateRunes(result.History) <= budget.MaxRunes {
+		// Within-budget early return still reports cancellation (issue #14):
+		// a canceled context with a fitting history must not read as a
+		// successful no-op compaction, matching the drop-oldest and
+		// sliding-window compactors' boundary checks.
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
 		return result, nil
 	}
 
 	for i, strategy := range c.strategies {
+		// Cancellation at the stage boundary (issue #14): the real context
+		// is checked before dispatching so later stages never run with a
+		// dead context. The early check also skips the stage-input copy on
+		// an already-dead context; cloning large histories is not free and
+		// the context can lapse during it, so it is rechecked on the
+		// prepared input below.
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
 		// Stages are Compactor implementations too: isolate each stage's
 		// input so a failed stage's in-place mutations cannot leak into
 		// later stages or the adopted result (issue #9 contract).
-		candidate, err := strategy.Compact(ctx, deepCopyMessages(result.History), budget, provider, opts)
+		stageInput := deepCopyMessages(result.History)
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		candidate, err := strategy.Compact(ctx, stageInput, budget, provider, opts)
 		result.Strategies = append(result.Strategies, candidate.Strategies...)
+		// Nested-chain diagnostics merge on every stage return, independent
+		// of adoption and of the stage's own error (issue #14).
+		result.Errors = append(result.Errors, candidate.Errors...)
+		if candidate.RecordedContextCancellation {
+			result.RecordedContextCancellation = true
+		}
+		// The caller's context state outranks whatever the stage reported:
+		// a private DeadlineExceeded from the stage's own timeout wrapper
+		// must not masquerade as the caller's cancellation, and a caller
+		// cancellation during the stage stops the chain even when the stage
+		// returned an ordinary error or success. The stage's own returned
+		// failure is still recorded unless it IS the caller's cancellation
+		// object (identity via sameErrorObject, not errors.Is: a join or a
+		// wrapped private timeout matches the sentinel partially while
+		// carrying an independent cause; non-comparable error types are
+		// treated as distinct). The caller's cancellation record is
+		// suppressed only when the stage explicitly recorded it for the
+		// caller's context (RecordedContextCancellation — a nested chain
+		// that recorded ctx.Err() and returned it) and returned that same
+		// object; a stage's same-sentinel private diagnostic is a distinct
+		// event and never stands in for the caller's own cancellation.
+		if cerr := ctx.Err(); cerr != nil {
+			if err != nil && !sameErrorObject(err, cerr) && !containsIdentical(candidate.Errors, err) {
+				result.Errors = append(result.Errors, err)
+			}
+			if !(candidate.RecordedContextCancellation && sameErrorObject(err, cerr)) {
+				result.Errors = append(result.Errors, cerr)
+			}
+			result.RecordedContextCancellation = true
+			result.ReturnedError = cerr
+			return result, cerr
+		}
 		if err != nil {
-			result.Errors = append(result.Errors, err)
+			// A cancellation-class error reported while the real context is
+			// alive belongs to the stage's own internal context (e.g. a
+			// private timeout wrapper): treat it as an ordinary stage error
+			// so later stages still run. Record it unless the stage declared
+			// this exact error as its returned error (identity, not
+			// errors.Is: two private attempts sharing Go's singleton sentinel
+			// are distinct events and both stay recorded).
+			if !(candidate.ReturnedError != nil && sameErrorObject(candidate.ReturnedError, err)) {
+				result.Errors = append(result.Errors, err)
+			}
 			if !errors.Is(err, ErrCompactionBudgetExceeded) {
 				continue
 			}
@@ -668,6 +800,9 @@ func (c compactorChain) Compact(
 		// Adoption gate (issue #13): validate before adopting and before
 		// the budget early-exit, so an invalid small candidate can neither
 		// poison later stages nor stop the chain.
+		if compactionAdoptionHook != nil {
+			compactionAdoptionHook()
+		}
 		if !candidate.Changed {
 			continue
 		}
@@ -694,6 +829,14 @@ func (c compactorChain) Compact(
 		if estimateRunes(result.History) <= budget.MaxRunes {
 			break
 		}
+	}
+	// Final recheck (issue #14): adoption work (validation, size
+	// estimation, deep copy) runs after the last boundary check, so the
+	// context can lapse inside the gate — cancellation during adoption
+	// must take the cancellation path, not a successful return.
+	if err := compactionContextErr(ctx, &result); err != nil {
+		result.ReturnedError = err
+		return result, err
 	}
 	return result, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"iter"
 	"reflect"
 	"strings"
@@ -1133,4 +1134,539 @@ func TestCompactorChainCandidateValidation(t *testing.T) {
 			t.Errorf("accepted history mutated through the stage's retained pointer: %q", got)
 		}
 	})
+}
+
+type nonComparableError []string
+
+func (e nonComparableError) Error() string { return strings.Join(e, ";") }
+
+type mustNotCallProvider struct{ called bool }
+
+func (p *mustNotCallProvider) Chat(_ context.Context, _ []llm.Message, _ []tool.ToolInfo, _ ...llm.Option) (*llm.Message, *llm.Usage, error) {
+	p.called = true
+	return nil, nil, errors.New("provider called after cancellation")
+}
+
+func (p *mustNotCallProvider) ChatStream(_ context.Context, _ []llm.Message, _ []tool.ToolInfo, _ ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
+	p.called = true
+	return nil, errors.New("provider called after cancellation")
+}
+
+func (p *mustNotCallProvider) Name() string { return "must-not-call" }
+
+func TestCompactorChainCancellation(t *testing.T) {
+	t.Parallel()
+
+	chainSeed := func() []llm.Message {
+		return []llm.Message{
+			llm.SystemMessage("policy"),
+			llm.UserMessage("first"),
+			llm.AssistantMessage(strings.Repeat("payload", 40)),
+			llm.UserMessage("latest"),
+		}
+	}
+	reduction := func() []llm.Message {
+		return []llm.Message{llm.SystemMessage("policy"), llm.UserMessage("latest")}
+	}
+
+	t.Run("canceled context skips later stages", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{History: reduction(), Changed: true}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{}, nil
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if stage2Ran {
+			t.Fatalf("stage 2 invoked after cancellation")
+		}
+		if len(result.Errors) != 1 || !errors.Is(result.Errors[0], context.Canceled) {
+			t.Errorf("Errors = %#v, want exactly one context.Canceled", result.Errors)
+		}
+	})
+
+	t.Run("context dying during a stage stops the chain after it returns", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // stage completes normally while its context dies underneath it
+				return CompactionResult{}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{}, nil
+			}),
+		)
+		_, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if stage2Ran {
+			t.Fatalf("stage 2 invoked after the context died mid-stage")
+		}
+	})
+
+	t.Run("stage-reported cancellation with a live context does not abort the chain", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(reduction())}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, context.Canceled // e.g. the stage's own internal timeout fired
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{History: reduction(), Changed: true}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v, want nil", err)
+		}
+		if !stage2Ran {
+			t.Fatalf("stage 2 skipped: spurious stage cancellation aborted the chain")
+		}
+		if len(result.Errors) != 1 {
+			t.Errorf("Errors = %#v, want the spurious cancellation recorded once", result.Errors)
+		}
+		if !result.Changed {
+			t.Errorf("Changed = false, want the stage-2 reduction adopted")
+		}
+	})
+
+	t.Run("nested chain cancellation recorded exactly once", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		outerStage2Ran := false
+		inner := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // the caller's context dies inside the nested stage
+				// The nested chain's own boundary check records the caller's
+				// cancellation and returns it; RecordedContextCancellation and
+				// ReturnedError are what the inner chain machinery sets.
+				return CompactionResult{Errors: []error{ctx.Err()}, RecordedContextCancellation: true, ReturnedError: ctx.Err()}, ctx.Err()
+			}),
+		)
+		outer := NewCompactorChain(
+			inner,
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				outerStage2Ran = true
+				return CompactionResult{}, nil
+			}),
+		)
+		result, err := outer.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if outerStage2Ran {
+			t.Fatalf("outer stage 2 invoked after cancellation")
+		}
+		if len(result.Errors) != 1 || !errors.Is(result.Errors[0], context.Canceled) {
+			t.Errorf("Errors = %#v, want context.Canceled recorded exactly once", result.Errors)
+		}
+	})
+
+	t.Run("caller's cancellation outranks a stage-reported deadline error", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, context.DeadlineExceeded // the stage's own private timeout fired
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{}, nil
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Compact() error = %v, want the caller's context.Canceled", err)
+		}
+		if stage2Ran {
+			t.Fatalf("stage 2 invoked after cancellation")
+		}
+		if len(result.Errors) != 1 || !errors.Is(result.Errors[0], context.Canceled) {
+			t.Errorf("Errors = %#v, want only the caller's cancellation recorded", result.Errors)
+		}
+	})
+}
+
+func TestCompactorChainMergesCandidateErrors(t *testing.T) {
+	t.Parallel()
+
+	chainSeed := func() []llm.Message {
+		return []llm.Message{
+			llm.SystemMessage("policy"),
+			llm.UserMessage("first"),
+			llm.AssistantMessage(strings.Repeat("payload", 40)),
+			llm.UserMessage("latest"),
+		}
+	}
+	reduction := func() []llm.Message {
+		return []llm.Message{llm.SystemMessage("policy"), llm.UserMessage("latest")}
+	}
+
+	t.Run("nested chain diagnostics surface", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(reduction())}
+		innerDiag := errors.New("inner summarizer failed; fallback succeeded")
+		inner := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, innerDiag
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{History: reduction(), Changed: true}, nil
+			}),
+		)
+		outer := NewCompactorChain(
+			inner,
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, nil
+			}),
+		)
+		result, err := outer.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if len(result.Errors) != 1 || !errors.Is(result.Errors[0], innerDiag) {
+			t.Errorf("Errors = %#v, want the inner chain's diagnostic surfaced once", result.Errors)
+		}
+		if !result.Changed {
+			t.Errorf("Changed = false, want the inner reduction adopted")
+		}
+	})
+
+	t.Run("undeclared returned error is kept alongside the candidate's entry", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(reduction())}
+		diag := errors.New("stage diagnostic")
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				// The stage records the diagnostic AND returns the same error
+				// without declaring ReturnedError: identity with a candidate
+				// entry proves nothing (two private attempts can share the
+				// sentinel), so both entries stay.
+				return CompactionResult{Errors: []error{diag}}, diag
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v, want nil (non-cancellation stage errors never become the chain's error)", err)
+		}
+		if len(result.Errors) != 2 || result.Errors[0] != diag || result.Errors[1] != diag {
+			t.Errorf("Errors = %#v, want the undeclared returned error kept alongside the candidate entry", result.Errors)
+		}
+	})
+
+	t.Run("declared returned error is not recorded twice", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(reduction())}
+		diag := errors.New("stage diagnostic")
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				// The stage declares diag as its returned error (what chain
+				// machinery does): the event is already recorded once.
+				return CompactionResult{Errors: []error{diag}, ReturnedError: diag}, diag
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v, want nil", err)
+		}
+		if len(result.Errors) != 1 || result.Errors[0] != diag {
+			t.Errorf("Errors = %#v, want the declared returned error recorded exactly once", result.Errors)
+		}
+	})
+
+	t.Run("distinct same-sentinel stage failures are both recorded", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, context.DeadlineExceeded // stage 1's private timeout
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, context.DeadlineExceeded // stage 2's private timeout
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v, want nil", err)
+		}
+		if len(result.Errors) != 2 {
+			t.Errorf("Errors = %#v, want both distinct private timeout failures recorded", result.Errors)
+		}
+	})
+
+	t.Run("joined error's independent cause survives caller cancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		stageErr := errors.Join(context.Canceled, errors.New("provider failed"))
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // the caller cancels while the stage fails with a joined error
+				return CompactionResult{}, stageErr
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if len(result.Errors) != 2 {
+			t.Errorf("Errors = %#v, want the joined stage error and the caller cancellation both recorded", result.Errors)
+		}
+	})
+
+	t.Run("wrapped private timeout returned by a successful stage does not suppress caller cancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		wrapped := fmt.Errorf("private timeout: %w", context.DeadlineExceeded)
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // caller deadline expires while the stage records its own wrapped private timeout
+				return CompactionResult{Errors: []error{wrapped}}, wrapped
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if len(result.Errors) != 2 || !errors.Is(result.Errors[0], context.DeadlineExceeded) || !errors.Is(result.Errors[1], context.Canceled) {
+			t.Errorf("Errors = %#v, want [wrapped private timeout, context.Canceled]", result.Errors)
+		}
+	})
+
+	t.Run("non-comparable error type does not panic identity comparison", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel()
+				return CompactionResult{Errors: []error{nonComparableError{"private", "timeout"}}}, nonComparableError{"private", "timeout"}
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		// Non-comparable errors cannot be tested for identity (the interface
+		// comparison would panic), so per the keep-both-diagnostics rule the
+		// merged candidate entry, the returned error, and the caller's
+		// cancellation are all retained — nothing is dropped, no panic.
+		if len(result.Errors) != 3 || !errors.Is(result.Errors[2], context.Canceled) {
+			t.Errorf("Errors = %#v, want both non-comparable diagnostics and context.Canceled kept", result.Errors)
+		}
+	})
+
+	t.Run("private same-sentinel diagnostic does not suppress caller's own cancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // caller deadline expires during a fallback attempt
+				// The stage recorded its own private DeadlineExceeded (a
+				// diagnostic for its internal attempt) and then returned the
+				// caller's ctx.Err() from the fallback path: two distinct
+				// events carrying the same sentinel.
+				return CompactionResult{Errors: []error{context.DeadlineExceeded}}, ctx.Err()
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Compact() error = %v, want the caller's context error", err)
+		}
+		if len(result.Errors) != 2 {
+			t.Errorf("Errors = %#v, want the stage's private diagnostic and the caller cancellation both recorded", result.Errors)
+		}
+	})
+
+	t.Run("two bare-sentinel private attempts are both recorded", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				// Private attempt 1 fails with the sentinel, recorded but not
+				// returned (the stage retries internally).
+				return CompactionResult{Errors: []error{context.DeadlineExceeded}}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				// Private attempt 2 fails with the same singleton sentinel and
+				// the stage returns it. No ReturnedError declaration: both
+				// attempts stay recorded.
+				return CompactionResult{}, context.DeadlineExceeded
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v, want nil", err)
+		}
+		if len(result.Errors) != 2 {
+			t.Errorf("Errors = %#v, want both private attempts recorded", result.Errors)
+		}
+	})
+
+	t.Run("caller cancellation during a failed stage keeps both diagnostics", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		providerErr := errors.New("provider failed")
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // the caller cancels while the stage is failing
+				return CompactionResult{}, providerErr
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if len(result.Errors) != 2 || !errors.Is(result.Errors[0], providerErr) || !errors.Is(result.Errors[1], context.Canceled) {
+			t.Errorf("Errors = %#v, want [providerErr, context.Canceled]", result.Errors)
+		}
+	})
+
+	t.Run("successful stage's private timeout does not stand in for caller's cancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				cancel() // caller deadline expires while the stage succeeds
+				// The stage recorded its own private timeout as a diagnostic
+				// and returned nil: two distinct events.
+				return CompactionResult{Errors: []error{context.DeadlineExceeded}}, nil
+			}),
+		)
+		result, err := chain.Compact(ctx, seed, budget, nil, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Compact() error = %v, want context.Canceled", err)
+		}
+		if len(result.Errors) != 2 || !errors.Is(result.Errors[0], context.DeadlineExceeded) || !errors.Is(result.Errors[1], context.Canceled) {
+			t.Errorf("Errors = %#v, want [private timeout, context.Canceled]", result.Errors)
+		}
+	})
+}
+
+func TestSummarizationCompactorChecksContextBeforeChat(t *testing.T) {
+	t.Parallel()
+
+	assistant, results := compactorToolExchange(compactorToolCall{id: "c1", name: "read", result: strings.Repeat("content", 50)})
+	history := []llm.Message{
+		llm.SystemMessage("policy"), llm.UserMessage("first"), assistant, results[0], llm.UserMessage("latest"),
+	}
+	provider := &mustNotCallProvider{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := NewSummarizationCompactor().Compact(ctx, history, CompactionBudget{MaxRunes: 1}, provider, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Compact() error = %v, want context.Canceled", err)
+	}
+	if provider.called {
+		t.Errorf("provider invoked after cancellation")
+	}
+}
+
+func TestCompactorChainWithinBudgetCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// History fits the budget: the chain takes the within-budget early
+	// return, which must still report cancellation (issue #14).
+	seed := []llm.Message{llm.SystemMessage("policy"), llm.UserMessage("latest")}
+	stageRan := false
+	chain := NewCompactorChain(
+		CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+			stageRan = true
+			return CompactionResult{}, nil
+		}),
+	)
+	result, err := chain.Compact(ctx, seed, CompactionBudget{MaxRunes: estimateRunes(seed)}, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Compact() error = %v, want context.Canceled", err)
+	}
+	if stageRan {
+		t.Errorf("stage invoked despite cancellation")
+	}
+	if len(result.Errors) != 1 || !errors.Is(result.Errors[0], context.Canceled) {
+		t.Errorf("Errors = %#v, want exactly one context.Canceled", result.Errors)
+	}
+}
+
+// Non-parallel: mutates the package-level compactionAdoptionHook seam.
+func TestCompactorChainCancellationDuringAdoption(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seed := []llm.Message{
+		llm.SystemMessage("policy"),
+		llm.UserMessage("first"),
+		llm.AssistantMessage(strings.Repeat("payload", 40)),
+		llm.UserMessage("latest"),
+	}
+	budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+	chain := NewCompactorChain(
+		CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+			return CompactionResult{History: []llm.Message{llm.SystemMessage("policy"), llm.UserMessage("latest")}, Changed: true}, nil
+		}),
+	)
+	compactionAdoptionHook = cancel
+	defer func() { compactionAdoptionHook = nil }()
+
+	_, err := chain.Compact(ctx, seed, budget, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Compact() error = %v, want context.Canceled", err)
+	}
+	// result's other fields are unspecified once err != nil: both the kernel
+	// (issue #9/#10 contract) and direct callers discard the result on error,
+	// so whether the gate completed its in-place adoption before the final
+	// recheck observed the cancellation is immaterial. What the final recheck
+	// pins is that cancellation inside the gate takes the cancellation path
+	// instead of a successful return.
 }
