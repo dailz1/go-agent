@@ -93,6 +93,13 @@
 ### P1 运行时安全
 - 工具结果截断：按上下文占比设上限（约 30% 规则），掐头留尾，入库前执行（已落地，见 §7）
 - 历史预算管理：`Compactor` 策略接口 + 最简实现；`Compact` 调用面携带当轮生效 provider 与请求 options：循环内由内核自线程配置投影解析注入（线程热切换 provider 后，摘要压缩跟随新 provider 与线程生效模型）；手动调用者显式传参，摘要策略对 nil provider 走既有类型化错误并按非致命路径降级。对应 Go 契约：`Compactor.Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)`；`NewSummarizationCompactor()` 不再收 provider 参数。压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）。输入隔离契约（issue #9，2026-11-18）：循环内调用时 `Compact` 收到内核 history 的深拷贝，实现可自由修改与持有，改动不回流运行态；system 前缀校验对内核持有的原始 history 进行，改写必被拒收（Warn 后按非致命路径继续）；`Changed=true` 采纳时内核对 `result.History` 深拷贝后替换运行态，实现返回的内存不被内核继续持有；内核无法深拷贝的块类型（克隆白名单外，含用户嵌入内建块的自定义类型）出现于输入则本轮跳过压缩（Warn，非致命继续），出现于结果则拒收该结果（同校验失败路径，不采纳不写 checkpoint）（已落地，见 §7）
+- Provider 请求历史隔离（issue #12，2026-11-18）：
+  - 主循环每次直接调用 `Provider.ChatStream` 或 `Provider.Chat` 前，均从当轮运行历史构造该次调用独立的消息副本。流式 `ChatStream` 与非流式回退 `Chat` 直接返回的可重试错误均进入同一重试循环，按既有次数和取消约束决定后续尝试；每次直接调用重新复制历史。重试和 `ErrStreamingNotSupported` 后的非流式回退均不复用曾交付给 Provider 的请求，也不把请求副本采纳回运行历史。此处仅纠正重试来源的描述，不改变实现或重试语义。
+  - 深拷贝先于该次 `roundContextOutbound` 构造。未启用环境上下文或 callback 返回空字符串时，返回的仍是本次副本；非空 overlay 仍仅存在于本次请求，不进入 history、事件、Store 或 checkpoint。环境快照仍逐次重新生成，Attempt、预算、截断和错误处理沿用逐轮运行环境上下文契约。
+  - 完整隔离范围为 `TextBlock`、`ReasoningBlock`、`ReasoningItemBlock`、`ToolUseBlock`、`ToolResultBlock`、`ImageBlock` 的值和指针形式。消息与 Content 切片、块指针、工具调用 Input、推理条目 Summary、图片 Data，以及工具结果 Images 和逐图 Data 均与运行历史及其他调用分离。字符串按不可变值共享。保留现有复制器的空切片处理，不新增输入校验语义。
+  - 内核无法识别并深拷贝的外来块，包括嵌入内建块的自定义类型，保留原类型继续传递；仅保证所在 Message 与 Content 外层切片独立，不保证外来块内部及其引用可达对象隔离。Provider 边界不因此新增 run 错误或警告。只有全由上述内建类型组成的历史获得完整请求隔离保证；混有外来块的历史仍可能被其内部引用改写或产生数据竞争。此规则不改变压缩边界遇到外来输入跳过压缩、遇到外来结果拒收的既有处理，也不取消预算、取消、编解码或适配器原有错误。
+  - 内建摘要压缩器每次直接调用 Provider 时，也深拷贝它构造的摘要请求，使其中的 system 块与压缩输入、待采纳结果分离。自定义压缩器内部自行发起的 Provider 调用不由内核自动拦截。
+  - Provider 必须把消息、嵌套内容及工具定义视为只读，保留引用后亦不得修改；需要可变工作数据时由实现自行复制。内核复制是防御措施，不免除该义务。此保证针对内核拥有的请求消息，不保证 Provider 内部、自定义块、返回结果或外部直接调用 Provider 的代码自动具备并发安全，也不新增工具定义或 options 的逐调用深拷贝保证。
 - 会话持久化 `Store`：**逐调用显式持久化**（`WithStore` 构造选项 + `Run`/`RunStream`（`WithThread`） / `ResumeThread` / `SettleThread` / `SettlementTarget` 线程入口；`WithThread` 三态语义：缺省=一次性运行、空串=内核生成新线程、非空=续接（首调即创建）既有线程；不带 `WithThread` 零开销：即使配置了 store 也不生成线程 ID、不触碰持久化路径，单一执行路径不变；`RunOption` 是与构造 `Option` 独立的逐调用选项类型，在 `newRunConfig` 归一——重复 `WithThread` 后者胜）。数据形状：线程 = 规范记录日志，生命周期记录链每条带稳定 `run_id` / `round_id`：
   - `run_started`：运行输入（逐字节保留，不规范化）+ 线程初始系统提示词（回放以落库为准，与重启后 `WithSystemPrompt` 配置无关，防止历史上下文被静默篡改）；
   - `round_declared`：**原子**轮次宣告——完整助手消息（文本/推理 + 全部有序工具调用），先落库再执行任何工具、先于审批回调；

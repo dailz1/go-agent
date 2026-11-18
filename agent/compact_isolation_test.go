@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"reflect"
 	"strings"
 	"testing"
@@ -409,4 +410,190 @@ func TestUnchangedMutationCannotShrinkLiveHistory(t *testing.T) {
 	if len(requests) != 0 {
 		t.Errorf("provider requests = %d, want 0 (run failed before any request)", len(requests))
 	}
+}
+
+// mutatingCompactorProvider retains the REAL summarization request and
+// mutates the pointer-form system block in place, like a misbehaving
+// summarizer backend.
+type mutatingCompactorProvider struct {
+	response *llm.Message
+	requests [][]llm.Message
+}
+
+func (p *mutatingCompactorProvider) Name() string { return "mutating-compactor-test" }
+
+func (p *mutatingCompactorProvider) Chat(_ context.Context, messages []llm.Message, _ []tool.ToolInfo, _ ...llm.Option) (*llm.Message, *llm.Usage, error) {
+	p.requests = append(p.requests, messages)
+	if tb, ok := messages[0].Content[0].(*llm.TextBlock); ok && tb != nil {
+		tb.Text = "MUTATED-SYSTEM"
+	}
+	return p.response, nil, nil
+}
+
+func (p *mutatingCompactorProvider) ChatStream(_ context.Context, _ []llm.Message, _ []tool.ToolInfo, _ ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
+	return nil, llm.ErrStreamingNotSupported
+}
+
+func summarizerSeed() []llm.Message {
+	history := []llm.Message{
+		{Role: llm.RoleSystem, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "pointer policy"}}},
+		llm.UserMessage("first"),
+	}
+	assistant, results := compactorToolExchange(compactorToolCall{id: "c1", name: "sum_tool", result: "file contents"})
+	history = append(history, assistant)
+	history = append(history, results...)
+	history = append(history, llm.UserMessage("latest"), llm.AssistantMessage("current round"))
+	return history
+}
+
+func summaryMsg(text string) *llm.Message {
+	m := llm.AssistantMessage(text)
+	return &m
+}
+
+func assertSummarySystemClean(t *testing.T, label string, h []llm.Message) {
+	t.Helper()
+	tb, ok := h[0].Content[0].(*llm.TextBlock)
+	if !ok || tb.Text != "pointer policy" {
+		t.Errorf("%s: system block = %#v, want untouched %q", label, h[0].Content[0], "pointer policy")
+	}
+}
+
+func TestSummarizationProviderHistoryIsolation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("direct compact keeps input and result system clean", func(t *testing.T) {
+		t.Parallel()
+		history := summarizerSeed()
+		provider := &mutatingCompactorProvider{response: summaryMsg("summary text")}
+		result, err := NewSummarizationCompactor().Compact(
+			context.Background(), history, CompactionBudget{MaxRunes: 0}, provider, nil,
+		)
+		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
+			t.Fatalf("Compact() unexpected error: %v", err)
+		}
+		if len(provider.requests) != 1 {
+			t.Fatalf("summarizer calls = %d, want 1", len(provider.requests))
+		}
+		if got := provider.requests[0][0].Content[0].(*llm.TextBlock).Text; got != "MUTATED-SYSTEM" {
+			t.Fatalf("summarizer provider did not apply its mutation: %q", got)
+		}
+		assertSummarySystemClean(t, "compactor input", history)
+		assertSummarySystemClean(t, "compaction result", result.History)
+	})
+
+	t.Run("retained request mutation after return stays isolated", func(t *testing.T) {
+		t.Parallel()
+		history := summarizerSeed()
+		provider := &mutatingCompactorProvider{response: summaryMsg("summary text")}
+		result, err := NewSummarizationCompactor().Compact(
+			context.Background(), history, CompactionBudget{MaxRunes: 0}, provider, nil,
+		)
+		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
+			t.Fatalf("Compact() unexpected error: %v", err)
+		}
+		retained := provider.requests[0]
+		retained[0].Content[0].(*llm.TextBlock).Text = "AFTER-RETURN"
+		assertSummarySystemClean(t, "compactor input", history)
+		assertSummarySystemClean(t, "compaction result", result.History)
+	})
+
+	t.Run("concurrent retained mutation is race-free", func(t *testing.T) {
+		t.Parallel()
+		history := summarizerSeed()
+		provider := &mutatingCompactorProvider{response: summaryMsg("summary text")}
+		result, err := NewSummarizationCompactor().Compact(
+			context.Background(), history, CompactionBudget{MaxRunes: 0}, provider, nil,
+		)
+		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
+			t.Fatalf("Compact() unexpected error: %v", err)
+		}
+		retained := provider.requests[0]
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			retained[0].Content[0].(*llm.TextBlock).Text = "CONCURRENT-MUTATION"
+		}()
+		for i := 0; i < 200; i++ {
+			_ = result.History[0].Content[0]
+		}
+		<-done
+		assertSummarySystemClean(t, "compaction result", result.History)
+	})
+
+	t.Run("loop integration adopts summary and keeps system clean", func(t *testing.T) {
+		t.Parallel()
+		base := []llm.Message{
+			{Role: llm.RoleSystem, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "pointer policy"}}},
+			llm.UserMessage("first"),
+		}
+		assistant, results := compactorToolExchange(compactorToolCall{
+			id: "big", name: "loop_tool", result: strings.Repeat("file contents", 200),
+		})
+		base = append(base, assistant)
+		base = append(base, results...)
+		window := 2 * estimateRunes([]llm.Message{
+			base[0], base[1],
+			llm.AssistantMessage("[Summary]\nsummary text"),
+			llm.UserMessage("latest"),
+		})
+
+		p := &scriptedProvider{steps: []scriptedStep{
+			{stream: false, msg: summaryMsg("summary text"), mutate: func(h []llm.Message) {
+				if tb, ok := h[0].Content[0].(*llm.TextBlock); ok && tb != nil {
+					tb.Text = "MUTATED-SYSTEM"
+				}
+			}},
+			{stream: true, chunks: probeTextChunks()},
+		}}
+		reg := tool.NewRegistry()
+		reg.MustRegister(&gatedTool{info: tool.ToolInfo{Name: "loop_tool", Description: "loop tool"}})
+		ag := New(p, reg,
+			WithCompactor(NewSummarizationCompactor()),
+			WithCompactionThresholdPercent(100),
+			WithContextWindowTokens(window),
+			WithLogger(discardLogger()),
+		)
+		seq, err := ag.RunStreamWithHistory(context.Background(), base, "latest")
+		if err != nil {
+			t.Fatalf("RunStreamWithHistory() error = %v", err)
+		}
+		events, errs := collectEvents(t, seq, err)
+		if len(errs) != 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		compacted := false
+		var done *DoneEvent
+		for _, ev := range events {
+			switch e := ev.(type) {
+			case CompactionEvent:
+				compacted = true
+				if len(e.Strategies) != 1 || e.Strategies[0] != "summarization" {
+					t.Errorf("compaction strategies = %#v, want [summarization]", e.Strategies)
+				}
+			case DoneEvent:
+				done = &e
+			}
+		}
+		if !compacted {
+			t.Fatalf("no CompactionEvent emitted: the polluted summary must be adopted, not silently rejected")
+		}
+		if done == nil {
+			t.Fatalf("no DoneEvent")
+		}
+		summarySeen := false
+		for _, m := range done.History {
+			if strings.Contains(compactorText(m), "[Summary]\nsummary text") {
+				summarySeen = true
+			}
+		}
+		if !summarySeen {
+			t.Errorf("summary was not adopted into the final history")
+		}
+		assertSummarySystemClean(t, "original seed", base)
+		assertSummarySystemClean(t, "done history", done.History)
+		if len(p.snapshots) != 2 {
+			t.Fatalf("provider calls = %d, want 2 (summarization + conversation)", len(p.snapshots))
+		}
+	})
 }

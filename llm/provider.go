@@ -16,6 +16,22 @@ var ErrStreamingNotSupported = errors.New("streaming not supported by this provi
 // Provider is the interface that every LLM provider (OpenAI, Anthropic, etc.)
 // must implement. It translates provider-agnostic Messages into provider-specific
 // wire formats and back.
+//
+// Implementations must treat messages, nested content, and tool definitions
+// as read-only, including retained references. Make a private copy before
+// modifying input data.
+//
+// The agent loop supplies a fresh message snapshot for each direct method
+// invocation, including retries and streaming fallback. The built-in
+// summarization compactor also isolates each provider request. These
+// snapshots deep-copy all built-in ContentBlock types in value and pointer
+// forms. Custom concrete block types, including types embedding a built-in
+// block, retain their internal references and are outside the full isolation
+// guarantee.
+//
+// This defensive copying does not permit input mutation or imply that tool
+// definitions and options are copied per invocation. Calls made directly by
+// applications or custom compactors are not intercepted by the agent.
 type Provider interface {
 	Name() string
 	Chat(ctx context.Context, messages []Message, tools []tool.ToolInfo, opts ...Option) (*Message, *Usage, error)

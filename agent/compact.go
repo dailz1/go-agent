@@ -535,7 +535,7 @@ func (summarizationCompactor) Compact(
 
 	request := systemPrefix(groups)
 	request = append(request, llm.UserMessage(defaultSummarizationPrompt+"\n\n"+summarizationTranscript(span)))
-	response, _, err := provider.Chat(ctx, request, nil, opts...)
+	response, _, err := provider.Chat(ctx, deepCopyMessages(request), nil, opts...)
 	if err != nil {
 		return result, err
 	}
