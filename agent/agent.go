@@ -880,6 +880,13 @@ func (a *Agent) compactHistoryRound(
 				return history, false
 			default:
 			}
+			// Gating this check on compactionVerified is intentional (issue #10
+			// review): reaching it means compaction ran to completion and still
+			// missed the budget — local proof the history cannot fit. Failure
+			// paths (compactor error, invalid output) only know compaction did
+			// not run; per contract they degrade non-fatally and let the
+			// provider arbitrate rather than fail the run on a heuristic
+			// estimate. See DESIGN.md "历史预算管理".
 			// Carry tolerance: steering injected by the previous round's
 			// drain legitimately pushed history past the target; compaction
 			// has just run and may not be able to shrink further.
