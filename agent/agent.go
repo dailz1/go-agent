@@ -23,7 +23,7 @@ func copyMessages(src []llm.Message) []llm.Message {
 	dst := make([]llm.Message, len(src))
 	copy(dst, src)
 	for i := range dst {
-		if len(src[i].Content) > 0 {
+		if src[i].Content != nil {
 			dst[i].Content = make([]llm.ContentBlock, len(src[i].Content))
 			copy(dst[i].Content, src[i].Content)
 		}
@@ -87,6 +87,39 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 		}
 	}
 	return dst
+}
+
+// clonableBlock reports whether a content block's concrete type is deep-copy
+// safe: handled by the deepCopyMessages switch, or a value form whose
+// interface copy is already a deep copy (all fields immutable). Keep this
+// whitelist in sync with the deepCopyMessages switch.
+func clonableBlock(block llm.ContentBlock) bool {
+	switch block.(type) {
+	case llm.TextBlock, *llm.TextBlock,
+		llm.ReasoningBlock, *llm.ReasoningBlock,
+		llm.ReasoningItemBlock, *llm.ReasoningItemBlock,
+		llm.ToolResultBlock, *llm.ToolResultBlock,
+		llm.ToolUseBlock, *llm.ToolUseBlock,
+		llm.ImageBlock, *llm.ImageBlock:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasUnsupportedBlocks reports whether history contains block types outside
+// the clonable whitelist (e.g. user-defined types embedding a built-in block,
+// which copyMessages cannot isolate). The compaction boundary fail-closes on
+// them: skip compaction on input, reject the result on output (issue #9).
+func hasUnsupportedBlocks(history []llm.Message) bool {
+	for i := range history {
+		for _, block := range history[i].Content {
+			if !clonableBlock(block) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // cloneImageBlocks deep-copies a ToolResultBlock's image attachments so the
@@ -788,43 +821,59 @@ func (a *Agent) compactHistoryRound(
 	}
 	beforeRunes := estimateRunes(history)
 	if a.compactor != nil && beforeRunes > targetRunes {
-		result, err := a.compactor.Compact(ctx, history, CompactionBudget{MaxRunes: targetRunes}, provider, opts)
-		for _, strategyErr := range result.Errors {
-			a.logger.Warn("history compaction strategy failed", "error", strategyErr)
-		}
-		if err != nil {
-			a.logger.Warn("history compaction failed", "error", err)
-		} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
-			a.logger.Warn("history compaction produced invalid history", "error", validationErr)
+		if hasUnsupportedBlocks(history) {
+			a.logger.Warn("history compaction skipped: unsupported content block types cannot be isolated")
 		} else {
-			if result.Changed {
-				history = result.History
-				afterRunes := estimateRunes(history)
-				// The compacted view is durable before it is announced, so
-				// replay never re-runs a (nondeterministic) summarizer.
-				if sess != nil {
-					if err := sess.checkpoint(ctx, history); err != nil {
-						yield(nil, err)
+			// The compactor is user code: hand it an isolated deep copy so
+			// in-place mutation cannot leak into the live history (issue #9).
+			// Validation below compares against the untouched original.
+			compactInput := deepCopyMessages(history)
+			result, err := a.compactor.Compact(ctx, compactInput, CompactionBudget{MaxRunes: targetRunes}, provider, opts)
+			for _, strategyErr := range result.Errors {
+				a.logger.Warn("history compaction strategy failed", "error", strategyErr)
+			}
+			compactionVerified := false
+			if err != nil {
+				a.logger.Warn("history compaction failed", "error", err)
+			} else if hasUnsupportedBlocks(result.History) {
+				a.logger.Warn("history compaction produced unsupported content block types; ignoring compaction result")
+			} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
+				a.logger.Warn("history compaction produced invalid history", "error", validationErr)
+			} else {
+				compactionVerified = true
+				if result.Changed {
+					history = deepCopyMessages(result.History)
+					afterRunes := estimateRunes(history)
+					// The compacted view is durable before it is announced, so
+					// replay never re-runs a (nondeterministic) summarizer.
+					if sess != nil {
+						if err := sess.checkpoint(ctx, history); err != nil {
+							yield(nil, err)
+							return history, false
+						}
+					}
+					a.logger.Warn("history compacted",
+						"strategies", strings.Join(result.Strategies, ","),
+						"dropped_groups", result.DroppedGroups,
+						"before_runes", beforeRunes,
+						"after_runes", afterRunes,
+					)
+					if !yield(CompactionEvent{
+						Strategies:    append([]string{}, result.Strategies...),
+						DroppedGroups: result.DroppedGroups,
+						BeforeRunes:   beforeRunes,
+						AfterRunes:    afterRunes,
+						History:       deepCopyMessages(history),
+					}, nil) {
 						return history, false
 					}
 				}
-				a.logger.Warn("history compacted",
-					"strategies", strings.Join(result.Strategies, ","),
-					"dropped_groups", result.DroppedGroups,
-					"before_runes", beforeRunes,
-					"after_runes", afterRunes,
-				)
-				if !yield(CompactionEvent{
-					Strategies:    append([]string{}, result.Strategies...),
-					DroppedGroups: result.DroppedGroups,
-					BeforeRunes:   beforeRunes,
-					AfterRunes:    afterRunes,
-					History:       deepCopyMessages(history),
-				}, nil) {
-					return history, false
-				}
-			}
 
+			}
+			// Runs on every compaction outcome (including the unsupported-input
+			// skip): a context canceled during the compactor call must not
+			// reach the provider through a Warn-and-continue path (issue #9
+			// review).
 			select {
 			case <-ctx.Done():
 				yield(nil, ctx.Err())
@@ -834,13 +883,15 @@ func (a *Agent) compactHistoryRound(
 			// Carry tolerance: steering injected by the previous round's
 			// drain legitimately pushed history past the target; compaction
 			// has just run and may not be able to shrink further.
-			carry := 0
-			if sess != nil {
-				carry = sess.carry
-			}
-			if a.roundContextProvider == nil && estimateRunes(history) > targetRunes+carry {
-				yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
-				return history, false
+			if compactionVerified {
+				carry := 0
+				if sess != nil {
+					carry = sess.carry
+				}
+				if a.roundContextProvider == nil && estimateRunes(history) > targetRunes+carry {
+					yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
+					return history, false
+				}
 			}
 		}
 	}

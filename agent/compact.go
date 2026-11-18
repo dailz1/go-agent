@@ -46,6 +46,14 @@ type CompactionResult struct {
 // thread's effective model), while neutral strategies ignore both. The
 // in-loop caller resolves both from the thread's config projection; manual
 // callers pass what they want used.
+//
+// Input isolation: the in-loop caller passes a deep copy of the live
+// history, so implementations may mutate or retain the input freely;
+// result.History must be self-owned memory (the kernel deep-copies it on
+// adoption) and must not rewrite the system prefix (validated against the
+// untouched original). Histories containing block types the kernel cannot
+// deep-copy skip compaction; results containing them are rejected (both
+// non-fatal, Warn and continue).
 type Compactor interface {
 	Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)
 }
@@ -634,7 +642,10 @@ func (c compactorChain) Compact(
 	}
 
 	for _, strategy := range c.strategies {
-		candidate, err := strategy.Compact(ctx, result.History, budget, provider, opts)
+		// Stages are Compactor implementations too: isolate each stage's
+		// input so a failed stage's in-place mutations cannot leak into
+		// later stages or the adopted result (issue #9 contract).
+		candidate, err := strategy.Compact(ctx, deepCopyMessages(result.History), budget, provider, opts)
 		result.Strategies = append(result.Strategies, candidate.Strategies...)
 		if err != nil {
 			result.Errors = append(result.Errors, err)
