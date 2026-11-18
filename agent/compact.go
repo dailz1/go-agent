@@ -54,6 +54,17 @@ type CompactionResult struct {
 // untouched original). Histories containing block types the kernel cannot
 // deep-copy skip compaction; results containing them are rejected (both
 // non-fatal, Warn and continue).
+//
+// Chain adoption semantics (issue #13): only candidates with Changed=true
+// replace the working history — Changed=false is a no-op declaration and is
+// never adopted, even when the returned history is smaller. A Changed=true
+// candidate must be a structurally valid, non-empty history that preserves
+// the system prefix and contains only deep-copyable block types; invalid
+// candidates are recorded as strategy errors and the chain continues with
+// the next stage, and a Changed=true candidate with empty history is
+// recorded as a diagnostic. Neither case terminates the chain early. An
+// accepted candidate is deep-copied at adoption, so the stage cannot mutate
+// the chain's working history through retained references.
 type Compactor interface {
 	Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)
 }
@@ -641,7 +652,7 @@ func (c compactorChain) Compact(
 		return result, nil
 	}
 
-	for _, strategy := range c.strategies {
+	for i, strategy := range c.strategies {
 		// Stages are Compactor implementations too: isolate each stage's
 		// input so a failed stage's in-place mutations cannot leak into
 		// later stages or the adopted result (issue #9 contract).
@@ -654,10 +665,31 @@ func (c compactorChain) Compact(
 			}
 		}
 
+		// Adoption gate (issue #13): validate before adopting and before
+		// the budget early-exit, so an invalid small candidate can neither
+		// poison later stages nor stop the chain.
+		if !candidate.Changed {
+			continue
+		}
+		if len(candidate.History) == 0 {
+			result.Errors = append(result.Errors, fmt.Errorf(
+				"compaction chain stage %d returned Changed=true with empty history", i+1))
+			continue
+		}
+		if hasUnsupportedBlocks(candidate.History) {
+			result.Errors = append(result.Errors, fmt.Errorf(
+				"compaction chain stage %d returned blocks outside the clone whitelist", i+1))
+			continue
+		}
+		if err := validateCompacted(result.History, candidate.History); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf(
+				"compaction chain stage %d returned an invalid candidate: %w", i+1, err))
+			continue
+		}
 		if estimateRunes(candidate.History) <= estimateRunes(result.History) {
-			result.History = copyMessages(candidate.History)
+			result.History = deepCopyMessages(candidate.History)
 			result.DroppedGroups += candidate.DroppedGroups
-			result.Changed = result.Changed || candidate.Changed
+			result.Changed = true
 		}
 		if estimateRunes(result.History) <= budget.MaxRunes {
 			break

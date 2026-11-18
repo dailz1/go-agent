@@ -874,3 +874,263 @@ func (p *compactorProvider) ChatStream(
 ) (iter.Seq2[llm.Chunk, error], error) {
 	return nil, llm.ErrStreamingNotSupported
 }
+
+// Pins the issue #13 chain adoption contract: candidates are validated
+// before adoption and before the budget early-exit, Changed=false is a
+// no-op declaration, and an anomalous empty Changed=true candidate is
+// recorded but never truncates the working history.
+func TestCompactorChainCandidateValidation(t *testing.T) {
+	t.Parallel()
+
+	chainSeed := func() []llm.Message {
+		base := []llm.Message{
+			llm.SystemMessage("policy"),
+			llm.UserMessage("first"),
+		}
+		assistant, results := compactorToolExchange(compactorToolCall{
+			id: "c1", name: "chain_tool", result: strings.Repeat("file contents", 10),
+		})
+		base = append(base, assistant)
+		base = append(base, results...)
+		return append(base, llm.UserMessage("latest"))
+	}
+
+	validReduction := func() []llm.Message {
+		return []llm.Message{
+			llm.SystemMessage("policy"),
+			llm.UserMessage("first"),
+			llm.AssistantMessage("[Summary]\ncompact"),
+			llm.UserMessage("latest"),
+		}
+	}
+
+	t.Run("orphan-result candidate rejected and chain continues", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(validReduction())}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{
+					History: []llm.Message{
+						llm.SystemMessage("policy"),
+						llm.ToolResultMessage("orphan", tool.NewTextResult("no matching call")),
+					},
+					Changed: true,
+				}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{History: validReduction(), Changed: true}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if !stage2Ran {
+			t.Fatalf("later stage skipped: invalid small candidate terminated the chain")
+		}
+		if len(result.Errors) != 1 || !strings.Contains(result.Errors[0].Error(), "invalid candidate") {
+			t.Errorf("Errors = %#v, want one invalid-candidate diagnostic", result.Errors)
+		}
+		if !reflect.DeepEqual(result.History, validReduction()) {
+			t.Errorf("history = %#v, want the valid stage-2 reduction", result.History)
+		}
+	})
+
+	t.Run("system-prefix stripping candidate rejected", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(validReduction())}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{History: []llm.Message{llm.UserMessage("latest")}, Changed: true}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{History: validReduction(), Changed: true}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if !stage2Ran {
+			t.Fatalf("later stage skipped: prefix-stripping candidate terminated the chain")
+		}
+		if len(result.Errors) != 1 || !strings.Contains(result.Errors[0].Error(), "system prefix") {
+			t.Errorf("Errors = %#v, want one system-prefix diagnostic", result.Errors)
+		}
+		if !reflect.DeepEqual(result.History, validReduction()) {
+			t.Errorf("history = %#v, want the valid stage-2 reduction", result.History)
+		}
+	})
+
+	t.Run("zero-value stage skipped without diagnostics", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		final := validReduction()
+		budget := CompactionBudget{MaxRunes: estimateRunes(final)}
+		partial := append(copyMessages(final), llm.AssistantMessage("still over budget"))
+		stage3Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{History: partial, Changed: true}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage3Ran = true
+				return CompactionResult{History: final, Changed: true}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if !stage3Ran {
+			t.Fatalf("stage 3 skipped: zero-value candidate truncated the working history")
+		}
+		if len(result.Errors) != 0 {
+			t.Errorf("Errors = %#v, want none (zero-value is a documented no-op)", result.Errors)
+		}
+		if !reflect.DeepEqual(result.History, final) {
+			t.Errorf("history = %#v, want the stage-3 reduction", result.History)
+		}
+	})
+
+	t.Run("empty with Changed=true yields diagnostic", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		final := validReduction()
+		budget := CompactionBudget{MaxRunes: estimateRunes(final)}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{Changed: true}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{History: final, Changed: true}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if !stage2Ran {
+			t.Fatalf("stage 2 skipped: empty Changed=true candidate truncated the working history")
+		}
+		if len(result.Errors) != 1 || !strings.Contains(result.Errors[0].Error(), "empty history") {
+			t.Errorf("Errors = %#v, want one empty-history diagnostic", result.Errors)
+		}
+		if !reflect.DeepEqual(result.History, final) {
+			t.Errorf("history = %#v, want the stage-2 reduction", result.History)
+		}
+	})
+
+	t.Run("Changed=false smaller candidate never replaces", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(seed) - 1}
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{History: validReduction(), Changed: false}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if result.Changed {
+			t.Errorf("Changed = true, want false (Changed=false never replaces)")
+		}
+		if !reflect.DeepEqual(result.History, copyMessages(seed)) {
+			t.Errorf("history was replaced by a Changed=false candidate")
+		}
+		if len(result.Errors) != 0 {
+			t.Errorf("Errors = %#v, want none", result.Errors)
+		}
+	})
+
+	t.Run("foreign-block candidate rejected and chain continues", func(t *testing.T) {
+		t.Parallel()
+		seed := chainSeed()
+		budget := CompactionBudget{MaxRunes: estimateRunes(validReduction())}
+		stage2Ran := false
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				return CompactionResult{
+					History: []llm.Message{
+						llm.SystemMessage("policy"),
+						{Role: llm.RoleUser, Content: []llm.ContentBlock{
+							wrappedTextBlock{&llm.TextBlock{Type: "text", Text: "foreign"}},
+						}},
+					},
+					Changed: true,
+				}, nil
+			}),
+			CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				stage2Ran = true
+				return CompactionResult{History: validReduction(), Changed: true}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		if !stage2Ran {
+			t.Fatalf("later stage skipped: foreign-block candidate terminated the chain")
+		}
+		if len(result.Errors) != 1 || !strings.Contains(result.Errors[0].Error(), "clone whitelist") {
+			t.Errorf("Errors = %#v, want one clone-whitelist diagnostic", result.Errors)
+		}
+		if !reflect.DeepEqual(result.History, validReduction()) {
+			t.Errorf("history = %#v, want the valid stage-2 reduction", result.History)
+		}
+	})
+
+	t.Run("accepted candidate is deep-copied at adoption", func(t *testing.T) {
+		t.Parallel()
+		seed := []llm.Message{
+			{Role: llm.RoleSystem, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "policy"}}},
+			llm.UserMessage("first"),
+		}
+		assistant, results := compactorToolExchange(compactorToolCall{
+			id: "c1", name: "chain_tool", result: strings.Repeat("file contents", 10),
+		})
+		seed = append(seed, assistant)
+		seed = append(seed, results...)
+		seed = append(seed, llm.UserMessage("latest"))
+		candidate := []llm.Message{
+			llm.SystemMessage("policy"),
+			llm.UserMessage("latest"),
+		}
+		budget := CompactionBudget{MaxRunes: estimateRunes(candidate)}
+		var retained *llm.TextBlock
+		chain := NewCompactorChain(
+			CompactFunc(func(_ context.Context, h []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+				sysBlock := h[0].Content[0].(*llm.TextBlock)
+				retained = sysBlock
+				return CompactionResult{
+					History: []llm.Message{
+						{Role: llm.RoleSystem, Content: []llm.ContentBlock{sysBlock}},
+						llm.UserMessage("latest"),
+					},
+					Changed: true,
+				}, nil
+			}),
+		)
+		result, err := chain.Compact(context.Background(), seed, budget, nil, nil)
+		if err != nil {
+			t.Fatalf("Compact() error = %v", err)
+		}
+		retained.Text = "MUTATED-AFTER"
+		if got := result.History[0].Content[0].(*llm.TextBlock).Text; got != "policy" {
+			t.Errorf("accepted history mutated through the stage's retained pointer: %q", got)
+		}
+	})
+}
