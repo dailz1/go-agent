@@ -609,6 +609,43 @@ func TestToolResultMessageImages(t *testing.T) {
 	}
 }
 
+// TestToolResultMessageImageDataIsolated pins the record-time isolation
+// contract (issue #11): the message's image bytes are private copies, so
+// neither a tool rewriting its returned buffer nor a consumer mutating the
+// constructed message can corrupt what history records.
+func TestToolResultMessageImageDataIsolated(t *testing.T) {
+	result := tool.NewImageResult("shot", tool.Image{MIMEType: "image/png", Data: []byte("png-bytes")})
+	msg := ToolResultMessage("call_1", result)
+	block := msg.Content[0].(ToolResultBlock)
+
+	// Tool-side rewrite must not reach the message.
+	result.Images[0].Data[0] = 'X'
+	if got := string(block.Images[0].Data); got != "png-bytes" {
+		t.Errorf("message image data = %q, want untouched %q after tool-side rewrite", got, "png-bytes")
+	}
+
+	// Consumer-side in-place edit of the message must not reach the tool:
+	// only the tool's own rewrite ('X') is present, not the message's edit ('Y').
+	block.Images[0].Data[1] = 'Y'
+	if got := string(result.Images[0].Data); got != "Xng-bytes" {
+		t.Errorf("tool image data = %q, want %q (own rewrite only, no message-side leak)", got, "Xng-bytes")
+	}
+
+	// Shape semantics: nil stays nil; an empty Data stays empty. Both are
+	// identical on the wire (omitempty); the durable path's canonicalResultBlock
+	// normalizes empty to nil at record time.
+	nilResult := tool.NewImageResult("u", tool.Image{URL: "https://example.com/a.png"})
+	nilBlock := ToolResultMessage("call_2", nilResult).Content[0].(ToolResultBlock)
+	if nilBlock.Images[0].Data != nil {
+		t.Errorf("nil source data = %v, want nil", nilBlock.Images[0].Data)
+	}
+	emptyResult := tool.NewImageResult("e", tool.Image{MIMEType: "image/png", Data: []byte{}})
+	emptyBlock := ToolResultMessage("call_3", emptyResult).Content[0].(ToolResultBlock)
+	if len(emptyBlock.Images[0].Data) != 0 {
+		t.Errorf("empty source data = %v, want empty", emptyBlock.Images[0].Data)
+	}
+}
+
 func TestToolResultBlockDecodeImages(t *testing.T) {
 	data := `{"role":"tool","content":[{"type":"tool_result","tool_use_id":"call_1","content":"shot","images":[{"type":"image","url":"https://example.com/a.png"}]}]}`
 	var msg Message

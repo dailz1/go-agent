@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -124,6 +125,12 @@ func AssistantToolCallMessage(calls ...ToolUseBlock) Message {
 	}
 }
 
+// ToolResultMessage converts a tool result into the model-visible message
+// recorded in history. Image Data bytes are cloned at construction, so neither
+// a tool rewriting its returned buffer after return nor a consumer mutating
+// the delivered ToolResultEvent can corrupt the recorded history (issue #11).
+// nil Data stays nil; empty Data stays empty (identical on the wire via
+// omitempty).
 func ToolResultMessage(toolUseID string, result *tool.ToolResult) Message {
 	if result == nil {
 		result = tool.NewErrorResult("tool returned nil result")
@@ -132,7 +139,7 @@ func ToolResultMessage(toolUseID string, result *tool.ToolResult) Message {
 	if len(result.Images) > 0 {
 		images = make([]ImageBlock, len(result.Images))
 		for i, img := range result.Images {
-			images[i] = ImageBlock{Type: "image", URL: img.URL, MIMEType: img.MIMEType, Data: img.Data}
+			images[i] = ImageBlock{Type: "image", URL: img.URL, MIMEType: img.MIMEType, Data: bytes.Clone(img.Data)}
 		}
 	}
 	return Message{

@@ -48,6 +48,7 @@ DoneEvent                      （恒为最后一个事件）
 ### ToolResultEvent
 - **何时发**：一个调用的结果（成功、软失败、审批拒绝、未知工具、恢复的 panic、iteration-limit skip）记入 history 后投递，恰好一条。持久线程的普通可执行轮先写该调用的 `round_result`，终端 skip 批沿用完整批提交；非持久运行直接记入 history。
 - **到达保证**：durable-before-visible——事件到达即结果已可回放。轮内投递顺序 = 宣告顺序；**执行完成顺序绝不泄漏到事件顺序**（并行执行时后完成的调用不插队）。
+- **载荷隔离**：`Result` 是工具返回结果的隔离拷贝，持久与非持久运行一律成立（issue #11，2026-11-18）：`Images` 每张图的 `Data` 逐图克隆，消费者原地修改事件字节不得影响内存 history、单结果/轮末批记录或工具原结果。历史侧隔离由 `llm.ToolResultMessage` 构造期克隆承担，持久路径另有 settle 写边界深拷（DESIGN.md round_result 契约）；nil `Data` 保持 nil，空 `Data` 保持空。
 - **break 行为**：普通轮 break 保持 resumable；恢复保留已记录结果，只对未记录调用补 outcome-unknown，不重投历史 TR。最后一个 TR 上 break 也可能留下未关闭轮，此时恢复只补轮关闭。终端 skip 批 break 只停投递。
 
 ### RetryEvent

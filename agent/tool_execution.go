@@ -119,14 +119,17 @@ func (r *toolRound) settle(frontier int) bool {
 		call := r.calls[index]
 		result := r.slots[index].result
 		msg := llm.ToolResultMessage(call.ID, result)
-		eventResult := result
+		// The delivered event always carries its own copy, on durable and
+		// non-durable runs alike (issue #11): a non-durable run has no write
+		// boundary below, so cloning here is what keeps a consumer mutating
+		// the event from reaching the tool's original result.
+		eventResult := cloneToolResult(result)
 		if r.sess != nil {
 			// Freeze nested mutable bytes at the write boundary: the durable
 			// record, history, and the round-end batch all carry this isolated
 			// copy, so a consumer mutating the delivered event — down to
 			// editing an image Data byte in place — can never reach them.
 			msg = deepCopyMessages([]llm.Message{msg})[0]
-			eventResult = cloneToolResult(result)
 			// json.Marshal coerces invalid UTF-8 to U+FFFD, so normalize the
 			// model-visible strings here: the delivered event and the durable
 			// record must stay equal across a replay.
