@@ -252,12 +252,20 @@ func invalidHistoryf(format string, args ...any) error {
 	return fmt.Errorf("%s: %w", detail, ErrInvalidHistory)
 }
 
-func estimateRunes(history []llm.Message) int {
+func estimateRunesMode(history []llm.Message) (int, bool) {
 	encoded, err := json.Marshal(history)
 	if err == nil {
-		return utf8.RuneCount(encoded)
+		return utf8.RuneCount(encoded), true
 	}
+	return fallbackRunes(history), false
+}
 
+func estimateRunes(history []llm.Message) int {
+	runes, _ := estimateRunesMode(history)
+	return runes
+}
+
+func fallbackRunes(history []llm.Message) int {
 	total := 0
 	for _, message := range history {
 		total += len(message.Role)
@@ -266,6 +274,119 @@ func estimateRunes(history []llm.Message) int {
 		}
 	}
 	return total
+}
+
+// groupEstimate sizes one group in the mode the whole history encodes in:
+// the estimator is deterministic, so if the whole history marshals, every
+// group marshals too, and per-group JSON rune counts sum exactly to the
+// whole (see dropDelta); otherwise every group uses the additive
+// fallback byte sum, which also sums exactly.
+func groupEstimate(messages []llm.Message, jsonMode bool) int {
+	if jsonMode {
+		return estimateRunes(messages)
+	}
+	return fallbackRunes(messages)
+}
+
+// jsonSizeLowerBound returns a conservative lower bound on the runes a
+// group contributes to the whole-history JSON encoding: text counted in
+// runes (JSON escaping only adds), inline images counted at their base64
+// expansion (4 bytes per 3 raw bytes). The bound never exceeds the true
+// delta, so routing on it can only mis-pick the slower exact path, never
+// an incorrect one.
+func jsonSizeLowerBound(messages []llm.Message) int {
+	total := 0
+	for _, message := range messages {
+		for _, block := range message.Content {
+			switch typed := block.(type) {
+			case llm.TextBlock:
+				total += utf8.RuneCountInString(typed.Text)
+			case *llm.TextBlock:
+				if typed != nil {
+					total += utf8.RuneCountInString(typed.Text)
+				}
+			case llm.ToolUseBlock:
+			case *llm.ToolUseBlock:
+				// Input is json.RawMessage: MarshalJSON compacts its
+				// insignificant whitespace, so raw runes can only overcount
+				// the delta. Omitted from the bound on purpose.
+			case llm.ToolResultBlock:
+				total += utf8.RuneCountInString(typed.Content)
+				total += imageBase64Runes(typed.Images)
+			case *llm.ToolResultBlock:
+				if typed != nil {
+					total += utf8.RuneCountInString(typed.Content)
+					total += imageBase64Runes(typed.Images)
+				}
+			case llm.ReasoningBlock:
+				total += utf8.RuneCountInString(typed.Content)
+			case *llm.ReasoningBlock:
+				if typed != nil {
+					total += utf8.RuneCountInString(typed.Content)
+				}
+			case llm.ReasoningItemBlock:
+				for _, summary := range typed.Summary {
+					total += utf8.RuneCountInString(summary)
+				}
+				total += utf8.RuneCountInString(typed.EncryptedContent)
+			case *llm.ReasoningItemBlock:
+				if typed != nil {
+					for _, summary := range typed.Summary {
+						total += utf8.RuneCountInString(summary)
+					}
+					total += utf8.RuneCountInString(typed.EncryptedContent)
+				}
+			case llm.ImageBlock:
+				total += len(typed.Data) * 4 / 3
+			case *llm.ImageBlock:
+				if typed != nil {
+					total += len(typed.Data) * 4 / 3
+				}
+			}
+		}
+	}
+	return total
+}
+
+func imageBase64Runes(images []llm.ImageBlock) int {
+	n := 0
+	for _, img := range images {
+		n += len(img.Data) * 4 / 3
+	}
+	return n
+}
+
+// knownBlockTypes reports whether every block is one of the kernel's known
+// types. Known types are plain structs with deterministic JSON encodings —
+// the incremental accounting relies on a group encoding identically inside
+// the whole history and alone. An embedding wrapper (e.g. a struct
+// embedding llm.TextBlock) satisfies the sealed interface and the whole
+// history can still marshal, but its custom MarshalJSON may encode
+// differently across calls, so such histories must keep the full-recount
+// path.
+func knownBlockTypes(history []llm.Message) bool {
+	for i := range history {
+		for _, block := range history[i].Content {
+			if !clonableBlock(block) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// dropDelta returns how much the whole-history estimate shrinks when one
+// group of size runes is removed. A group's own encoding carries its "[]"
+// brackets, but the whole-history encoding collapses them into the single
+// outer pair — so only the group's inner runes plus one comma disappear:
+// JSON mode delta is size-1. The fallback byte sum is purely additive.
+// Sliding-window removals always leave the protected final group in place,
+// so the arithmetic never reaches the empty history.
+func dropDelta(size int, jsonMode bool) int {
+	if jsonMode {
+		return size - 1
+	}
+	return size
 }
 
 func fallbackBlockSize(block llm.ContentBlock) int {
@@ -377,7 +498,18 @@ func (dropOldestToolGroupsCompactor) Compact(
 	if err := compactionContextErr(ctx, &result); err != nil {
 		return result, err
 	}
-	historyRunes := estimateRunes(result.History)
+	knownTypes := knownBlockTypes(result.History)
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	historyRunes, jsonMode := estimateRunesMode(result.History)
+	if !knownTypes {
+		// Custom MarshalJSON on embedding-wrapper blocks breaks the
+		// elementwise exactness the incremental accounting relies on, and
+		// marshalers run during estimateRunesMode — the gate must inspect
+		// the blocks before any custom code can run.
+		jsonMode = false
+	}
 	if err := compactionContextErr(ctx, &result); err != nil {
 		return result, err
 	}
@@ -387,50 +519,116 @@ func (dropOldestToolGroupsCompactor) Compact(
 
 	protected := protectedGroups(groups)
 	considered := make([]bool, len(groups))
-	for historyRunes > budget.MaxRunes {
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
-		}
-		candidate := -1
-		for index, group := range groups {
-			if group.isTool && !protected[index] && !considered[index] {
-				candidate = index
+	materialized := !jsonMode
+	if jsonMode {
+		// Incremental exact accounting: replacing one group with its
+		// collapse keeps the group count unchanged, so the whole estimate
+		// moves by replacementRunes - groupRunes. Candidates are sized on
+		// demand; groups never collapsed are never encoded.
+		for historyRunes > budget.MaxRunes {
+			if err := compactionContextErr(ctx, &result); err != nil {
+				if result.Changed {
+					result.History = flattenGroups(groups)
+				}
+				return result, err
+			}
+			candidate := -1
+			for index, group := range groups {
+				if group.isTool && !protected[index] && !considered[index] {
+					candidate = index
+					break
+				}
+			}
+			if candidate < 0 {
 				break
 			}
+			considered[candidate] = true
+			replacement := []llm.Message{collapseToolGroup(groups[candidate])}
+			if err := compactionContextErr(ctx, &result); err != nil {
+				if result.Changed {
+					result.History = flattenGroups(groups)
+				}
+				return result, err
+			}
+			groupRunes := groupEstimate(groups[candidate].messages, true)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				if result.Changed {
+					result.History = flattenGroups(groups)
+				}
+				return result, err
+			}
+			replacementRunes := groupEstimate(replacement, true)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				if result.Changed {
+					result.History = flattenGroups(groups)
+				}
+				return result, err
+			}
+			if replacementRunes >= groupRunes {
+				continue
+			}
+			groups[candidate] = historyGroup{messages: replacement}
+			result.DroppedGroups++
+			result.Changed = true
+			historyRunes += replacementRunes - groupRunes
 		}
-		if candidate < 0 {
-			break
-		}
+	} else {
+		// Marshal failed at entry (e.g. malformed streamed tool args):
+		// keep the original per-iteration estimation, so the accounting
+		// stays exact if a collapse drops the failing group and encoding
+		// starts succeeding mid-loop.
+		for historyRunes > budget.MaxRunes {
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			candidate := -1
+			for index, group := range groups {
+				if group.isTool && !protected[index] && !considered[index] {
+					candidate = index
+					break
+				}
+			}
+			if candidate < 0 {
+				break
+			}
 
-		considered[candidate] = true
-		replacement := []llm.Message{collapseToolGroup(groups[candidate])}
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
+			considered[candidate] = true
+			replacement := []llm.Message{collapseToolGroup(groups[candidate])}
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			replacementRunes := estimateRunes(replacement)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			groupRunes := estimateRunes(groups[candidate].messages)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			if replacementRunes >= groupRunes {
+				continue
+			}
+			groups[candidate] = historyGroup{messages: replacement}
+			result.DroppedGroups++
+			result.Changed = true
+			result.History = flattenGroups(groups)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			historyRunes = estimateRunes(result.History)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
 		}
-		replacementRunes := estimateRunes(replacement)
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
-		}
-		groupRunes := estimateRunes(groups[candidate].messages)
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
-		}
-		if replacementRunes >= groupRunes {
-			continue
-		}
-		groups[candidate] = historyGroup{messages: replacement}
-		result.DroppedGroups++
-		result.Changed = true
+	}
+
+	if result.Changed && !materialized {
 		result.History = flattenGroups(groups)
 		if err := compactionContextErr(ctx, &result); err != nil {
 			return result, err
 		}
 		historyRunes = estimateRunes(result.History)
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
-		}
 	}
-
 	if err := compactionContextErr(ctx, &result); err != nil {
 		return result, err
 	}
@@ -509,7 +707,18 @@ func (slidingWindowCompactor) Compact(
 	if err := compactionContextErr(ctx, &result); err != nil {
 		return result, err
 	}
-	historyRunes := estimateRunes(result.History)
+	knownTypes := knownBlockTypes(result.History)
+	if err := compactionContextErr(ctx, &result); err != nil {
+		return result, err
+	}
+	historyRunes, jsonMode := estimateRunesMode(result.History)
+	if !knownTypes {
+		// Custom MarshalJSON on embedding-wrapper blocks breaks the
+		// elementwise exactness the incremental accounting relies on, and
+		// marshalers run during estimateRunesMode — the gate must inspect
+		// the blocks before any custom code can run.
+		jsonMode = false
+	}
 	if err := compactionContextErr(ctx, &result); err != nil {
 		return result, err
 	}
@@ -522,33 +731,131 @@ func (slidingWindowCompactor) Compact(
 	for index := range active {
 		active[index] = true
 	}
-	for historyRunes > budget.MaxRunes {
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
-		}
-		candidate := -1
-		for index := range groups {
-			if active[index] && !protected[index] {
-				candidate = index
+	materialized := !jsonMode
+	if jsonMode {
+		// Incremental exact accounting: the JSON encoding is elementwise
+		// plus one comma between adjacent groups, so removing a group of s
+		// runes lowers the whole estimate by s-1 (the group's own brackets
+		// collapse into the single outer pair). Only groups that are not
+		// dropped stay unencoded; the flattened history and one full
+		// verification encode run once after the loop.
+		measured := false
+		for historyRunes > budget.MaxRunes {
+			if err := compactionContextErr(ctx, &result); err != nil {
+				if result.Changed && !materialized {
+					result.History = flattenActiveGroups(groups, active)
+				}
+				return result, err
+			}
+			candidate := -1
+			more := false
+			for index := range groups {
+				if active[index] && !protected[index] {
+					if candidate < 0 {
+						candidate = index
+						continue
+					}
+					more = true
+					break
+				}
+			}
+			if candidate < 0 {
+				break
+			}
+			active[candidate] = false
+			result.DroppedGroups++
+			result.Changed = true
+			if measured && more {
+				// Cancel between the scan and the sizing encode: the
+				// committed removals must be materialized before the
+				// discarded group is serialized.
+				if err := compactionContextErr(ctx, &result); err != nil {
+					result.History = flattenActiveGroups(groups, active)
+					return result, err
+				}
+				bound := jsonSizeLowerBound(groups[candidate].messages)
+				overflow := historyRunes - budget.MaxRunes
+				// Direct retained-history measurement when the discarded
+				// group provably covers the remaining overflow (lower bound
+				// >= overflow means the drop meets the budget), or when it
+				// dominates the history (each such recount at least halves
+				// the remaining history). Otherwise serialize the discarded
+				// group once for the exact subtraction.
+				if bound >= overflow || 2*bound >= historyRunes {
+					result.History = flattenActiveGroups(groups, active)
+					if err := compactionContextErr(ctx, &result); err != nil {
+						return result, err
+					}
+					historyRunes = estimateRunes(result.History)
+					materialized = true
+					measured = true
+					continue
+				}
+				// Cancel again after the bound scan: it walks large text
+				// payloads, and the sizing encode below serializes the whole
+				// discarded group.
+				if err := compactionContextErr(ctx, &result); err != nil {
+					result.History = flattenActiveGroups(groups, active)
+					return result, err
+				}
+				historyRunes -= dropDelta(groupEstimate(groups[candidate].messages, true), true)
+				materialized = false
+				continue
+			}
+			// First removal or last eligible group: measure the retained
+			// history directly instead of sizing the discarded group,
+			// which may be a large image payload being dropped.
+			result.History = flattenActiveGroups(groups, active)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			historyRunes = estimateRunes(result.History)
+			materialized = true
+			measured = true
+			if !more {
 				break
 			}
 		}
-		if candidate < 0 {
-			break
+	} else {
+		// Marshal failed at entry (e.g. malformed streamed tool args):
+		// keep the original per-iteration estimation, so the accounting
+		// stays exact if a removal drops the failing group and encoding
+		// starts succeeding mid-loop.
+		for historyRunes > budget.MaxRunes {
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			candidate := -1
+			for index := range groups {
+				if active[index] && !protected[index] {
+					candidate = index
+					break
+				}
+			}
+			if candidate < 0 {
+				break
+			}
+			active[candidate] = false
+			result.DroppedGroups++
+			result.Changed = true
+			result.History = flattenActiveGroups(groups, active)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
+			historyRunes = estimateRunes(result.History)
+			if err := compactionContextErr(ctx, &result); err != nil {
+				return result, err
+			}
 		}
-		active[candidate] = false
-		result.DroppedGroups++
-		result.Changed = true
+	}
+
+	if result.Changed && !materialized {
 		result.History = flattenActiveGroups(groups, active)
 		if err := compactionContextErr(ctx, &result); err != nil {
 			return result, err
 		}
 		historyRunes = estimateRunes(result.History)
-		if err := compactionContextErr(ctx, &result); err != nil {
-			return result, err
-		}
 	}
-
 	if err := compactionContextErr(ctx, &result); err != nil {
 		return result, err
 	}

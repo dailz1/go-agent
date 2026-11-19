@@ -444,6 +444,188 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 	})
 }
 
+func TestGroupSizeAccountingMatchesWholeEncoding(t *testing.T) {
+	t.Parallel()
+
+	assistant, results := compactorToolExchange(
+		compactorToolCall{id: "a", name: "read", result: strings.Repeat("content", 40)},
+		compactorToolCall{id: "b", name: "read", result: strings.Repeat("content", 60)},
+	)
+	history := []llm.Message{
+		llm.SystemMessage("policy"),
+		llm.UserMessage("first"),
+		assistant,
+		results[0],
+		results[1],
+		llm.AssistantMessage("old"),
+		llm.UserMessage("latest"),
+	}
+	groups, err := partitionHistory(history)
+	if err != nil {
+		t.Fatalf("partitionHistory() unexpected error: %v", err)
+	}
+	sizes := make([]int, len(groups))
+	for index := range groups {
+		sizes[index] = groupEstimate(groups[index].messages, true)
+	}
+
+	entry := estimateRunes(history)
+	active := make([]bool, len(groups))
+	for index := range active {
+		active[index] = true
+	}
+	droppedDelta := 0
+	for _, dropped := range []int{2, 3} {
+		active[dropped] = false
+		droppedDelta += dropDelta(sizes[dropped], true)
+	}
+	remaining := flattenActiveGroups(groups, active)
+	if got, want := entry-droppedDelta, estimateRunes(remaining); got != want {
+		t.Errorf("entry %d - dropped delta %d = %d, want re-encoded remainder %d", entry, droppedDelta, entry-droppedDelta, want)
+	}
+	if got, want := dropDelta(sizes[0], false), sizes[0]; got != want {
+		t.Errorf("dropDelta(fallback) = %d, want %d", got, want)
+	}
+}
+func TestCompactorSlidingWindowDropsExactlyToBudget(t *testing.T) {
+	t.Parallel()
+
+	ids := []string{"a", "b", "c", "d", "e", "f"}
+	history := []llm.Message{llm.SystemMessage("policy"), llm.UserMessage("first")}
+	for _, id := range ids {
+		assistant, results := compactorToolExchange(compactorToolCall{id: id, name: "read", result: strings.Repeat("payload", 20)})
+		history = append(history, assistant, results[0])
+	}
+	history = append(history, llm.AssistantMessage("old"), llm.UserMessage("latest"), llm.AssistantMessage("final"))
+
+	groups, err := partitionHistory(history)
+	if err != nil {
+		t.Fatalf("partitionHistory() unexpected error: %v", err)
+	}
+	protected := protectedGroups(groups)
+	entry := estimateRunes(history)
+	eligibleSizes := []int{}
+	for index, group := range groups {
+		if !protected[index] {
+			eligibleSizes = append(eligibleSizes, groupEstimate(group.messages, true))
+		}
+	}
+	if len(eligibleSizes) < 5 {
+		t.Fatalf("partitionHistory() eligible groups = %d, want at least 5", len(eligibleSizes))
+	}
+	afterThree := entry - (dropDelta(eligibleSizes[0], true) + dropDelta(eligibleSizes[1], true) + dropDelta(eligibleSizes[2], true))
+
+	tests := []struct {
+		name    string
+		budget  int
+		dropped int
+	}{
+		{name: "drops exactly three", budget: afterThree, dropped: 3},
+		{name: "one rune over forces a fourth drop", budget: afterThree - 1, dropped: 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := NewSlidingWindowCompactor().Compact(
+				context.Background(),
+				history,
+				CompactionBudget{MaxRunes: tt.budget},
+				nil,
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("Compact() unexpected error: %v", err)
+			}
+			if result.DroppedGroups != tt.dropped {
+				t.Errorf("Compact() DroppedGroups = %d, want %d", result.DroppedGroups, tt.dropped)
+			}
+			if got := estimateRunes(result.History); got > tt.budget {
+				t.Errorf("Compact() history estimate = %d, over budget %d", got, tt.budget)
+			}
+		})
+	}
+}
+
+type compactCustomMarshalBlock struct {
+	llm.TextBlock
+}
+
+func (c compactCustomMarshalBlock) MarshalJSON() ([]byte, error) {
+	return []byte(`{"type":"text","text":"` + c.Text + `"}`), nil
+}
+
+func TestKnownBlockTypesGate(t *testing.T) {
+	t.Parallel()
+
+	if !knownBlockTypes([]llm.Message{llm.UserMessage("plain")}) {
+		t.Error("knownBlockTypes() = false for known types, want true")
+	}
+	history := []llm.Message{llm.UserMessage("mixed")}
+	history[0].Content = append(history[0].Content, compactCustomMarshalBlock{TextBlock: llm.TextBlock{Text: "custom"}})
+	if knownBlockTypes(history) {
+		t.Error("knownBlockTypes() = true for embedding-wrapper block, want false")
+	}
+}
+
+func TestCompactorSlidingWindowCustomMarshalBlock(t *testing.T) {
+	t.Parallel()
+
+	assistant, results := compactorToolExchange(compactorToolCall{id: "tool", name: "read", result: strings.Repeat("result", 30)})
+	history := []llm.Message{
+		llm.SystemMessage("policy"),
+		llm.UserMessage("first"),
+		assistant,
+		results[0],
+		llm.AssistantMessage("old"),
+		llm.UserMessage("latest"),
+	}
+	history[4].Content = append(history[4].Content, compactCustomMarshalBlock{TextBlock: llm.TextBlock{Text: "custom"}})
+
+	result, err := NewSlidingWindowCompactor().Compact(
+		context.Background(),
+		history,
+		CompactionBudget{MaxRunes: estimateRunes(history) - 1},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Compact() unexpected error: %v", err)
+	}
+	if result.DroppedGroups != 1 {
+		t.Errorf("Compact() DroppedGroups = %d, want 1", result.DroppedGroups)
+	}
+	if got := estimateRunes(result.History); got > estimateRunes(history)-1 {
+		t.Errorf("Compact() history estimate = %d, over budget", got)
+	}
+}
+
+func TestJSONSizeLowerBoundBelowActualEncoding(t *testing.T) {
+	t.Parallel()
+
+	blocks := []llm.ContentBlock{
+		llm.TextBlock{Text: strings.Repeat("中文内容", 100)},
+		&llm.TextBlock{Text: "{  padded  }"},
+		llm.ToolUseBlock{ID: "a", Name: "read", Input: json.RawMessage(`{  "x" : 1  }`)},
+		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "a", Content: strings.Repeat("结果", 50), Images: []llm.ImageBlock{{Type: "image", Data: make([]byte, 1000)}}},
+		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "a", Content: "result"},
+		llm.ReasoningBlock{Type: "reasoning", Content: strings.Repeat("思考", 30)},
+		&llm.ReasoningBlock{Type: "reasoning", Content: "thinking"},
+		llm.ReasoningItemBlock{Type: "reasoning_item", EncryptedContent: strings.Repeat("密", 100), Summary: []string{"摘要"}},
+		llm.ImageBlock{Type: "image", Data: make([]byte, 500)},
+		llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "b", Name: "w", Input: json.RawMessage(`{}`)}).Content[0],
+	}
+	group := []llm.Message{{Role: llm.RoleAssistant, Content: blocks}}
+	bound := jsonSizeLowerBound(group)
+	actual := estimateRunes(group)
+	if bound > actual {
+		t.Errorf("jsonSizeLowerBound() = %d exceeds actual encoding %d", bound, actual)
+	}
+	if bound <= 0 {
+		t.Errorf("jsonSizeLowerBound() = %d, want positive", bound)
+	}
+}
+
 func TestCompactorSlidingWindow(t *testing.T) {
 	t.Parallel()
 
