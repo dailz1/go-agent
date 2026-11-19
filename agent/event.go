@@ -76,7 +76,11 @@ type RetryInfo struct {
 	Attempt int
 	// MaxAttempts is the total attempts allowed (e.g., maxRetries+1).
 	MaxAttempts int
-	// Delay is the duration before this retry attempt.
+	// Delay is the scheduled wait before this retry attempt, resolved once
+	// at retry-scheduling time (Retry-After precedence, jittered backoff
+	// otherwise, capped by the context deadline). The reported value is the
+	// same duration the retry sleeper waits; cancellation can shorten the
+	// actual sleep.
 	Delay time.Duration
 	// Reason is a user-friendly, sanitized message (e.g., "rate limited (429)").
 	Reason string

@@ -73,7 +73,11 @@ func (a *Agent) chatWithRetryAndFallback(
 			"error", lastRetryErr,
 		)
 		if attempt < maxAttempts {
-			delay := llm.Backoff(baseDelay, maxDelay, attempt)
+			delay, rerr := llm.ResolveRetryDelay(ctx, lastRetryErr, baseDelay, maxDelay, attempt)
+			if rerr != nil {
+				yield(nil, rerr)
+				return nil, false
+			}
 			info := RetryInfo{
 				Attempt:     attempt + 1,
 				MaxAttempts: maxAttempts,
@@ -88,7 +92,7 @@ func (a *Agent) chatWithRetryAndFallback(
 			if a.retryCfg.OnRetry != nil {
 				a.retryCfg.OnRetry(info)
 			}
-			if werr := llm.WaitForRetry(ctx, lastRetryErr, baseDelay, maxDelay, attempt); werr != nil {
+			if werr := llm.SleepFor(ctx, delay); werr != nil {
 				yield(nil, werr)
 				return nil, false
 			}
@@ -108,17 +112,37 @@ func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
 		switch b := block.(type) {
 		case llm.ReasoningBlock:
 			chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
+		case *llm.ReasoningBlock:
+			if b != nil {
+				chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
+			}
 		case llm.TextBlock:
 			chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
+		case *llm.TextBlock:
+			if b != nil {
+				chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
+			}
 		case llm.ToolUseBlock:
 			hasToolUse = true
 			chunks = append(chunks,
 				llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
 				llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
 			)
+		case *llm.ToolUseBlock:
+			if b != nil {
+				hasToolUse = true
+				chunks = append(chunks,
+					llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
+					llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
+				)
+			}
 		case llm.ReasoningItemBlock:
 			chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: b})
-		case llm.ImageBlock, llm.ToolResultBlock:
+		case *llm.ReasoningItemBlock:
+			if b != nil {
+				chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: *b})
+			}
+		case llm.ImageBlock, llm.ToolResultBlock, *llm.ImageBlock, *llm.ToolResultBlock:
 		}
 	}
 	finishReason := "stop"

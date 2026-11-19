@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -279,7 +280,21 @@ func WithProviders(providers ...llm.Provider) Option {
 	return func(a *Agent) { a.altProviders = append(a.altProviders, providers...) }
 }
 
+// maxRetryCap bounds user-configured MaxRetries at the largest value whose
+// surrounding +1 arithmetic (maxAttempts, attempt+1 in logs) cannot
+// overflow; it preserves "retry as much as representable" without imposing
+// a smaller policy cap.
+const maxRetryCap = math.MaxInt - 2
+
 func WithRetryConfig(cfg AgentRetryConfig) Option {
+	// Clamp overflow-prone budgets at the option constructor (issue #16):
+	// maxRetryCap is the largest value whose surrounding +1 arithmetic
+	// (maxAttempts, attempt+1 in logs) cannot overflow. It preserves
+	// "retry as much as representable" without imposing a smaller policy
+	// cap; resolveRetryConfig needs no second guard.
+	if cfg.MaxRetries > maxRetryCap {
+		cfg.MaxRetries = maxRetryCap
+	}
 	return func(a *Agent) { a.retryCfg = cfg; a.retryCfgSet = true }
 }
 

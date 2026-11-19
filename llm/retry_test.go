@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"syscall"
@@ -157,7 +158,7 @@ func TestWaitForRetry(t *testing.T) {
 
 	t.Run("Retry-After skips jittered backoff", func(t *testing.T) {
 		recordedDelay = 0
-		err := waitForRetry(
+		err := WaitForRetry(
 			context.Background(),
 			fmt.Errorf("wrapped: %w", &APIError{StatusCode: 429, RetryAfter: 2 * time.Second}),
 			defaultBaseDelay,
@@ -165,7 +166,7 @@ func TestWaitForRetry(t *testing.T) {
 			0,
 		)
 		if err != nil {
-			t.Fatalf("waitForRetry() error = %v", err)
+			t.Fatalf("WaitForRetry() error = %v", err)
 		}
 		if recordedDelay != 2*time.Second {
 			t.Errorf("delay = %v, want 2s", recordedDelay)
@@ -174,7 +175,7 @@ func TestWaitForRetry(t *testing.T) {
 
 	t.Run("missing Retry-After uses jittered backoff", func(t *testing.T) {
 		recordedDelay = 0
-		err := waitForRetry(
+		err := WaitForRetry(
 			context.Background(),
 			&APIError{StatusCode: 429},
 			defaultBaseDelay,
@@ -182,7 +183,7 @@ func TestWaitForRetry(t *testing.T) {
 			0,
 		)
 		if err != nil {
-			t.Fatalf("waitForRetry() error = %v", err)
+			t.Fatalf("WaitForRetry() error = %v", err)
 		}
 		if recordedDelay < 250*time.Millisecond || recordedDelay > 500*time.Millisecond {
 			t.Errorf("delay = %v, want jittered backoff in [250ms, 500ms]", recordedDelay)
@@ -211,7 +212,7 @@ func TestWaitForRetry(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
-		err := waitForRetry(
+		err := WaitForRetry(
 			ctx,
 			&APIError{StatusCode: 429, RetryAfter: 2 * time.Second},
 			defaultBaseDelay,
@@ -219,12 +220,147 @@ func TestWaitForRetry(t *testing.T) {
 			0,
 		)
 		if err != nil {
-			t.Fatalf("waitForRetry() error = %v", err)
+			t.Fatalf("WaitForRetry() error = %v", err)
 		}
 		if recordedDelay <= 0 || recordedDelay > 50*time.Millisecond {
 			t.Errorf("delay = %v, want context-capped delay in (0, 50ms]", recordedDelay)
 		}
 	})
+}
+
+func TestResolveRetryDelay(t *testing.T) {
+	originalSleepFor := sleepFor
+	t.Cleanup(func() { sleepFor = originalSleepFor })
+	// ResolveRetryDelay must not sleep: any sleep call is a policy leak.
+	sleepFor = func(_ context.Context, _ time.Duration) error {
+		t.Errorf("ResolveRetryDelay slept instead of resolving")
+		return nil
+	}
+
+	t.Run("Retry-After takes precedence, no jitter", func(t *testing.T) {
+		delay, err := ResolveRetryDelay(
+			context.Background(),
+			fmt.Errorf("wrapped: %w", &APIError{StatusCode: 429, RetryAfter: 2 * time.Second}),
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			3,
+		)
+		if err != nil {
+			t.Fatalf("ResolveRetryDelay() error = %v", err)
+		}
+		if delay != 2*time.Second {
+			t.Errorf("delay = %v, want 2s (Retry-After, not attempt-3 backoff)", delay)
+		}
+	})
+
+	t.Run("missing Retry-After uses jittered backoff", func(t *testing.T) {
+		delay, err := ResolveRetryDelay(
+			context.Background(),
+			&APIError{StatusCode: 429},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if err != nil {
+			t.Fatalf("ResolveRetryDelay() error = %v", err)
+		}
+		if delay < 250*time.Millisecond || delay > 500*time.Millisecond {
+			t.Errorf("delay = %v, want jittered backoff in [250ms, 500ms]", delay)
+		}
+	})
+
+	t.Run("capped by context deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		delay, err := ResolveRetryDelay(
+			ctx,
+			&APIError{StatusCode: 429, RetryAfter: 2 * time.Second},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if err != nil {
+			t.Fatalf("ResolveRetryDelay() error = %v", err)
+		}
+		if delay <= 0 || delay > 50*time.Millisecond {
+			t.Errorf("delay = %v, want context-capped delay in (0, 50ms]", delay)
+		}
+	})
+
+	t.Run("exhausted deadline returns the context error", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		delay, err := ResolveRetryDelay(
+			ctx,
+			&APIError{StatusCode: 429},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ResolveRetryDelay() error = %v, want context.DeadlineExceeded", err)
+		}
+		if delay != 0 {
+			t.Errorf("delay = %v, want 0 on exhausted deadline", delay)
+		}
+	})
+
+	t.Run("canceled context returns the context error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := ResolveRetryDelay(
+			ctx,
+			&APIError{StatusCode: 429},
+			defaultBaseDelay,
+			DefaultMaxDelay,
+			0,
+		)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResolveRetryDelay() error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+func TestSleepFor(t *testing.T) {
+	started := time.Now()
+	if err := SleepFor(context.Background(), 5*time.Millisecond); err != nil {
+		t.Fatalf("SleepFor() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 5*time.Millisecond {
+		t.Errorf("elapsed = %v, wanted at least the requested delay", elapsed)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := SleepFor(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Errorf("SleepFor() error = %v, want context.Canceled on canceled context", err)
+	}
+}
+
+func TestBackoffSaturatesWithoutConversionOverflow(t *testing.T) {
+	// attempt large enough that base*2^attempt overflows int64 in float
+	// space; the sampled draw must saturate at maxDelay without converting
+	// an overflowing (possibly negative) float.
+	if got := Backoff(time.Second, DefaultMaxDelay, 200); got != DefaultMaxDelay {
+		t.Errorf("Backoff() = %v, want saturated %v", got, DefaultMaxDelay)
+	}
+	if got := Backoff(time.Hour, DefaultMaxDelay, 40); got != DefaultMaxDelay {
+		t.Errorf("Backoff() = %v, want saturated %v", got, DefaultMaxDelay)
+	}
+	// The minimum jittered draw fits int64 but draws above ~2/3 exceed it
+	// (issue #16 finding: checking only the minimum was insufficient). Every
+	// draw must come back positive and within the cap — never a negative
+	// duration from an overflowing conversion.
+	for range 50 {
+		got := Backoff(3*time.Nanosecond, time.Duration(math.MaxInt64), 62)
+		if got <= 0 || got > time.Duration(math.MaxInt64) {
+			t.Fatalf("Backoff() = %v, want a positive duration within the maxDelay cap", got)
+		}
+	}
+	// Zero base stays zero (0 * +Inf would be NaN, bypassing the cap).
+	if got := Backoff(0, time.Second, 1024); got != 0 {
+		t.Errorf("Backoff(0, ...) = %v, want 0", got)
+	}
 }
 
 func TestSanitizeRetryReason(t *testing.T) {

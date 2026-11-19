@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -466,6 +468,98 @@ func TestProviderRetainedHistoryIsolation(t *testing.T) {
 		verifyRetentionSeed(t, "round-2 handover", p.snapshots[1])
 		verifyRetentionSeed(t, "done history", runResult.History)
 	})
+}
+
+func TestRetryDelaySingleResolution(t *testing.T) {
+	t.Parallel()
+	retryErr := &llm.APIError{StatusCode: 429, RetryAfter: 40 * time.Millisecond}
+	p := &scriptedProvider{steps: []scriptedStep{
+		{stream: true, err: retryErr},
+		{stream: true, chunks: probeTextChunks()},
+	}}
+	var onRetryDelay time.Duration
+	ag := newIsolationAgent(p, 3, WithRetryConfig(AgentRetryConfig{
+		MaxRetries: 3,
+		OnRetry:    func(info RetryInfo) { onRetryDelay = info.Delay },
+	}))
+	result, err := ag.RunWithHistory(context.Background(), retentionSeed(), "go")
+	if err != nil {
+		t.Fatalf("RunWithHistory() error = %v", err)
+	}
+	if len(p.snapshots) != 2 {
+		t.Fatalf("provider calls = %d, want 2 (one failure + success)", len(p.snapshots))
+	}
+	if len(result.Retries) != 1 {
+		t.Fatalf("retries = %d, want 1", len(result.Retries))
+	}
+	// Single resolution (issue #16): the announced delay IS the waited
+	// delay — the Retry-After value, not an independent jitter draw.
+	if got := result.Retries[0].Delay; got != 40*time.Millisecond {
+		t.Errorf("RetryInfo.Delay = %v, want exactly the 40ms Retry-After", got)
+	}
+	if onRetryDelay != 40*time.Millisecond {
+		t.Errorf("OnRetry delay = %v, want exactly the 40ms Retry-After", onRetryDelay)
+	}
+}
+
+func TestSynthesizeChunksPointerForms(t *testing.T) {
+	t.Parallel()
+	usage := &llm.Usage{}
+	blocks := []llm.ContentBlock{
+		&llm.ReasoningBlock{Type: "reasoning", Content: "thinking"},
+		(*llm.TextBlock)(nil), // typed nil: skipped, no chunk
+		&llm.TextBlock{Type: "text", Text: "answer"},
+		&llm.ToolUseBlock{ID: "n1", Name: "probe", Input: []byte("{}")},
+		(*llm.ToolUseBlock)(nil), // typed nil: skipped
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "r1"},
+	}
+	chunks := synthesizeChunks(blocks, usage)
+	want := []llm.Chunk{
+		llm.ReasoningDeltaChunk{Text: "thinking"},
+		llm.TextDeltaChunk{Text: "answer", OutputIndex: 2},
+		llm.ToolCallStartChunk{Index: 3, ID: "n1", Name: "probe"},
+		llm.ToolCallArgsChunk{Index: 3, Delta: "{}"},
+		llm.ReasoningItemChunk{OutputIndex: 5, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "r1"}},
+		llm.DoneChunk{FinishReason: "tool_calls", Usage: usage},
+	}
+	if len(chunks) != len(want) {
+		t.Fatalf("chunks = %#v (%d), want %d", chunks, len(chunks), len(want))
+	}
+	for i := range want {
+		if !reflect.DeepEqual(chunks[i], want[i]) {
+			t.Errorf("chunk[%d] = %#v, want %#v", i, chunks[i], want[i])
+		}
+	}
+}
+
+func TestMaxRetryConfigClamped(t *testing.T) {
+	t.Parallel()
+	ag := newIsolationAgent(&scriptedProvider{}, math.MaxInt)
+	maxRetries, _, _ := ag.resolveRetryConfig()
+	if maxRetries != maxRetryCap {
+		t.Fatalf("resolveRetryConfig() maxRetries = %d, want clamped to maxRetryCap %d", maxRetries, maxRetryCap)
+	}
+	if maxRetries+1 <= 0 {
+		t.Fatalf("maxAttempts = %d, want positive (no overflow)", maxRetries+1)
+	}
+
+	// End to end: MaxInt config must run the retry loop (not skip it and
+	// return a nil stream), with the backoff arithmetic saturated.
+	p := &scriptedProvider{steps: []scriptedStep{
+		{stream: true, err: &llm.APIError{StatusCode: 500, Body: "boom"}},
+		{stream: true, chunks: probeTextChunks()},
+	}}
+	ag2 := newIsolationAgent(p, math.MaxInt)
+	result, err := ag2.RunWithHistory(context.Background(), retentionSeed(), "go")
+	if err != nil {
+		t.Fatalf("RunWithHistory() error = %v (nil-stream panic path)", err)
+	}
+	if len(p.snapshots) != 2 {
+		t.Errorf("provider calls = %d, want 2 (retry loop ran)", len(p.snapshots))
+	}
+	if len(result.Retries) != 1 {
+		t.Errorf("retries = %d, want 1", len(result.Retries))
+	}
 }
 
 func TestProviderRetryHistoryIsolation(t *testing.T) {
