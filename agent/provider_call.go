@@ -10,17 +10,23 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
-func (a *Agent) chatWithRetryAndFallback(
+type providerCallResult struct {
+	stream        iter.Seq2[llm.Chunk, error]
+	err           error
+	providerError bool
+	stopped       bool
+	outboundRunes int
+}
+
+func (r *overflowRecovery) chatWithRetryAndFallback(
 	ctx context.Context,
-	provider llm.Provider,
 	history []llm.Message,
 	tools []tool.ToolInfo,
-	request RoundContextRequest,
-	opts []llm.Option,
-	w int,
+	request *RoundContextRequest,
 	yield func(AgentEvent, error) bool,
 	streamRetries *[]RetryInfo,
-) (iter.Seq2[llm.Chunk, error], bool) {
+) providerCallResult {
+	a := r.a
 	maxRetries, baseDelay, maxDelay := a.resolveRetryConfig()
 	maxAttempts := maxRetries + 1
 	if maxRetries < 0 {
@@ -29,23 +35,53 @@ func (a *Agent) chatWithRetryAndFallback(
 
 	var stream iter.Seq2[llm.Chunk, error]
 	var lastRetryErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		request.Attempt++
-		outbound, err := a.roundContextOutbound(ctx, deepCopyMessages(history), request, w)
-		if err != nil {
-			yield(nil, err)
-			return nil, false
+	var outboundRunes int
+	prepare := func() ([]llm.Message, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		stream, lastRetryErr = provider.ChatStream(ctx, outbound, tools, opts...)
+		request.Attempt++
+		outbound, err := a.roundContextOutbound(ctx, deepCopyMessages(history), *request, r.window)
+		if err != nil {
+			return nil, err
+		}
+		outboundRunes = estimateRunes(outbound)
+		if err := r.beforeDispatch(ctx, history, outboundRunes); err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return outbound, nil
+	}
+	failed := func(err error) providerCallResult {
+		return providerCallResult{err: err, providerError: true, outboundRunes: outboundRunes}
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		outbound, err := prepare()
+		if err != nil {
+			return providerCallResult{err: err}
+		}
+		stream, lastRetryErr = r.provider.ChatStream(ctx, outbound, tools, r.opts...)
+		if err := ctx.Err(); err != nil && lastRetryErr != nil {
+			return providerCallResult{err: err}
+		}
+		if errors.Is(lastRetryErr, llm.ErrContextOverflow) {
+			return failed(lastRetryErr)
+		}
 		if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
-			request.Attempt++
-			outbound, err = a.roundContextOutbound(ctx, deepCopyMessages(history), request, w)
+			outbound, err = prepare()
 			if err != nil {
-				yield(nil, err)
-				return nil, false
+				return providerCallResult{err: err}
 			}
-			response, usage, chatErr := provider.Chat(ctx, outbound, tools, opts...)
+			response, usage, chatErr := r.provider.Chat(ctx, outbound, tools, r.opts...)
 			lastRetryErr = chatErr
+			if err := ctx.Err(); err != nil {
+				return providerCallResult{err: err}
+			}
+			if errors.Is(chatErr, llm.ErrContextOverflow) {
+				return failed(chatErr)
+			}
 			if chatErr == nil {
 				stream = func(yield func(llm.Chunk, error) bool) {
 					for _, chunk := range synthesizeChunks(response.Content, usage) {
@@ -61,12 +97,11 @@ func (a *Agent) chatWithRetryAndFallback(
 			break
 		}
 		if ctx.Err() != nil {
-			yield(nil, ctx.Err())
-			return nil, false
+			return providerCallResult{err: ctx.Err()}
 		}
 		if !llm.IsRetryableError(lastRetryErr) && !llm.IsNetworkError(lastRetryErr) {
-			yield(nil, fmt.Errorf("iteration %d: provider chat stream (attempt %d/%d): %w", request.Round, attempt, maxAttempts, lastRetryErr))
-			return nil, false
+			return failed(fmt.Errorf("iteration %d: provider chat stream (attempt %d/%d): %w",
+				request.Round, attempt, maxAttempts, lastRetryErr))
 		}
 		a.logger.Warn("agent retrying stream",
 			"attempt", attempt+1,
@@ -76,8 +111,7 @@ func (a *Agent) chatWithRetryAndFallback(
 		if attempt < maxAttempts {
 			delay, rerr := llm.ResolveRetryDelay(ctx, lastRetryErr, baseDelay, maxDelay, attempt)
 			if rerr != nil {
-				yield(nil, rerr)
-				return nil, false
+				return providerCallResult{err: rerr}
 			}
 			info := RetryInfo{
 				Attempt:     attempt + 1,
@@ -88,22 +122,21 @@ func (a *Agent) chatWithRetryAndFallback(
 			}
 			*streamRetries = append(*streamRetries, info)
 			if !yield(RetryEvent{RetryInfo: info}, nil) {
-				return nil, false
+				return providerCallResult{stopped: true}
 			}
 			if a.retryCfg.OnRetry != nil {
 				a.retryCfg.OnRetry(info)
 			}
 			if werr := llm.SleepFor(ctx, delay); werr != nil {
-				yield(nil, werr)
-				return nil, false
+				return providerCallResult{err: werr}
 			}
 		}
 	}
 	if lastRetryErr != nil {
-		yield(nil, fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w", request.Round, maxAttempts, lastRetryErr))
-		return nil, false
+		return failed(fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w",
+			request.Round, maxAttempts, lastRetryErr))
 	}
-	return stream, true
+	return providerCallResult{stream: stream, outboundRunes: outboundRunes}
 }
 
 func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {

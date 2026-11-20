@@ -2,6 +2,8 @@ package openairesponses
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 
 	"github.com/dailz1/go-agent/llm"
 )
@@ -18,7 +20,59 @@ type responseEnvelope struct {
 }
 
 type errorEnvelope struct {
-	Message string `json:"message"`
+	Message string                     `json:"message"`
+	Code    string                     `json:"code"`
+	Type    string                     `json:"type"`
+	Param   string                     `json:"param"`
+	Details map[string]json.RawMessage `json:"-"`
+}
+
+func (e *errorEnvelope) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*e = errorEnvelope{Details: fields}
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"message", &e.Message}, {"code", &e.Code}, {"type", &e.Type}, {"param", &e.Param},
+	} {
+		var text string
+		if err := json.Unmarshal(fields[field.name], &text); err == nil {
+			*field.value = text
+		}
+	}
+	return nil
+}
+
+func (e *errorEnvelope) Error() string { return e.Message }
+
+func classifyHTTPError(err error) error {
+	// Do not classify partial bodies carried by joined transport errors.
+	api, ok := err.(*llm.APIError)
+	if !ok {
+		return err
+	}
+	var envelope struct {
+		Error *errorEnvelope `json:"error"`
+	}
+	if json.Unmarshal([]byte(api.Body), &envelope) == nil && envelope.Error != nil {
+		cause := errors.Join(err, envelope.Error)
+		if api.StatusCode == http.StatusBadRequest {
+			return markContextOverflow(envelope.Error.Code, cause)
+		}
+		return cause
+	}
+	return err
+}
+
+func markContextOverflow(code string, err error) error {
+	if code == "context_length_exceeded" {
+		return &llm.ContextOverflowError{Code: code, Err: err}
+	}
+	return err
 }
 
 type incompleteSpec struct {

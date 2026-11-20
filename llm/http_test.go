@@ -18,6 +18,49 @@ type testResponse struct {
 	Count   int    `json:"count"`
 }
 
+func TestHTTPHelpersRejectBodiesBeyondLimit(t *testing.T) {
+	for _, channel := range []string{"json success", "json error", "stream error"} {
+		for _, extra := range []int{0, 1} {
+			t.Run(channel+"/"+map[int]string{0: "at cap", 1: "over cap"}[extra], func(t *testing.T) {
+				body := `{"error":{"code":"context_length_exceeded"}}`
+				body += strings.Repeat(" ", MaxResponseBody-len(body)+extra)
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if channel != "json success" {
+						w.WriteHeader(http.StatusBadRequest)
+					}
+					io.WriteString(w, body)
+				}))
+				defer srv.Close()
+				cfg := RequestConfig{Method: http.MethodPost, URL: srv.URL}
+				var err error
+				if channel == "stream error" {
+					_, err = DoStreamRequest(t.Context(), srv.Client(), cfg, nil)
+				} else {
+					var response map[string]json.RawMessage
+					err = DoJSONRequest(t.Context(), srv.Client(), cfg, nil, &response)
+				}
+				if extra == 1 {
+					if _, bare := err.(*APIError); err == nil || bare {
+						t.Fatalf("oversized body accepted as complete: %T", err)
+					}
+				} else if channel == "json success" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if _, bare := err.(*APIError); !bare {
+					t.Fatalf("complete error body must remain APIError: %v", err)
+				}
+				if channel != "json success" {
+					var api *APIError
+					if !errors.As(err, &api) || api.StatusCode != 400 {
+						t.Fatalf("HTTP cause lost: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestDoJSONRequest(t *testing.T) {
 	t.Parallel()
 

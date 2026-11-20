@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/llm/internal/sse"
 	"github.com/dailz1/go-agent/tool"
 )
 
@@ -202,7 +204,7 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 	}, reqBody, &chatResp)
 	if err != nil {
 		p.logger.Error("glm request failed", "error", err)
-		return nil, nil, err
+		return nil, nil, classifyHTTPError(err)
 	}
 
 	if len(chatResp.Choices) == 0 {
@@ -315,18 +317,22 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 	}, reqBody)
 	if err != nil {
 		p.logger.Error("glm stream request failed", "error", err)
-		return nil, err
+		return nil, classifyHTTPError(err)
 	}
 
 	return func(yield func(llm.Chunk, error) bool) {
 		defer result.Cleanup()
-		for payload, err := range llm.ScanSSEEvents(ctx, result.Body) {
+		for frame, err := range sse.Scan(ctx, result.Body) {
 			if err != nil {
 				yield(nil, err)
 				return
 			}
-			chunks, err := parseStreamPayload(payload)
+			chunks, err := parseStreamPayload(frame.Data)
 			if err != nil {
+				var overflow *llm.ContextOverflowError
+				if errors.As(err, &overflow) && !frame.CompleteJSON() {
+					err = overflow.Err
+				}
 				yield(nil, err)
 				return
 			}
@@ -399,6 +405,34 @@ func parseStreamPayload(payload string) ([]llm.Chunk, error) {
 	return chunks, nil
 }
 
+func classifyHTTPError(err error) error {
+	// A bare APIError means the HTTP helper read the entire error body.
+	api, ok := err.(*llm.APIError)
+	if !ok || api.StatusCode != http.StatusBadRequest {
+		return err
+	}
+	var envelope struct {
+		Error struct {
+			Code json.RawMessage `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(api.Body), &envelope) != nil {
+		return err
+	}
+	var code string
+	if json.Unmarshal(envelope.Error.Code, &code) != nil {
+		var number int
+		if json.Unmarshal(envelope.Error.Code, &number) != nil || number != 1261 {
+			return err
+		}
+		code = "1261"
+	}
+	if code == "1261" {
+		return &llm.ContextOverflowError{Code: code, Err: err}
+	}
+	return err
+}
+
 func finishReasonError(reason string) error {
 	switch reason {
 	case "network_error":
@@ -407,9 +441,12 @@ func finishReasonError(reason string) error {
 			Body:       "glm finish_reason: " + reason,
 		}
 	case "model_context_window_exceeded":
-		return &llm.APIError{
-			StatusCode: http.StatusBadRequest,
-			Body:       "glm finish_reason: " + reason,
+		return &llm.ContextOverflowError{
+			Code: reason,
+			Err: &llm.APIError{
+				StatusCode: http.StatusBadRequest,
+				Body:       "glm finish_reason: " + reason,
+			},
 		}
 	default:
 		return nil

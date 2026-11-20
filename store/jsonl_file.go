@@ -41,7 +41,14 @@ func (th *jsonlThread) load() error {
 		if err := json.Unmarshal(line, &r); err != nil {
 			return fmt.Errorf("%w: invalid record at byte %d: %v", ErrCorruptLog, complete, err)
 		}
-		if r.Schema > SchemaV3 || (r.Kind == KindRunCancelled && r.Schema != SchemaV2) {
+		if r.Schema > SchemaV4 || (r.Kind == KindRunCancelled && r.Schema != SchemaV2) {
+			return ErrUnsupportedSchema
+		}
+		if r.Schema == SchemaV4 && r.Kind != KindCheckpoint &&
+			r.Kind != KindContextRecovery && r.Kind != KindHistoryReplaced {
+			return ErrUnsupportedSchema
+		}
+		if (r.Kind == KindContextRecovery || r.Kind == KindHistoryReplaced) && r.Schema != SchemaV4 {
 			return ErrUnsupportedSchema
 		}
 		if r.Schema < 1 || r.ID == "" {
@@ -51,8 +58,8 @@ func (th *jsonlThread) load() error {
 			return fmt.Errorf("%w: duplicate record id %q at byte %d", ErrCorruptLog, r.ID, complete)
 		}
 		seen[r.ID] = struct{}{}
-		if r.Kind == KindCheckpoint && len(r.Payload) == 0 {
-			return fmt.Errorf("%w: checkpoint without payload at byte %d", ErrCorruptLog, complete)
+		if (r.Kind == KindCheckpoint || r.Kind == KindContextRecovery || r.Kind == KindHistoryReplaced) && len(r.Payload) == 0 {
+			return fmt.Errorf("%w: %s without payload at byte %d", ErrCorruptLog, r.Kind, complete)
 		}
 		records = append(records, r)
 	}

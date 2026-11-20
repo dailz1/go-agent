@@ -17,6 +17,9 @@ import (
 // context the tail replay needs. The ID is bound to the record's future
 // position, keeping retries byte-identical.
 func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) error {
+	if err := p.anchorLegacyHistory(ctx, history); err != nil {
+		return err
+	}
 	const maxAttempts = 4
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -29,7 +32,7 @@ func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) err
 		// attempt: a rebase across a control-plane write must carry the
 		// absorbed config, not the one snapshotted before the conflict.
 		payload, merr := json.Marshal(agentCheckpoint{
-			CodecVersion: store.SchemaV3,
+			CodecVersion: store.SchemaV4,
 			History:      history,
 			System:       p.system,
 			RunActive:    true,
@@ -37,13 +40,15 @@ func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) err
 			LastRound:    p.lastRound,
 			Config:       &p.cfg,
 			Queue:        p.queue,
+			ConfigSeq:    &p.cfgSeq,
+			Recovery:     p.recovery,
 		})
 		if merr != nil {
 			return fmt.Errorf("agent: encode checkpoint: %w", merr)
 		}
 		var head int64
 		head, err = p.a.store.Append(ctx, p.thread, p.head, store.Record{
-			Kind: store.KindCheckpoint, Schema: store.SchemaV3,
+			Kind: store.KindCheckpoint, Schema: store.SchemaV4,
 			ID:      fmt.Sprintf("cp-%d", p.head),
 			Payload: payload,
 		})
@@ -132,5 +137,6 @@ func (v *threadView) applyCancellation(r store.Record) error {
 		v.history = append(v.history, p.Results...)
 	}
 	v.open, v.runActive, v.cancelled = nil, false, true
+	v.recovery = nil
 	return nil
 }

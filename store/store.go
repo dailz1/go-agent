@@ -32,6 +32,7 @@ const (
 	SchemaV1 = 1
 	SchemaV2 = 2
 	SchemaV3 = 3
+	SchemaV4 = 4
 )
 
 // Record kinds. Append rejects unknown kinds so a stale binary cannot write
@@ -39,18 +40,20 @@ const (
 // them through untouched, because rejecting them is a codec policy (the
 // agent layer decides which kinds affect state).
 const (
-	KindRunStarted     = "run_started"     // payload: run input and thread system prompt
-	KindRunCancelled   = "run_cancelled"   // payload: run cancellation and unknown round results
-	KindAgentEvent     = "agent_event"     // payload: versioned AgentEvent envelope
-	KindRoundDeclared  = "round_declared"  // payload: the round's full assistant message
-	KindRoundCommitted = "round_committed" // payload: the round's ordered model-visible results
-	KindRoundResult    = "round_result"    // payload: one declared call's result (agent-owned)
-	KindError          = "error"           // payload: terminal stream error description
-	KindCheckpoint     = "checkpoint"      // payload: Checkpoint
-	KindConfigChanged  = "config_changed"  // payload: runtime config override (agent-owned)
-	KindInputQueued    = "input_queued"    // payload: steering input awaiting drain (agent-owned)
-	KindInputConsumed  = "input_consumed"  // payload: FIFO prefix of drained steering inputs (agent-owned)
-	KindRunClosed      = "run_closed"      // payload: cooperative FinishRound-End terminal (agent-owned)
+	KindRunStarted      = "run_started"      // payload: run input and thread system prompt
+	KindRunCancelled    = "run_cancelled"    // payload: run cancellation and unknown round results
+	KindAgentEvent      = "agent_event"      // payload: versioned AgentEvent envelope
+	KindRoundDeclared   = "round_declared"   // payload: the round's full assistant message
+	KindRoundCommitted  = "round_committed"  // payload: the round's ordered model-visible results
+	KindRoundResult     = "round_result"     // payload: one declared call's result (agent-owned)
+	KindError           = "error"            // payload: terminal stream error description
+	KindCheckpoint      = "checkpoint"       // payload: Checkpoint
+	KindConfigChanged   = "config_changed"   // payload: runtime config override (agent-owned)
+	KindInputQueued     = "input_queued"     // payload: steering input awaiting drain (agent-owned)
+	KindInputConsumed   = "input_consumed"   // payload: FIFO prefix of drained steering inputs (agent-owned)
+	KindRunClosed       = "run_closed"       // payload: cooperative FinishRound-End terminal (agent-owned)
+	KindContextRecovery = "context_recovery" // payload: overflow-recovery episode transition (agent-owned)
+	KindHistoryReplaced = "history_replaced" // payload: canonical history replacement (agent-owned)
 )
 
 // Errors returned by Store implementations. Wrapped I/O failures remain
@@ -216,14 +219,21 @@ func planAppend(log []Record, expected int64, batch []Record) (apply []Record, h
 
 func validateRecord(r *Record) error {
 	switch r.Kind {
-	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindRoundResult, KindError, KindCheckpoint, KindConfigChanged, KindInputQueued, KindInputConsumed, KindRunClosed:
+	case KindRunStarted, KindRunCancelled, KindAgentEvent, KindRoundDeclared, KindRoundCommitted, KindRoundResult, KindError, KindCheckpoint, KindConfigChanged, KindInputQueued, KindInputConsumed, KindRunClosed, KindContextRecovery, KindHistoryReplaced:
 	default:
 		return ErrUnknownKind
 	}
 	if r.ID == "" {
 		return ErrInvalidRecord
 	}
-	if r.Schema < 0 || r.Schema > SchemaV3 {
+	if r.Schema < 0 || r.Schema > SchemaV4 {
+		return ErrUnsupportedSchema
+	}
+	if r.Schema == SchemaV4 && r.Kind != KindCheckpoint &&
+		r.Kind != KindContextRecovery && r.Kind != KindHistoryReplaced {
+		return ErrUnsupportedSchema
+	}
+	if (r.Kind == KindContextRecovery || r.Kind == KindHistoryReplaced) && r.Schema != SchemaV4 {
 		return ErrUnsupportedSchema
 	}
 	if (r.Kind == KindRunCancelled || r.Kind == KindConfigChanged || r.Kind == KindInputQueued || r.Kind == KindInputConsumed || r.Kind == KindRunClosed) && r.Schema != SchemaV2 {
@@ -233,7 +243,7 @@ func validateRecord(r *Record) error {
 		return ErrUnsupportedSchema
 	}
 	if len(r.Payload) == 0 {
-		if r.Kind == KindCheckpoint {
+		if r.Kind == KindCheckpoint || r.Kind == KindContextRecovery || r.Kind == KindHistoryReplaced {
 			return ErrInvalidRecord
 		}
 		return nil

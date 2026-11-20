@@ -1,11 +1,11 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"iter"
-	"strings"
+
+	"github.com/dailz1/go-agent/llm/internal/sse"
 )
 
 // ScanSSEEvents reads Server-Sent Events (SSE) from r and lazily yields each
@@ -25,68 +25,9 @@ import (
 // yields ("", err) and stops. Normal EOF is silent (no error yield).
 func ScanSSEEvents(ctx context.Context, r io.Reader) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		var dataLines []string
-
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				yield("", ctx.Err())
+		for frame, err := range sse.Scan(ctx, r) {
+			if !yield(frame.Data, err) || err != nil {
 				return
-			default:
-			}
-
-			line := scanner.Text()
-
-			if strings.HasPrefix(line, ":") {
-				continue
-			}
-
-			if line == "" {
-				if len(dataLines) > 0 {
-					payload := strings.Join(dataLines, "")
-					dataLines = dataLines[:0]
-
-					if payload == "[DONE]" {
-						return
-					}
-
-					if !yield(payload, nil) {
-						return
-					}
-				}
-				continue
-			}
-
-			if after, ok := strings.CutPrefix(line, "data: "); ok {
-				dataLines = append(dataLines, after)
-			} else if after, ok := strings.CutPrefix(line, "data:"); ok {
-				dataLines = append(dataLines, after)
-			}
-		}
-
-		// Flush any remaining data that wasn't terminated by a blank line.
-		// Per SSE spec, the last event should be dispatched even without a
-		// trailing blank line. This also handles connection drops mid-event.
-		if len(dataLines) > 0 {
-			payload := strings.Join(dataLines, "")
-			dataLines = dataLines[:0]
-
-			if payload == "[DONE]" {
-				return
-			}
-
-			if !yield(payload, nil) {
-				return
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			if ctx.Err() != nil {
-				yield("", ctx.Err())
-			} else {
-				yield("", err)
 			}
 		}
 	}

@@ -59,7 +59,17 @@ func TestSettleCodecCheckpointAfterCancellation(t *testing.T) {
 	}
 	a := New(nil, nil, WithStore(st))
 	history := []llm.Message{llm.SystemMessage("frozen"), llm.UserMessage("compacted after cancel")}
-	p := &persistence{a: a, thread: "t", head: 4, system: "frozen", runID: "next", lastRound: -1, open: -1}
+	p := &persistence{a: a, thread: "t", head: 4, system: "frozen", runID: "next", lastRound: -1, open: -1, cfgSeq: -1}
+	before, err := a.replayThread(t.Context(), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.replaceHistory(t.Context(), seededHistory(before.system, before.history), historyReplacedPayload{
+		RunID: "next", Round: 0, OperationID: "next-compaction",
+		Reason: "proactive_compaction", History: history,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := p.checkpoint(t.Context(), history); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +83,7 @@ func TestSettleCodecCheckpointAfterCancellation(t *testing.T) {
 	if err := json.Unmarshal(state.Checkpoint.Payload, &version); err != nil {
 		t.Fatal(err)
 	}
-	if state.Checkpoint.Schema != store.SchemaV3 || version.CodecVersion != 3 {
+	if state.Checkpoint.Schema != store.SchemaV4 || version.CodecVersion != store.SchemaV4 {
 		t.Fatalf("checkpoint versions = schema %d, codec %d", state.Checkpoint.Schema, version.CodecVersion)
 	}
 	v, err := a.replayThread(t.Context(), "t")
@@ -96,9 +106,9 @@ func TestSettleCodecRejectsFutureVersions(t *testing.T) {
 		schema  int
 		payload string
 	}{
-		{"envelope", 4, `{}`},
-		{"future codec", 2, `{"codec_version":4}`},
-		{"future codec v1 envelope", 1, `{"codec_version":4}`},
+		{"envelope", 5, `{}`},
+		{"future codec", 2, `{"codec_version":5}`},
+		{"future codec v1 envelope", 1, `{"codec_version":5}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cp := store.Record{Kind: store.KindCheckpoint, Schema: tc.schema, ID: "cp", Payload: []byte(tc.payload)}

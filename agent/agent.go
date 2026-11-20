@@ -168,6 +168,7 @@ type Agent struct {
 	maxIter                    int
 	contextWindowTokens        int
 	compactor                  Compactor
+	overflowRecovery           bool
 	compactionThresholdPercent int
 	approvalFn                 ApprovalFunc
 	logger                     *slog.Logger
@@ -229,6 +230,12 @@ func WithContextWindowTokens(tokens int) Option {
 // WithCompactor sets the history compactor. A nil compactor disables compaction.
 func WithCompactor(c Compactor) Option {
 	return func(a *Agent) { a.compactor = c }
+}
+
+// WithOverflowRecovery controls bounded recovery from provider-confirmed
+// context overflow. It is enabled by default, including on resumed threads.
+func WithOverflowRecovery(enabled bool) Option {
+	return func(a *Agent) { a.overflowRecovery = enabled }
 }
 
 // WithCompactionThresholdPercent sets the context-window percentage where
@@ -352,6 +359,7 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 		maxIter:                    10,
 		contextWindowTokens:        DefaultContextWindowTokens,
 		compactor:                  NewStandardCompactor(),
+		overflowRecovery:           true,
 		compactionThresholdPercent: DefaultCompactionThresholdPercent,
 		logger:                     slog.Default(),
 		toolConcurrency:            1,
@@ -487,6 +495,11 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			var opts []llm.Option
 			prov := a.provider
 			if sess != nil {
+				if sess.recovery != nil && !a.overflowRecovery {
+					recovery := overflowRecovery{state: sess.recovery}
+					yield(nil, recovery.failure("disabled", nil))
+					return
+				}
 				if err := sess.refreshConfig(ctx); err != nil {
 					yield(nil, err)
 					return
@@ -508,12 +521,26 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			} else {
 				opts = a.llmOpts
 			}
+			opts = freezeLLMOptions(opts)
 			w := a.roundContextWindow(prov, opts)
-			history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess, w)
-			if !ok {
-				return
-			}
+			recovery := overflowRecovery{a: a, sess: sess, provider: prov, opts: opts,
+				window: w, round: i + sessionRoundBase(sess), cfgSeq: -1}
 			if sess != nil {
+				recovery.state, recovery.cfgSeq = sess.recovery, sess.cfgSeq
+			}
+			if a.overflowRecovery {
+				if err := recovery.selectConfig(ctx, history); err != nil {
+					yield(nil, err)
+					return
+				}
+			}
+			if recovery.state == nil {
+				history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess, w)
+				if !ok {
+					return
+				}
+			}
+			if sess != nil && recovery.state == nil {
 				// D1 drain: queued steering inputs inject here, after
 				// compaction, so they ride into this round's request. The
 				// drain consumes only what fits the hard limit; the rest
@@ -526,7 +553,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}
 				history = append(history, injected...)
 			}
-			if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCapFor(w) {
+			if recovery.state == nil && a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCapFor(w) {
 				yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
 				return
 			}
@@ -535,66 +562,32 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				"iteration", i,
 				"history_length", len(history),
 			)
-			stream, ok := a.chatWithRetryAndFallback(
+			accum, ok := recovery.receiveRound(
 				ctx,
-				prov,
-				history,
+				&history,
 				tools,
 				RoundContextRequest{
 					Round:    i + sessionRoundBase(sess),
 					ThreadID: threadID,
 				},
-				opts,
-				w,
 				yield,
 				&streamRetries,
 			)
 			if !ok {
 				return
 			}
-			// Accumulate tool call fragments and text from the streaming response.
-			// The accumulator handles interleaved multi-tool-call streams via
-			// map[int]*callAccum keyed by Index, and sorts output by Index in finish().
-			var accum toolCallAccum
-			for chunk, chunkErr := range stream {
-				if chunkErr != nil {
-					yield(nil, chunkErr)
-					return
-				}
-				switch c := chunk.(type) {
-				case llm.ReasoningDeltaChunk:
-					accum.feed(chunk)
-					if !yield(ThinkingDeltaEvent{Text: c.Text}, nil) {
-						return
-					}
-				case llm.TextDeltaChunk:
-					accum.feed(chunk)
-					if !yield(TextDeltaEvent{Text: c.Text}, nil) {
-						return
-					}
-				case llm.ToolCallStartChunk, llm.ToolCallArgsChunk:
-					// Feed both start and args chunks to the accumulator.
-					// The accumulator's feed() method dispatches internally:
-					//   - ToolCallStartChunk → create new callAccum{ id, name }
-					//   - ToolCallArgsChunk → append Delta to args strings.Builder
-					accum.feed(chunk)
-				case llm.ReasoningItemChunk:
-					// Entry-level reasoning item (Responses protocol): consumed
-					// by the accumulator for ordered assembly; not a consumer
-					// event.
-					accum.feed(chunk)
-				case llm.DoneChunk:
-					accum.feed(chunk)
-				default:
-					// Silently ignore unknown chunk types for forward compatibility.
-				}
-			}
 			if u := accum.usage(); u != nil {
 				totalUsage = totalUsage.Add(*u)
 			}
-			assistantMsg, toolBlocks, ok := a.assembleAssistantMessage(&accum, i, yield)
+			assistantMsg, toolBlocks, ok := a.assembleAssistantMessage(accum, i, yield)
 			if !ok {
 				return
+			}
+			if sess != nil {
+				if err := sess.checkRecoveryRound(i + sessionRoundBase(sess)); err != nil {
+					yield(nil, err)
+					return
+				}
 			}
 			history = append(history, assistantMsg)
 			isLast := i == a.maxIter-1
@@ -892,29 +885,52 @@ func (a *Agent) compactHistoryRound(
 			// Validation below compares against the untouched original.
 			compactInput := deepCopyMessages(history)
 			result, err := a.compactor.Compact(ctx, compactInput, CompactionBudget{MaxRunes: targetRunes}, provider, opts)
+			if err == nil && result.Changed && sess != nil {
+				var canonical []llm.Message
+				canonical, err = durableHistory(history)
+				if err == nil {
+					result.History, err = durableHistory(result.History)
+				}
+				if err == nil {
+					err = validateCompacted(canonical, result.History)
+				}
+			}
 			for _, strategyErr := range result.Errors {
 				a.logger.Warn("history compaction strategy failed", "error", strategyErr)
 			}
 			compactionVerified := false
 			if err != nil {
 				a.logger.Warn("history compaction failed", "error", err)
-			} else if hasUnsupportedBlocks(result.History) {
-				a.logger.Warn("history compaction produced unsupported content block types; ignoring compaction result")
+			} else if (result.Changed && len(result.History) == 0) || hasUnsupportedBlocks(result.History) {
+				a.logger.Warn("history compaction produced empty or unsupported history; ignoring compaction result")
 			} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
 				a.logger.Warn("history compaction produced invalid history", "error", validationErr)
 			} else {
 				compactionVerified = true
 				if result.Changed {
-					history = deepCopyMessages(result.History)
-					afterRunes := estimateRunes(history)
+					adopted := deepCopyMessages(result.History)
+					afterRunes := estimateRunes(adopted)
 					// The compacted view is durable before it is announced, so
 					// replay never re-runs a (nondeterministic) summarizer.
 					if sess != nil {
-						if err := sess.checkpoint(ctx, history); err != nil {
+						id, err := newRunID()
+						if err == nil {
+							adopted, err = sess.replaceHistory(ctx, history, historyReplacedPayload{
+								RunID: sess.runID, Round: sess.lastRound + 1, OperationID: id,
+								Reason: "proactive_compaction", History: adopted,
+							})
+						}
+						if err != nil {
 							yield(nil, err)
 							return history, false
 						}
+						if err := sess.checkpoint(ctx, adopted); err != nil {
+							yield(nil, err)
+							return history, false
+						}
+						afterRunes = estimateRunes(adopted)
 					}
+					history = adopted
 					a.logger.Warn("history compacted",
 						"strategies", strings.Join(result.Strategies, ","),
 						"dropped_groups", result.DroppedGroups,

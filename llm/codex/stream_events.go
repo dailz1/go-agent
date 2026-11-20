@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/dailz1/go-agent/llm"
@@ -21,7 +22,7 @@ func (s *streamState) event(ev streamEvent) ([]llm.Chunk, bool, error) {
 			usage = &llm.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, ReasoningTokens: u.Details.ReasoningTokens}
 		}
 		return append(chunks, llm.DoneChunk{FinishReason: finish, Usage: usage}), true, nil
-	case "response.failed", "response.incomplete", "error":
+	case "response.incomplete", "response.failed", "error":
 		server := ev.Error
 		if ev.Response != nil && ev.Response.Error != nil {
 			server = ev.Response.Error
@@ -29,7 +30,27 @@ func (s *streamState) event(ev streamEvent) ([]llm.Chunk, bool, error) {
 		if server == nil {
 			server = &serverError{Code: ev.Code}
 		}
-		return nil, false, classifyServerError(server, nil)
+		cause := serverErrorCause(server, nil)
+		// Ordinary classification keeps the legacy lookup above. Only the
+		// overflow signal is restricted to the event's permitted envelope.
+		code := ""
+		switch ev.Type {
+		case "response.failed":
+			if ev.Response != nil && ev.Response.Error != nil {
+				code = ev.Response.Error.Code
+			}
+		case "error":
+			code = ev.Code
+			if code == "" && ev.Error != nil {
+				code = ev.Error.Code
+			}
+		}
+		var legacy *Error
+		quota := errors.As(cause, &legacy) && legacy.Kind == KindQuota
+		if code == "context_length_exceeded" && !quota {
+			cause = &llm.ContextOverflowError{Code: code, Err: cause}
+		}
+		return nil, false, cause
 	case "response.output_item.added", "response.output_item.done":
 		if ev.OutputIndex == nil || ev.Item == nil {
 			return nil, false, protocolError("missing output item or index")

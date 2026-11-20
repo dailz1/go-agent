@@ -128,7 +128,7 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 	}, reqBody, &chatResp)
 	if err != nil {
 		p.logger.Error("openai request failed", "error", err)
-		return nil, nil, err
+		return nil, nil, classifyHTTPError(err)
 	}
 
 	if len(chatResp.Choices) == 0 {
@@ -218,7 +218,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 	}, reqBody)
 	if err != nil {
 		p.logger.Error("openai stream request failed", "error", err)
-		return nil, err
+		return nil, classifyHTTPError(err)
 	}
 
 	return func(yield func(llm.Chunk, error) bool) {
@@ -248,6 +248,24 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 			yield(nil, fmt.Errorf("openai: stream ended without completion"))
 		}
 	}, nil
+}
+
+func classifyHTTPError(err error) error {
+	// The HTTP helpers return a bare APIError only after a complete read.
+	// A joined read failure may carry a complete-looking partial JSON body.
+	api, ok := err.(*llm.APIError)
+	if !ok || api.StatusCode != http.StatusBadRequest {
+		return err
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(api.Body), &envelope) == nil && envelope.Error.Code == "context_length_exceeded" {
+		return &llm.ContextOverflowError{Code: envelope.Error.Code, Err: err}
+	}
+	return err
 }
 
 // parseStreamPayload converts a raw SSE JSON payload from OpenAI's streaming

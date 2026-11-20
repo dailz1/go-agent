@@ -3,18 +3,20 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"strings"
 
 	"github.com/dailz1/go-agent/llm"
+	sseframe "github.com/dailz1/go-agent/llm/internal/sse"
 )
 
 func scanResponse(ctx context.Context, body io.Reader) iter.Seq2[llm.Chunk, error] {
 	return func(yield func(llm.Chunk, error) bool) {
 		state := streamState{items: make(map[int]*itemState), ids: make(map[string]int), calls: make(map[string]int)}
-		for payload, err := range llm.ScanSSEEvents(ctx, &eventLimitReader{reader: body}) {
+		for frame, err := range sseframe.Scan(ctx, &eventLimitReader{reader: body}) {
 			if err != nil {
 				if ctx.Err() != nil {
 					yield(nil, ctx.Err())
@@ -23,6 +25,7 @@ func scanResponse(ctx context.Context, body io.Reader) iter.Seq2[llm.Chunk, erro
 				}
 				return
 			}
+			payload := frame.Data
 			if len(payload) > llm.MaxResponseBody {
 				yield(nil, protocolError("event exceeds 10 MiB"))
 				return
@@ -37,6 +40,10 @@ func scanResponse(ctx context.Context, body io.Reader) iter.Seq2[llm.Chunk, erro
 			}
 			chunks, done, err := state.event(event)
 			if err != nil {
+				var overflow *llm.ContextOverflowError
+				if errors.As(err, &overflow) && !frame.CompleteJSON() {
+					err = overflow.Err
+				}
 				yield(nil, err)
 				return
 			}

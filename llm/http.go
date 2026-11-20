@@ -50,18 +50,26 @@ func DoJSONRequest(ctx context.Context, client *http.Client, cfg RequestConfig, 
 		return fmt.Errorf("http request: %w", err)
 	}
 
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody))
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody+1))
 	resp.Body.Close()
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+	if len(respBytes) > MaxResponseBody {
+		respBytes = respBytes[:MaxResponseBody]
+		err = errors.Join(err, fmt.Errorf("response body exceeds %d bytes", MaxResponseBody))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{
+		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
 			Body:       string(respBytes),
 			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
 		}
+		if err != nil {
+			return fmt.Errorf("read error response: %w", errors.Join(err, apiErr))
+		}
+		return apiErr
+	}
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
 	}
 
 	if err := json.Unmarshal(respBytes, respBody); err != nil {
@@ -113,8 +121,12 @@ func DoStreamRequest(ctx context.Context, client *http.Client, cfg RequestConfig
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody))
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody+1))
 		resp.Body.Close()
+		if len(respBody) > MaxResponseBody {
+			respBody = respBody[:MaxResponseBody]
+			readErr = errors.Join(readErr, fmt.Errorf("response body exceeds %d bytes", MaxResponseBody))
+		}
 		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),

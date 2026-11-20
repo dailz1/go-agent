@@ -118,7 +118,8 @@ func (a *Agent) confirmSettlement(ctx context.Context, target SettlementToken) e
 		records[h].Kind != store.KindRunCancelled || records[h].ID != recordID(target.RunID, "-cancel") {
 		return store.ErrRevisionConflict
 	}
-	prefix, err := replayRecords(threadView{lastRound: -1}, records[:h])
+	base := recoveryProofContext(threadView{lastRound: -1, cfgSeq: -1}, records[:h])
+	prefix, err := replayRecords(base, records[:h])
 	if err != nil {
 		return err
 	}

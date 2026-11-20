@@ -6,9 +6,29 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/dailz1/go-agent/llm"
 )
+
+func TestScanSSEEventsInterruptedFrameDoesNotFlush(t *testing.T) {
+	for _, tail := range []string{"data: uncommitted", "data: uncommitted\n", "data: [DONE]\n"} {
+		t.Run(tail, func(t *testing.T) {
+			reader := io.MultiReader(strings.NewReader(tail), iotest.ErrReader(io.ErrUnexpectedEOF))
+			var got error
+			for payload, err := range llm.ScanSSEEvents(t.Context(), reader) {
+				if payload != "" || err == nil {
+					t.Fatalf("interrupted frame yielded %q, %v", payload, err)
+				}
+				got = err
+				break
+			}
+			if !errors.Is(got, io.ErrUnexpectedEOF) {
+				t.Fatalf("read failure lost: %v", got)
+			}
+		})
+	}
+}
 
 // TestScanSSEEvents_SingleEvent verifies that a single well-formed SSE event
 // is parsed and yielded correctly.

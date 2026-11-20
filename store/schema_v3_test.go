@@ -44,15 +44,15 @@ func TestSchemaV3CheckpointReopen(t *testing.T) {
 }
 
 // The read-side gate must still reject schemas newer than the store knows.
-func TestSchemaV4ReopenRejected(t *testing.T) {
+func TestSchemaV5ReopenRejected(t *testing.T) {
 	disk, dir := newTestJSONL(t)
 	r := rec("r-future", "agent_event")
-	r.Schema = SchemaV3 + 1
+	r.Schema = SchemaV4 + 1
 	if _, err := disk.Append(t.Context(), "t", 0, r); !errors.Is(err, ErrUnsupportedSchema) {
 		t.Fatalf("append future schema = %v, want unsupported", err)
 	}
 	rFuture := rec("t4", "agent_event")
-	rFuture.Schema = SchemaV3 + 1
+	rFuture.Schema = SchemaV4 + 1
 	if err := appendRawRecord(dir, "t", rFuture); err != nil {
 		t.Fatalf("seed raw: %v", err)
 	}

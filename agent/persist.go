@@ -16,18 +16,23 @@ import (
 // abort the round (fail-safe: the model never advances past a write that did
 // not land). All methods are called from the single run goroutine.
 type persistence struct {
-	a         *Agent
-	thread    string
-	runID     string
-	system    string
-	head      int64
-	roundBase int          // round index offset for resumed runs
-	lastRound int          // highest durable round index of this run
-	open      int          // round index of the open declaration, -1 when none
-	cfg       configState  // effective runtime config, folded from replay + absorbed tails
-	queue     []queueEntry // pending steering inputs, FIFO from replay + absorbed tails
-	carry     int          // runes the last drain injected past the compaction target
-	cfgRead   int64        // next seq to scan for control records at round tops
+	legacyHistory   bool
+	a               *Agent
+	thread          string
+	runID           string
+	system          string
+	head            int64
+	roundBase       int          // round index offset for resumed runs
+	lastRound       int          // highest durable round index of this run
+	open            int          // round index of the open declaration, -1 when none
+	cfg             configState  // effective runtime config, folded from replay + absorbed tails
+	queue           []queueEntry // pending steering inputs, FIFO from replay + absorbed tails
+	carry           int          // runes the last drain injected past the compaction target
+	cfgRead         int64        // next seq to scan for control records at round tops
+	cfgSeq          int64        // last folded config_changed seq; -1 means none
+	recovery        *recoveryProjection
+	episodes        map[string]struct{}
+	configRevisions map[int64]struct{}
 }
 
 // openSession validates, acquires, replays, and prepares the initial
@@ -83,13 +88,15 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 			if err != nil {
 				return nil, nil, err
 			}
-			head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.queue, rec)
+			head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.cfgSeq, &v.configRevisions, &v.queue, rec)
 			if err != nil {
 				return nil, nil, fmt.Errorf("agent: persist recovery commit: %w", err)
 			}
 			v.head = head
 		}
-		sess := &persistence{a: a, thread: thread, runID: v.runID, system: v.system, head: v.head, roundBase: v.lastRound + 1, lastRound: v.lastRound, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: v.head}
+		sess := &persistence{a: a, thread: thread, runID: v.runID, system: v.system, head: v.head, roundBase: v.lastRound + 1, lastRound: v.lastRound, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: v.head, cfgSeq: v.cfgSeq, recovery: v.recovery}
+		sess.episodes, sess.configRevisions = v.episodes, v.configRevisions
+		sess.legacyHistory = v.legacyHistory
 		return sess, seededHistory(v.system, v.history), nil
 	}
 	if v.runActive {
@@ -108,11 +115,13 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 	if err != nil {
 		return nil, nil, err
 	}
-	head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.queue, rec)
+	head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.cfgSeq, &v.configRevisions, &v.queue, rec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent: persist run start on thread %q: %w", thread, err)
 	}
-	sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: head, roundBase: 0, lastRound: -1, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: head}
+	sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: head, roundBase: 0, lastRound: -1, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: head, cfgSeq: v.cfgSeq}
+	sess.episodes, sess.configRevisions = v.episodes, v.configRevisions
+	sess.legacyHistory = v.legacyHistory
 	return sess, seededHistory(system, append(v.history, llm.UserMessage(input))), nil
 }
 
@@ -163,7 +172,7 @@ func (a *Agent) reserveGeneratedThread(ctx context.Context, st store.Store, thre
 			lastErr = err
 			continue
 		}
-		sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: 1, roundBase: 0, lastRound: -1, open: -1, cfgRead: 1}
+		sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: 1, roundBase: 0, lastRound: -1, open: -1, cfgRead: 1, cfgSeq: -1}
 		return sess, seededHistory(system, []llm.Message{llm.UserMessage(input)}), nil
 	}
 	return nil, nil, fmt.Errorf("agent: reserve run on thread %q inconclusive after retries (run %s may be active; resume it): %w", thread, runID, lastErr)
@@ -225,6 +234,11 @@ func (p *persistence) absorbTail(ctx context.Context, from int64) error {
 				return derr
 			}
 			p.cfg.fold(cp)
+			p.cfgSeq = r.Seq
+			if p.configRevisions == nil {
+				p.configRevisions = make(map[int64]struct{})
+			}
+			p.configRevisions[r.Seq] = struct{}{}
 		case store.KindInputQueued:
 			qp, derr := decodeInputQueued(r)
 			if derr != nil {
@@ -253,7 +267,7 @@ func (p *persistence) absorbTail(ctx context.Context, from int64) error {
 // records must carry fresh IDs and content that does not depend on the log
 // position; lifecycle-position-bound payloads (checkpoints) use their own
 // re-serializing loops instead.
-func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread string, head int64, cfg *configState, queue *[]queueEntry, records ...store.Record) (int64, error) {
+func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread string, head int64, cfg *configState, cfgSeq *int64, configRevisions *map[int64]struct{}, queue *[]queueEntry, records ...store.Record) (int64, error) {
 	const maxAttempts = 4
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -271,6 +285,11 @@ func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread str
 						return 0, derr
 					}
 					cfg.fold(cp)
+					*cfgSeq = r.Seq
+					if *configRevisions == nil {
+						*configRevisions = make(map[int64]struct{})
+					}
+					(*configRevisions)[r.Seq] = struct{}{}
 				case store.KindInputQueued:
 					qp, derr := decodeInputQueued(r)
 					if derr != nil {
@@ -302,6 +321,9 @@ func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread str
 // any tool call is announced, executed, or sent to approval.
 func (p *persistence) declareRound(ctx context.Context, round int, msg llm.Message) error {
 	r := p.roundBase + round
+	if err := p.checkRecoveryRound(r); err != nil {
+		return err
+	}
 	rec, err := encodeRecord(store.KindRoundDeclared, recordID(p.runID, "-d"+strconv.Itoa(r)),
 		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg})
 	if err != nil {
@@ -310,6 +332,7 @@ func (p *persistence) declareRound(ctx context.Context, round int, msg llm.Messa
 	if err := p.append(ctx, rec); err != nil {
 		return err
 	}
+	p.recovery = nil
 	p.open = r
 	if r > p.lastRound {
 		p.lastRound = r
@@ -325,6 +348,9 @@ func (p *persistence) declareRound(ctx context.Context, round int, msg llm.Messa
 // treats it as an open declaration.
 func (p *persistence) declareTerminalRound(ctx context.Context, round int, msg llm.Message) error {
 	r := p.roundBase + round
+	if err := p.checkRecoveryRound(r); err != nil {
+		return err
+	}
 	rec, err := encodeRecord(store.KindRoundDeclared, recordID(p.runID, "-d"+strconv.Itoa(r)),
 		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg, Kind: "terminal_text"})
 	if err != nil {
@@ -333,6 +359,7 @@ func (p *persistence) declareTerminalRound(ctx context.Context, round int, msg l
 	if err := p.append(ctx, rec); err != nil {
 		return err
 	}
+	p.recovery = nil
 	if r > p.lastRound {
 		p.lastRound = r
 	}
@@ -410,6 +437,12 @@ func (p *persistence) truncateRun(ctx context.Context, round int, msg llm.Messag
 // finishRun durably records the terminal Done state before the event may be
 // yielded.
 func (p *persistence) finishRun(ctx context.Context, msg llm.Message, toolCalls int, truncated bool, usage, total llm.Usage) error {
+	if p.recovery != nil && truncated {
+		return fmt.Errorf("agent: truncated done with active recovery: %w", ErrIncompatibleLog)
+	}
+	if err := p.checkRecoveryRound(p.lastRound + 1); err != nil {
+		return err
+	}
 	inner, err := json.Marshal(doneEventPayload{Message: msg, ToolCalls: toolCalls, Truncated: truncated, Usage: usage, TotalUsage: total})
 	if err != nil {
 		return fmt.Errorf("agent: encode done payload: %w", err)
@@ -419,5 +452,9 @@ func (p *persistence) finishRun(ctx context.Context, msg llm.Message, toolCalls 
 	if err != nil {
 		return err
 	}
-	return p.append(ctx, rec)
+	if err := p.append(ctx, rec); err != nil {
+		return err
+	}
+	p.recovery = nil
+	return nil
 }

@@ -8,6 +8,14 @@ import (
 )
 
 func classifyServerError(server *serverError, api *llm.APIError) error {
+	err := serverErrorCause(server, api)
+	if server.Code == "context_length_exceeded" && (api == nil || api.StatusCode == 400) {
+		return &llm.ContextOverflowError{Code: server.Code, Err: err}
+	}
+	return err
+}
+
+func serverErrorCause(server *serverError, api *llm.APIError) error {
 	code := server.Code
 	if code == "" {
 		code = server.Type

@@ -90,7 +90,9 @@ func TestSettleInterruptCompaction(t *testing.T) {
 					}
 				case "E10_checkpoint_ambiguous":
 					got := settleInterruptToken(t, err, wantErr)
-					if got != token || token.ExpectedHead != 1 {
+					// run_started and canonical history_replaced were confirmed;
+					// the subsequent checkpoint acknowledgement was lost.
+					if got != token || token.ExpectedHead != 2 {
 						t.Fatalf("ambiguous append refreshed original token: %+v / %+v", token, got)
 					}
 					before, err := st.History(t.Context(), "t", 0)
@@ -108,7 +110,7 @@ func TestSettleInterruptCompaction(t *testing.T) {
 					if err != nil || target == nil {
 						t.Fatalf("new explicit inspection = %+v, %v", target, err)
 					}
-					if target.RunID != token.RunID || target.ExpectedHead != 2 {
+					if target.RunID != token.RunID || target.ExpectedHead != 3 {
 						t.Fatalf("new inspection target = %+v, original = %+v", target, token)
 					}
 					token = *target

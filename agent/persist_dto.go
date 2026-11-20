@@ -131,6 +131,9 @@ type configChangedPayload struct {
 }
 
 func decodeConfigChanged(r store.Record) (configChangedPayload, error) {
+	if r.Schema != store.SchemaV2 {
+		return configChangedPayload{}, incompatible(r, fmt.Sprintf("config_changed schema %d", r.Schema))
+	}
 	var p configChangedPayload
 	if err := strictDecode(r.Payload, &p); err != nil {
 		return configChangedPayload{}, incompatible(r, "invalid config_changed payload")
@@ -218,27 +221,31 @@ func (c configState) apply(base []llm.Option) []llm.Option {
 // open, its ID, its highest round) and the thread's system prompt would be
 // hidden behind it on replay, so they travel inside the snapshot.
 type agentCheckpoint struct {
-	CodecVersion int           `json:"codec_version,omitempty"`
-	History      []llm.Message `json:"history"`
-	System       string        `json:"system"`
-	RunActive    bool          `json:"run_active"`
-	RunID        string        `json:"run_id,omitempty"`
-	LastRound    int           `json:"last_round"`
-	Config       *configState  `json:"config,omitempty"`
-	Queue        []queueEntry  `json:"queue,omitempty"`
+	CodecVersion int                 `json:"codec_version,omitempty"`
+	History      []llm.Message       `json:"history"`
+	System       string              `json:"system"`
+	RunActive    bool                `json:"run_active"`
+	RunID        string              `json:"run_id,omitempty"`
+	LastRound    int                 `json:"last_round"`
+	Config       *configState        `json:"config,omitempty"`
+	Queue        []queueEntry        `json:"queue,omitempty"`
+	ConfigSeq    *int64              `json:"config_seq,omitempty"`
+	Recovery     *recoveryProjection `json:"recovery"`
 }
 
 // checkpointVersion is checked even when the snapshot is not used. Unknown
 // versions must not disappear behind structural fallback to the full log.
 func checkpointVersion(r store.Record) error {
-	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV3 {
+	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV4 {
 		return incompatible(r, fmt.Sprintf("checkpoint schema %d", r.Schema))
 	}
 	var version struct {
 		CodecVersion int `json:"codec_version"`
 	}
-	if err := json.Unmarshal(r.Payload, &version); err == nil && version.CodecVersion > store.SchemaV3 {
-		return incompatible(r, fmt.Sprintf("checkpoint codec version %d", version.CodecVersion))
+	if err := json.Unmarshal(r.Payload, &version); err == nil {
+		if version.CodecVersion > store.SchemaV4 {
+			return incompatible(r, fmt.Sprintf("checkpoint codec version %d", version.CodecVersion))
+		}
 	}
 	return nil
 }
@@ -253,7 +260,11 @@ func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
 	}
 	if (r.Schema == store.SchemaV1 && cp.CodecVersion != 0) ||
 		(r.Schema == store.SchemaV2 && cp.CodecVersion != store.SchemaV2) ||
-		(r.Schema == store.SchemaV3 && cp.CodecVersion != store.SchemaV3) {
+		(r.Schema == store.SchemaV3 && cp.CodecVersion != store.SchemaV3) ||
+		(r.Schema == store.SchemaV4 && cp.CodecVersion != store.SchemaV4) {
+		return nil, nil
+	}
+	if r.Schema < store.SchemaV4 && (cp.ConfigSeq != nil || cp.Recovery != nil) {
 		return nil, nil
 	}
 	if !cp.RunActive || cp.RunID == "" || cp.LastRound < -1 || cp.History == nil {
@@ -261,6 +272,29 @@ func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
 	}
 	if _, err := partitionHistory(cp.History); err != nil || !checkpointSystemMatches(&cp) {
 		return nil, nil
+	}
+	if r.Schema == store.SchemaV4 {
+		var presence struct {
+			Recovery json.RawMessage `json:"recovery"`
+		}
+		if err := json.Unmarshal(r.Payload, &presence); err != nil ||
+			len(presence.Recovery) == 0 || cp.ConfigSeq == nil || *cp.ConfigSeq < -1 {
+			return nil, nil
+		}
+		if cp.Recovery != nil {
+			rp, err := decodeRecoveryProjection(presence.Recovery)
+			if err != nil || rp.RunID != cp.RunID || rp.Round != cp.LastRound+1 ||
+				rp.ConfigSeq > *cp.ConfigSeq {
+				return nil, nil
+			}
+			if rp.Phase == "ready" || rp.Phase == "dispatched" {
+				size := estimateRunes(cp.History)
+				if size > rp.BudgetRunes || size >= rp.BeforeRunes {
+					return nil, nil
+				}
+			}
+			cp.Recovery = rp
+		}
 	}
 	return &cp, nil
 }

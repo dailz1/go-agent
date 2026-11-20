@@ -83,6 +83,30 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 		}
 	case llm.ReasoningDeltaChunk:
 		a.reasoningBuilder.WriteString(c.Text)
+	case *llm.TextDeltaChunk:
+		if c != nil {
+			a.feed(*c)
+		}
+	case *llm.ReasoningDeltaChunk:
+		if c != nil {
+			a.feed(*c)
+		}
+	case *llm.ToolCallStartChunk:
+		if c != nil {
+			a.feed(*c)
+		}
+	case *llm.ToolCallArgsChunk:
+		if c != nil {
+			a.feed(*c)
+		}
+	case *llm.ReasoningItemChunk:
+		if c != nil {
+			a.feed(*c)
+		}
+	case *llm.DoneChunk:
+		if c != nil {
+			a.feed(*c)
+		}
 	default:
 		// ignore unknown chunk types
 	}

@@ -251,7 +251,11 @@ func TestParallelBatchCompactsOnNextModelRound(t *testing.T) {
 	}})
 	agent := New(parallelProvider(parallelToolCalls("large")), reg,
 		WithStore(st), WithToolConcurrency(2), WithContextWindowTokens(128),
-		WithCompactor(compactKeepSystem{}), WithLogger(discardLogger()))
+		WithCompactor(CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+			// Canonical replacements retain a non-empty history. Keep the
+			// initial user request while removing the completed tool group.
+			return CompactionResult{History: history[:1], Changed: true}, nil
+		})), WithLogger(discardLogger()))
 	if _, err := agent.Run(context.Background(), "go", WithThread("compact")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

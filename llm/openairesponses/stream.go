@@ -3,12 +3,14 @@ package openairesponses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"net/http"
 	"strings"
 
 	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/llm/internal/sse"
 	"github.com/dailz1/go-agent/tool"
 )
 
@@ -38,10 +40,11 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		Headers: p.apiHeaders(),
 	}, reqBody, &resp); err != nil {
 		p.logger.Error("openairesponses request failed", "error", err)
-		return nil, nil, err
+		return nil, nil, classifyHTTPError(err)
 	}
-	if resp.Error != nil && resp.Error.Message != "" {
-		return nil, nil, fmt.Errorf("openairesponses: %s", resp.Error.Message)
+	if resp.Status == "failed" && resp.Error != nil {
+		err := fmt.Errorf("openairesponses: %w", resp.Error)
+		return nil, nil, markContextOverflow(resp.Error.Code, err)
 	}
 	// A response whose status is missing or not "completed" is partial or
 	// malformed; returning it as success could terminate an agent with
@@ -51,7 +54,13 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		if resp.IncompleteDetails != nil {
 			detail = " (" + resp.IncompleteDetails.Reason + ")"
 		}
+		if resp.Error != nil {
+			return nil, nil, fmt.Errorf("openairesponses: response status %q%s: %w", resp.Status, detail, resp.Error)
+		}
 		return nil, nil, fmt.Errorf("openairesponses: response status %q%s", resp.Status, detail)
+	}
+	if resp.Error != nil && resp.Error.Message != "" {
+		return nil, nil, fmt.Errorf("openairesponses: %w", resp.Error)
 	}
 
 	msg := outputToMessage(p.logger, resp.Output)
@@ -94,7 +103,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 	}, reqBody)
 	if err != nil {
 		p.logger.Error("openairesponses stream request failed", "error", err)
-		return nil, err
+		return nil, classifyHTTPError(err)
 	}
 
 	return func(yield func(llm.Chunk, error) bool) {
@@ -104,13 +113,17 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		// completed handler to avoid duplicate delivery.
 		delivered := map[string]bool{}
 		yieldedDone := false
-		for payload, err := range llm.ScanSSEEvents(ctx, result.Body) {
+		for frame, err := range sse.Scan(ctx, result.Body) {
 			if err != nil {
 				yield(nil, err)
 				return
 			}
-			chunks, err := p.parseStreamEvent(payload, delivered)
+			chunks, err := p.parseStreamEvent(frame.Data, delivered)
 			if err != nil {
+				var overflow *llm.ContextOverflowError
+				if errors.As(err, &overflow) && !frame.CompleteJSON() {
+					err = overflow.Err
+				}
 				yield(nil, fmt.Errorf("openairesponses: %w", err))
 				return
 			}
@@ -138,7 +151,6 @@ type streamEvent struct {
 	Delta       string            `json:"delta"`
 	Item        *outputItem       `json:"item"`
 	Response    *responseEnvelope `json:"response"`
-	Message     string            `json:"message"`
 }
 
 // parseStreamEvent translates one Responses SSE event into zero or more
@@ -216,8 +228,9 @@ func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) (
 		return chunks, nil
 
 	case "response.failed":
-		if ev.Response != nil && ev.Response.Error != nil && ev.Response.Error.Message != "" {
-			return nil, fmt.Errorf("response failed: %s", ev.Response.Error.Message)
+		if ev.Response != nil && ev.Response.Error != nil {
+			err := fmt.Errorf("response failed: %w", ev.Response.Error)
+			return nil, markContextOverflow(ev.Response.Error.Code, err)
 		}
 		return nil, fmt.Errorf("response failed")
 
@@ -229,7 +242,11 @@ func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) (
 		return nil, fmt.Errorf("response incomplete: %s", reason)
 
 	case "error":
-		return nil, fmt.Errorf("stream error: %s", ev.Message)
+		var cause errorEnvelope
+		if err := json.Unmarshal([]byte(payload), &cause); err != nil {
+			return nil, fmt.Errorf("decode stream error: %w", err)
+		}
+		return nil, markContextOverflow(cause.Code, fmt.Errorf("stream error: %w", &cause))
 
 	default:
 		// Lifecycle and built-in-tool events (content_part.added,
