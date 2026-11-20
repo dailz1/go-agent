@@ -19,11 +19,12 @@ const defaultBaseURL = "https://api.openai.com/v1"
 
 // Provider implements llm.Provider for the OpenAI Chat Completion API.
 type Provider struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
-	logger     *slog.Logger
+	baseURL        string
+	apiKey         string
+	model          string
+	httpClient     *http.Client
+	logger         *slog.Logger
+	contextWindows map[string]int
 }
 
 // ProviderOption configures a Provider via functional options.

@@ -704,7 +704,7 @@ func TestCompactorSummarization(t *testing.T) {
 		assistant,
 		results[0],
 		llm.UserMessage("intermediate user"),
-		llm.AssistantMessage("more history"),
+		llm.AssistantMessage(strings.Repeat("more history ", 60)),
 		llm.UserMessage("latest"),
 		llm.AssistantMessage("current round"),
 	}
@@ -723,7 +723,7 @@ func TestCompactorSummarization(t *testing.T) {
 		result, err := NewSummarizationCompactor().Compact(
 			context.Background(),
 			history,
-			CompactionBudget{MaxRunes: 0},
+			CompactionBudget{MaxRunes: 1300},
 			provider,
 			nil,
 		)
@@ -824,7 +824,7 @@ func TestCompactorSummarization(t *testing.T) {
 func TestCompactorChain(t *testing.T) {
 	t.Parallel()
 
-	history := []llm.Message{llm.UserMessage("first"), llm.AssistantMessage(strings.Repeat("history", 20)), llm.UserMessage("latest"), llm.AssistantMessage("final")}
+	history := []llm.Message{llm.UserMessage("first"), llm.AssistantMessage(strings.Repeat("history", 200)), llm.UserMessage("latest"), llm.AssistantMessage("final")}
 
 	t.Run("runs in order and stops when caller budget is reached", func(t *testing.T) {
 		t.Parallel()
@@ -919,7 +919,7 @@ func TestCompactorChain(t *testing.T) {
 		result, err := NewCompactorChain(NewSummarizationCompactor()).Compact(
 			context.Background(),
 			history,
-			CompactionBudget{MaxRunes: 0},
+			CompactionBudget{MaxRunes: 1000},
 			provider,
 			nil,
 		)

@@ -439,7 +439,7 @@ func summarizerSeed() []llm.Message {
 		{Role: llm.RoleSystem, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "pointer policy"}}},
 		llm.UserMessage("first"),
 	}
-	assistant, results := compactorToolExchange(compactorToolCall{id: "c1", name: "sum_tool", result: "file contents"})
+	assistant, results := compactorToolExchange(compactorToolCall{id: "c1", name: "sum_tool", result: strings.Repeat("file contents", 80)})
 	history = append(history, assistant)
 	history = append(history, results...)
 	history = append(history, llm.UserMessage("latest"), llm.AssistantMessage("current round"))
@@ -467,7 +467,7 @@ func TestSummarizationProviderHistoryIsolation(t *testing.T) {
 		history := summarizerSeed()
 		provider := &mutatingCompactorProvider{response: summaryMsg("summary text")}
 		result, err := NewSummarizationCompactor().Compact(
-			context.Background(), history, CompactionBudget{MaxRunes: 0}, provider, nil,
+			context.Background(), history, CompactionBudget{MaxRunes: 1000}, provider, nil,
 		)
 		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -487,7 +487,7 @@ func TestSummarizationProviderHistoryIsolation(t *testing.T) {
 		history := summarizerSeed()
 		provider := &mutatingCompactorProvider{response: summaryMsg("summary text")}
 		result, err := NewSummarizationCompactor().Compact(
-			context.Background(), history, CompactionBudget{MaxRunes: 0}, provider, nil,
+			context.Background(), history, CompactionBudget{MaxRunes: 1000}, provider, nil,
 		)
 		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -503,7 +503,7 @@ func TestSummarizationProviderHistoryIsolation(t *testing.T) {
 		history := summarizerSeed()
 		provider := &mutatingCompactorProvider{response: summaryMsg("summary text")}
 		result, err := NewSummarizationCompactor().Compact(
-			context.Background(), history, CompactionBudget{MaxRunes: 0}, provider, nil,
+			context.Background(), history, CompactionBudget{MaxRunes: 1000}, provider, nil,
 		)
 		if err != nil && !errors.Is(err, ErrCompactionBudgetExceeded) {
 			t.Fatalf("Compact() unexpected error: %v", err)
@@ -536,6 +536,7 @@ func TestSummarizationProviderHistoryIsolation(t *testing.T) {
 			base[0], base[1],
 			llm.AssistantMessage("[Summary]\nsummary text"),
 			llm.UserMessage("latest"),
+			llm.UserMessage(defaultSummarizationPrompt),
 		})
 
 		p := &scriptedProvider{steps: []scriptedStep{

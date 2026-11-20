@@ -17,6 +17,7 @@ func (a *Agent) chatWithRetryAndFallback(
 	tools []tool.ToolInfo,
 	request RoundContextRequest,
 	opts []llm.Option,
+	w int,
 	yield func(AgentEvent, error) bool,
 	streamRetries *[]RetryInfo,
 ) (iter.Seq2[llm.Chunk, error], bool) {
@@ -30,7 +31,7 @@ func (a *Agent) chatWithRetryAndFallback(
 	var lastRetryErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		request.Attempt++
-		outbound, err := a.roundContextOutbound(ctx, deepCopyMessages(history), request)
+		outbound, err := a.roundContextOutbound(ctx, deepCopyMessages(history), request, w)
 		if err != nil {
 			yield(nil, err)
 			return nil, false
@@ -38,7 +39,7 @@ func (a *Agent) chatWithRetryAndFallback(
 		stream, lastRetryErr = provider.ChatStream(ctx, outbound, tools, opts...)
 		if errors.Is(lastRetryErr, llm.ErrStreamingNotSupported) {
 			request.Attempt++
-			outbound, err = a.roundContextOutbound(ctx, deepCopyMessages(history), request)
+			outbound, err = a.roundContextOutbound(ctx, deepCopyMessages(history), request, w)
 			if err != nil {
 				yield(nil, err)
 				return nil, false

@@ -642,7 +642,8 @@ func TestAgentCompaction(t *testing.T) {
 			llm.AssistantMessage(strings.Repeat("more history", 100)),
 		}
 		protected := []llm.Message{base[0], base[1], llm.UserMessage("latest")}
-		budget := estimateRunes(append(copyMessages(protected[:2]), llm.AssistantMessage("[Summary]\nsummary text"), protected[2])) + 32
+		promptOverhead := estimateRunes([]llm.Message{llm.UserMessage(defaultSummarizationPrompt)})
+		budget := estimateRunes(append(copyMessages(protected), llm.AssistantMessage("[Summary]\nsummary text"), llm.UserMessage(defaultSummarizationPrompt))) + 32
 
 		t.Run("success inserts summary", func(t *testing.T) {
 			// The round provider plays both roles now: its first Chat serves
@@ -696,7 +697,7 @@ func TestAgentCompaction(t *testing.T) {
 			manualResult, err := chain.Compact(
 				context.Background(),
 				current,
-				CompactionBudget{MaxRunes: estimateRunes(protected) + 8},
+				CompactionBudget{MaxRunes: estimateRunes(protected) + promptOverhead + 8},
 				&compactionSummaryProvider{err: summarizerErr},
 				nil,
 			)
@@ -720,7 +721,7 @@ func TestAgentCompaction(t *testing.T) {
 				provider,
 				tool.NewRegistry(),
 				WithCompactor(chain),
-				WithContextWindowTokens(estimateRunes(protected)+8),
+				WithContextWindowTokens(estimateRunes(protected)+promptOverhead+8),
 				WithCompactionThresholdPercent(100),
 				WithLogger(newCompactionLogger(capture)),
 			)
@@ -761,7 +762,7 @@ func TestAgentCompaction(t *testing.T) {
 					NewSummarizationCompactor(),
 					NewSlidingWindowCompactor(),
 				)),
-				WithContextWindowTokens(estimateRunes(protected)+8),
+				WithContextWindowTokens(estimateRunes(protected)+promptOverhead+8),
 				WithCompactionThresholdPercent(100),
 				WithLogger(discardLogger()),
 			)

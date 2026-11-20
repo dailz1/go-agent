@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -179,6 +180,9 @@ type Agent struct {
 	roundContextProvider       RoundContextProvider
 	finishRound                func(ctx context.Context, fc FinishRoundContext) (FinishRoundDecision, error)
 	runExitFn                  func(SettlementToken)
+
+	warnMu                  sync.Mutex
+	warnedUndeclaredWindows map[string]struct{}
 }
 
 // AgentRetryConfig controls retry behavior for provider calls in Agent.Run and Agent.RunStream.
@@ -351,6 +355,7 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 		compactionThresholdPercent: DefaultCompactionThresholdPercent,
 		logger:                     slog.Default(),
 		toolConcurrency:            1,
+		warnedUndeclaredWindows:    make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -503,7 +508,8 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			} else {
 				opts = a.llmOpts
 			}
-			history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess)
+			w := a.roundContextWindow(prov, opts)
+			history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess, w)
 			if !ok {
 				return
 			}
@@ -512,7 +518,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				// compaction, so they ride into this round's request. The
 				// drain consumes only what fits the hard limit; the rest
 				// stays queued for the next round.
-				available := a.steeringAdmissionRunes() - estimateRunes(history)
+				available := a.steeringAdmissionRunesFor(w) - estimateRunes(history)
 				injected, err := sess.drainInputs(ctx, available)
 				if err != nil {
 					yield(nil, err)
@@ -520,7 +526,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}
 				history = append(history, injected...)
 			}
-			if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCap() {
+			if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCapFor(w) {
 				yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
 				return
 			}
@@ -539,6 +545,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					ThreadID: threadID,
 				},
 				opts,
+				w,
 				yield,
 				&streamRetries,
 			)
@@ -741,7 +748,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					return
 				}
 			}
-			if !a.executeToolRound(ctx, i, toolBlocks, &history, sess, yield) {
+			if !a.executeToolRound(ctx, i, toolBlocks, &history, sess, yield, w) {
 				return
 			}
 			// FinishRound runs after the round's results are committed, with
@@ -791,28 +798,72 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 	}, nil
 }
 
-// roundTargetRunes is the compaction target for the current configuration:
-// the same expression compactHistoryRound uses, extracted so steering
-// admission and drain budgeting share one number.
-func (a *Agent) roundTargetRunes() int {
-	target := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
-		(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
-	if a.roundContextProvider != nil && target > a.canonicalContextCap() {
-		target = a.canonicalContextCap()
+// roundContextWindow resolves the effective context window for one round
+// (issue #17): min(constructor C, provider-declared M) per docs/DESIGN.md
+// P1「模型上下文窗口声明与有效窗口」. An undeclared or non-positive
+// declaration falls back to C with a warn-once log naming the provider and
+// model. W is round-local: callers pass it to every budget derivation for
+// the round and never store it on the Agent.
+func (a *Agent) roundContextWindow(prov llm.Provider, opts []llm.Option) int {
+	if prov == nil {
+		return a.contextWindowTokens
+	}
+	model := llm.ApplyOptions(opts).Model
+	declared, ok := 0, false
+	if cp, isCP := prov.(llm.ContextWindowProvider); isCP {
+		declared, ok = cp.ContextWindow(model)
+	}
+	if ok && declared > 0 {
+		if declared < a.contextWindowTokens {
+			return declared
+		}
+		return a.contextWindowTokens
+	}
+	a.warnUndeclaredWindow(prov.Name(), model)
+	return a.contextWindowTokens
+}
+
+// warnUndeclaredWindow logs the fallback once per provider+model pair per
+// process, so hosts can see which models run unprotected.
+func (a *Agent) warnUndeclaredWindow(providerName, model string) {
+	key := providerName + "\x00" + model
+	a.warnMu.Lock()
+	if _, seen := a.warnedUndeclaredWindows[key]; seen {
+		a.warnMu.Unlock()
+		return
+	}
+	a.warnedUndeclaredWindows[key] = struct{}{}
+	window := a.contextWindowTokens
+	a.warnMu.Unlock()
+	a.logger.Warn("provider context window undeclared; using constructor-level window",
+		"provider", providerName,
+		"model", model,
+		"window_tokens", window,
+	)
+}
+
+// targetRunesFor is the compaction target for the round's effective window:
+// floor(w*percent/100) with the same overflow-safe idiom as toolResultRunes,
+// capped by the canonical cap under a runtime-context overlay.
+func (a *Agent) targetRunesFor(w int) int {
+	target := (w/100)*a.compactionThresholdPercent +
+		(w%100)*a.compactionThresholdPercent/100
+	if a.roundContextProvider != nil && target > a.canonicalContextCapFor(w) {
+		target = a.canonicalContextCapFor(w)
 	}
 	return target
 }
 
-// steeringAdmissionRunes is the hard history limit an enqueued steering
-// input can never exceed, measured serialized like every other budget:
-// the window, or the canonical cap under a runtime-context overlay (whose
-// reservation must survive steering injection). Fit at the actual drain
-// point is enforced by deferral, not by admission.
-func (a *Agent) steeringAdmissionRunes() int {
+// steeringAdmissionRunesFor is the hard history limit an enqueued steering
+// input can never exceed, measured serialized like every other budget: the
+// round's effective window, or the canonical cap under a runtime-context
+// overlay (whose reservation must survive steering injection). Fit at the
+// actual drain point is enforced by deferral, not by admission.
+func (a *Agent) steeringAdmissionRunesFor(w int) int {
 	if a.roundContextProvider != nil {
-		return a.canonicalContextCap()
+		return a.canonicalContextCapFor(w)
 	}
-	return a.contextWindowTokens
+	return w
 }
 
 // compactHistoryRound enforces the history budget at the top of each round and reports via events.
@@ -827,13 +878,10 @@ func (a *Agent) compactHistoryRound(
 	opts []llm.Option,
 	yield func(AgentEvent, error) bool,
 	sess *persistence,
+	w int,
 ) ([]llm.Message, bool) {
-	// Same overflow-safe idiom as toolResultRunes: floor(windowTokens*percent/100).
-	targetRunes := (a.contextWindowTokens/100)*a.compactionThresholdPercent +
-		(a.contextWindowTokens%100)*a.compactionThresholdPercent/100
-	if a.roundContextProvider != nil && targetRunes > a.canonicalContextCap() {
-		targetRunes = a.canonicalContextCap()
-	}
+	// Same overflow-safe idiom as toolResultRunes: floor(w*percent/100).
+	targetRunes := a.targetRunesFor(w)
 	beforeRunes := estimateRunes(history)
 	if a.compactor != nil && beforeRunes > targetRunes {
 		if hasUnsupportedBlocks(history) {
@@ -873,6 +921,12 @@ func (a *Agent) compactHistoryRound(
 						"before_runes", beforeRunes,
 						"after_runes", afterRunes,
 					)
+					if result.SpanTruncated {
+						a.logger.Warn("summarization span truncated to fit budget",
+							"span_total_runes", result.SpanTotalRunes,
+							"span_kept_runes", result.SpanKeptRunes,
+						)
+					}
 					if !yield(CompactionEvent{
 						Strategies:    append([]string{}, result.Strategies...),
 						DroppedGroups: result.DroppedGroups,
@@ -910,14 +964,18 @@ func (a *Agent) compactHistoryRound(
 				if sess != nil {
 					carry = sess.carry
 				}
-				if a.roundContextProvider == nil && estimateRunes(history) > targetRunes+carry {
+				limit := targetRunes + carry
+				if limit > w {
+					limit = w
+				}
+				if a.roundContextProvider == nil && estimateRunes(history) > limit {
 					yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
 					return history, false
 				}
 			}
 		}
 	}
-	if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCap() {
+	if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCapFor(w) {
 		yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
 		return history, false
 	}
@@ -996,19 +1054,25 @@ func sessionRoundBase(sess *persistence) int {
 	return sess.roundBase
 }
 
-func (a *Agent) toolResultRunes() int {
+func (a *Agent) toolResultRunesFor(w int) int {
 	// (t/10)*3 + (t%10)*3/10 is floor(t*3/10) without the overflow that
 	// tokens*3/10 hits at large windows.
-	runes := (a.contextWindowTokens/10)*3 + (a.contextWindowTokens%10)*3/10
+	runes := (w/10)*3 + (w%10)*3/10
 	if runes < minToolResultRunes {
 		runes = minToolResultRunes
 	}
 	return runes
 }
 
-func (a *Agent) applyToolResultLimit(call llm.ToolUseBlock, result *tool.ToolResult) *tool.ToolResult {
+// toolResultRunes is the constructor-window variant, kept for direct
+// callers and tests outside a running round.
+func (a *Agent) toolResultRunes() int {
+	return a.toolResultRunesFor(a.contextWindowTokens)
+}
+
+func (a *Agent) applyToolResultLimit(call llm.ToolUseBlock, result *tool.ToolResult, w int) *tool.ToolResult {
 	totalRunes := utf8.RuneCountInString(result.Content)
-	capRunes := a.toolResultRunes()
+	capRunes := a.toolResultRunesFor(w)
 	limitedResult, omittedRunes := truncateToolResult(result, capRunes)
 	if omittedRunes > 0 {
 		a.logger.Warn("tool result truncated",

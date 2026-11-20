@@ -39,12 +39,12 @@ func (e *RoundContextError) Error() string {
 
 func (e *RoundContextError) Unwrap() error { return e.Err }
 
-func (a *Agent) overlayCap() int {
-	return (a.contextWindowTokens / 5)
+func (a *Agent) overlayCapFor(w int) int {
+	return w / 5
 }
 
-func (a *Agent) canonicalContextCap() int {
-	return a.contextWindowTokens - a.overlayCap()
+func (a *Agent) canonicalContextCapFor(w int) int {
+	return w - a.overlayCapFor(w)
 }
 
 func roundContextMessage(snapshot string) llm.Message {
@@ -56,7 +56,7 @@ func estimateOverlayIncrement(history []llm.Message, message llm.Message) int {
 	return estimateRunes(candidate) - estimateRunes(history)
 }
 
-func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message, request RoundContextRequest) ([]llm.Message, error) {
+func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message, request RoundContextRequest, w int) ([]llm.Message, error) {
 	if a.roundContextProvider == nil {
 		return history, nil
 	}
@@ -65,7 +65,7 @@ func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message,
 	}
 
 	envelope := roundContextMessage("")
-	if estimateOverlayIncrement(history, envelope) > a.overlayCap() {
+	if estimateOverlayIncrement(history, envelope) > a.overlayCapFor(w) {
 		return nil, fmt.Errorf("round context envelope exceeds budget: %w", ErrCompactionBudgetExceeded)
 	}
 
@@ -80,7 +80,7 @@ func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message,
 		return history, nil
 	}
 
-	message, truncated, err := a.boundedRoundContextMessage(history, snapshot)
+	message, truncated, err := a.boundedRoundContextMessage(history, snapshot, w)
 	if err != nil {
 		return nil, err
 	}
@@ -92,19 +92,19 @@ func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message,
 			"round", request.Round,
 			"attempt", request.Attempt,
 			"total_runes", utf8.RuneCountInString(snapshot),
-			"cap_runes", a.overlayCap(),
+			"cap_runes", a.overlayCapFor(w),
 			"omitted_runes", omittedRunes,
 		)
 	}
 	return append(copyMessages(history), message), nil
 }
 
-func (a *Agent) boundedRoundContextMessage(history []llm.Message, snapshot string) (llm.Message, bool, error) {
+func (a *Agent) boundedRoundContextMessage(history []llm.Message, snapshot string, w int) (llm.Message, bool, error) {
 	fits := func(payload string) (llm.Message, bool) {
 		message := roundContextMessage(payload)
 		candidate := append(copyMessages(history), message)
-		return message, estimateOverlayIncrement(history, message) <= a.overlayCap() &&
-			estimateRunes(candidate) <= a.contextWindowTokens
+		return message, estimateOverlayIncrement(history, message) <= a.overlayCapFor(w) &&
+			estimateRunes(candidate) <= w
 	}
 	if message, ok := fits(snapshot); ok {
 		return message, false, nil

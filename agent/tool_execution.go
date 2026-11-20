@@ -36,13 +36,14 @@ type toolRound struct {
 	yield                   func(AgentEvent, error) bool
 	materialized            int
 	hardIndex, missingIndex int
+	window                  int
 }
 
-func newToolRound(ctx, commitCtx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool) *toolRound {
+func newToolRound(ctx, commitCtx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, window int) *toolRound {
 	return &toolRound{
 		ctx: ctx, commitCtx: commitCtx, iteration: iteration, calls: calls,
 		slots: make([]toolSlot, len(calls)), history: history, sess: sess, yield: yield,
-		hardIndex: -1, missingIndex: -1,
+		hardIndex: -1, missingIndex: -1, window: window,
 	}
 }
 
@@ -76,15 +77,15 @@ func (r *toolRound) observeAll() {
 
 // executeToolRound keeps the default lazy serial path separate from the
 // opt-in planner while both paths share ordered settlement.
-func (a *Agent) executeToolRound(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool) bool {
+func (a *Agent) executeToolRound(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
 	if a.toolConcurrency == 1 {
-		return a.executeToolRoundSerial(ctx, iteration, calls, history, sess, yield)
+		return a.executeToolRoundSerial(ctx, iteration, calls, history, sess, yield, w)
 	}
-	return a.executeToolRoundParallel(ctx, iteration, calls, history, sess, yield)
+	return a.executeToolRoundParallel(ctx, iteration, calls, history, sess, yield, w)
 }
 
-func (a *Agent) executeToolRoundSerial(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool) bool {
-	round := newToolRound(ctx, ctx, iteration, calls, history, sess, yield)
+func (a *Agent) executeToolRoundSerial(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
+	round := newToolRound(ctx, ctx, iteration, calls, history, sess, yield, w)
 	for index, call := range calls {
 		if ctx.Err() != nil {
 			round.slots[index].state = toolSlotMissing
@@ -95,7 +96,7 @@ func (a *Agent) executeToolRoundSerial(ctx context.Context, iteration int, calls
 		if err != nil {
 			round.slots[index] = toolSlot{state: toolSlotHardError, err: err}
 		} else {
-			round.slots[index] = toolSlot{state: toolSlotResolved, result: a.applyToolResultLimit(call, result)}
+			round.slots[index] = toolSlot{state: toolSlotResolved, result: a.applyToolResultLimit(call, result, round.window)}
 		}
 		round.observe(index)
 		if !round.settle(index + 1) {

@@ -331,7 +331,7 @@ func TestSummarizationFollowsSwitchedProvider(t *testing.T) {
 	// and the summarization call must follow the switched-to provider with
 	// the thread's effective model — not the constructor-era default.
 	def := &hotswapProvider{name: "default-prov", streamScripts: [][]llm.Chunk{
-		textChunks(strings.Repeat("answer ", 80)),
+		textChunks(strings.Repeat("answer ", 200)),
 	}}
 	alt := &hotswapProvider{
 		name:        "alt-prov",
@@ -345,7 +345,7 @@ func TestSummarizationFollowsSwitchedProvider(t *testing.T) {
 		WithStore(st),
 		WithProviders(alt),
 		WithCompactor(NewSummarizationCompactor()),
-		WithContextWindowTokens(600),
+		WithContextWindowTokens(1200),
 		WithCompactionThresholdPercent(100),
 		WithLLMOptions(llm.WithModel("base-model")),
 		WithLogger(discardLogger()),

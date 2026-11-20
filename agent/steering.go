@@ -76,19 +76,29 @@ func (a *Agent) EnqueueInputWithID(ctx context.Context, thread, idempotencyKey, 
 	}
 	// Admission is measured on the serialized message — the same unit the
 	// compaction budget and the drain use — so escaping-heavy text cannot
-	// slip past the bound on raw rune count alone.
+	// slip past the bound on raw rune count alone. The bound itself is read
+	// per attempt from the thread's current config projection (issue #17):
+	// idempotency confirmation always precedes the size rejection, so a
+	// retried enqueue whose record is already behind a checkpoint confirms
+	// success instead of failing on a shrunken window. The record payload is
+	// encoded lazily: a rejected oversized input must not pay a second full
+	// JSON encoding just to be told no.
 	cost := estimateRunes([]llm.Message{llm.UserMessage(input)})
-	if cost > a.steeringAdmissionRunes() {
-		return "", fmt.Errorf("agent: steering input costs %d serialized runes, admission bound %d: %w",
-			cost, a.steeringAdmissionRunes(), ErrInputTooLarge)
-	}
 	sum := sha256.Sum256([]byte(idempotencyKey))
 	id := QueuedInputID("q-" + hex.EncodeToString(sum[:8]))
-	rec, err := encodeRecord(store.KindInputQueued, string(id), inputQueuedPayload{Input: input})
-	if err != nil {
-		return "", fmt.Errorf("agent: enqueue input on thread %q: %w", thread, err)
+	var rec store.Record
+	ensureRecord := func() error {
+		if rec.ID != "" {
+			return nil
+		}
+		built, err := encodeRecord(store.KindInputQueued, string(id), inputQueuedPayload{Input: input})
+		if err != nil {
+			return fmt.Errorf("agent: enqueue input on thread %q: %w", thread, err)
+		}
+		built.Schema = store.SchemaV2
+		rec = built
+		return nil
 	}
-	rec.Schema = store.SchemaV2
 
 	const maxAttempts = 5
 	var lastErr error
@@ -101,8 +111,30 @@ func (a *Agent) EnqueueInputWithID(ctx context.Context, thread, idempotencyKey, 
 			lastErr = err
 			continue
 		}
+		if err := ensureRecord(); err != nil {
+			return "", err
+		}
 		if queuedRecordLanded(state.Tail, string(id), string(rec.Payload)) {
 			return id, nil
+		}
+		if admission := a.steeringWindowFromTail(ctx, thread, state); cost > admission {
+			// Idempotency confirmation precedes admission rejection: a retried
+			// enqueue whose record is already behind a checkpoint must confirm
+			// success instead of failing on a shrunken window. Without a
+			// checkpoint the tail already is the whole log, so the tail scan
+			// above settles it.
+			if state.Checkpoint != nil {
+				full, ferr := a.store.History(ctx, thread, 0)
+				if ferr != nil {
+					lastErr = ferr
+					continue
+				}
+				if queuedRecordLanded(full, string(id), string(rec.Payload)) {
+					return id, nil
+				}
+			}
+			return "", fmt.Errorf("agent: steering input costs %d serialized runes, admission bound %d: %w",
+				cost, admission, ErrInputTooLarge)
 		}
 		_, err = a.store.Append(ctx, thread, state.Head, rec)
 		if err == nil {
@@ -132,6 +164,66 @@ func (a *Agent) EnqueueInputWithID(ctx context.Context, thread, idempotencyKey, 
 		return "", fmt.Errorf("agent: enqueue input on thread %q inconclusive after %d attempts (the input may or may not have landed): %w", thread, maxAttempts, ErrThreadBusy)
 	}
 	return "", fmt.Errorf("agent: enqueue input on thread %q: %w", thread, lastErr)
+}
+
+// steeringWindowFromTail resolves the thread's current effective context
+// window from the visible log tail and returns the steering admission bound.
+// The projection folds the checkpoint's config snapshot and every
+// config_changed record after it; a supported-but-unusable checkpoint makes
+// the tail ambiguous against replay, which rebuilds from the full log — so
+// the fallback folds every config_changed record through the same head.
+// Records this build cannot strictly decode are skipped for sizing only:
+// admission may then be looser, while the round top still fails closed on
+// the same record. The drain re-checks the real budget, so a looser
+// admission never injects history past the effective window.
+func (a *Agent) steeringWindowFromTail(ctx context.Context, thread string, state store.ThreadState) int {
+	cfg, ambiguous := foldConfigProjection(state.Tail)
+	if ambiguous {
+		cfg = configState{}
+		if full, err := a.store.History(ctx, thread, 0); err == nil {
+			for _, r := range full {
+				if r.Seq >= state.Head {
+					break
+				}
+				if r.Kind == store.KindConfigChanged {
+					if payload, derr := decodeConfigChanged(r); derr == nil {
+						cfg.fold(payload)
+					}
+				}
+			}
+		}
+	}
+	prov := a.provider
+	if cfg.Provider != nil && *cfg.Provider != "" {
+		if p, ok := a.providers[*cfg.Provider]; ok {
+			prov = p
+		}
+	}
+	return a.steeringAdmissionRunesFor(a.roundContextWindow(prov, cfg.apply(a.llmOpts)))
+}
+
+// foldConfigProjection folds the tail's checkpoint config snapshot and
+// config_changed records. ambiguous reports an unusable checkpoint record:
+// the tail can then disagree with the replayed projection.
+func foldConfigProjection(tail []store.Record) (cfg configState, ambiguous bool) {
+	for _, r := range tail {
+		switch r.Kind {
+		case store.KindCheckpoint:
+			cp, err := decodeCheckpoint(r)
+			if err != nil || cp == nil {
+				ambiguous = true
+				continue
+			}
+			if cp.Config != nil {
+				cfg = *cp.Config
+			}
+		case store.KindConfigChanged:
+			if payload, err := decodeConfigChanged(r); err == nil {
+				cfg.fold(payload)
+			}
+		}
+	}
+	return cfg, ambiguous
 }
 
 // queuedRecordLanded confirms an ambiguous enqueue by full content.

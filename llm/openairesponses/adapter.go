@@ -29,6 +29,8 @@ type Provider struct {
 	baseURL    string
 	httpClient *http.Client
 	logger     *slog.Logger
+
+	contextWindows map[string]int
 }
 
 // ProviderOption configures the Responses provider.

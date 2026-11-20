@@ -23,6 +23,8 @@ const (
 	maxToolCollapseRunes       = 4096
 	toolCollapsePrefix         = "[Tool Calls]\n"
 	toolCollapseSuffix         = "... [truncated]"
+
+	summarizationTruncationMarker = "\n...[summarization input truncated: omitted %d of %d runes]...\n"
 )
 
 // CompactionBudget defines the maximum estimated history size.
@@ -57,6 +59,13 @@ type CompactionResult struct {
 	// candidate already recorded its own returned error" from "a private
 	// same-sentinel diagnostic that merely matches the returned error".
 	ReturnedError error
+	// SpanTruncated reports that the serialized summarization span exceeded
+	// the round budget and was cut to fit (issue #17); SpanTotalRunes and
+	// SpanKeptRunes carry the before/after rune counts. Zero when the span
+	// was not truncated.
+	SpanTruncated  bool
+	SpanTotalRunes int
+	SpanKeptRunes  int
 }
 
 // Compactor reduces message history while preserving valid message groups.
@@ -909,8 +918,29 @@ func (summarizationCompactor) Compact(
 		return result, errors.New("agent: summarization provider is nil")
 	}
 
+	// The summarization request itself must fit the round budget (issue #17):
+	// a thread that switched to a smaller model must not send the old span to
+	// its own summarizer unchanged. The fixed base (system prefix + prompt)
+	// and the span are sized against the budget's rune estimate; when the
+	// budget cannot fit even the base, or the span collapses to nothing, no
+	// summary of history the model never saw is dispatched or adopted —
+	// cancellation still reports first (issue #14 order).
+	transcript := summarizationTranscript(span)
+	total := utf8.RuneCountInString(transcript)
+	bounded, ok := boundTranscript(systemPrefix(groups), transcript, budget.MaxRunes)
+	if !ok || bounded == "" {
+		if err := compactionContextErr(ctx, &result); err != nil {
+			return result, err
+		}
+		return result, fmt.Errorf("summarization: %w", ErrCompactionBudgetExceeded)
+	}
+	if utf8.RuneCountInString(bounded) < total {
+		result.SpanTruncated = true
+		result.SpanTotalRunes = total
+		result.SpanKeptRunes = utf8.RuneCountInString(bounded)
+	}
 	request := systemPrefix(groups)
-	request = append(request, llm.UserMessage(defaultSummarizationPrompt+"\n\n"+summarizationTranscript(span)))
+	request = append(request, llm.UserMessage(defaultSummarizationPrompt+"\n\n"+bounded))
 	// Clone first, then check, then dispatch (issue #14): the request copy
 	// can be sizable, so a context canceled during it must not reach
 	// provider.Chat — the check sits directly ahead of the call on the
@@ -975,6 +1005,41 @@ func summarizationTranscript(history []llm.Message) string {
 		lines = append(lines, string(message.Role)+": "+strings.Join(parts, "\n"))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// boundTranscript caps the serialized summarization span so that the
+// assembled request (base system/prompt messages plus the transcript) stays
+// within the budget's rune estimate, keeping head and tail halves around a
+// marker that states the omitted count. ok=false reports that even the base
+// request alone exceeds the budget; an ok candidate may still be an empty
+// span when no transcript content fits.
+func boundTranscript(base []llm.Message, transcript string, budget int) (string, bool) {
+	candidate := func(span string) []llm.Message {
+		return append(append([]llm.Message{}, base...), llm.UserMessage(defaultSummarizationPrompt+"\n\n"+span))
+	}
+	if estimateRunes(candidate(transcript)) <= budget {
+		return transcript, true
+	}
+	runes := []rune(transcript)
+	low, high := 0, len(runes)
+	best := -1
+	bestPayload := ""
+	for low <= high {
+		keep := low + (high-low)/2
+		head := (keep + 1) / 2
+		payload := string(runes[:head]) + fmt.Sprintf(summarizationTruncationMarker, len(runes)-keep, len(runes)) + string(runes[len(runes)-(keep-head):])
+		if estimateRunes(candidate(payload)) <= budget {
+			best = keep
+			bestPayload = payload
+			low = keep + 1
+		} else {
+			high = keep - 1
+		}
+	}
+	if best < 0 {
+		return "", false
+	}
+	return bestPayload, true
 }
 
 func joinedText(message llm.Message) string {

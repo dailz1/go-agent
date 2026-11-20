@@ -39,6 +39,8 @@ type Provider struct {
 	httpClient *http.Client
 	logger     *slog.Logger
 	warnLimit  sync.Once
+
+	contextWindows map[string]int
 }
 
 // ProviderOption configures a subscription provider.

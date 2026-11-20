@@ -32,6 +32,8 @@ type Provider struct {
 	doSample   *bool
 	requestID  string
 	userID     string
+
+	contextWindows map[string]int
 }
 
 // ProviderOption configures a Provider via functional options.
