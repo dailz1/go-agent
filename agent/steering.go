@@ -75,7 +75,7 @@ func (a *Agent) EnqueueInputWithID(ctx context.Context, thread, idempotencyKey, 
 		return "", ErrEmptyInput
 	}
 	// Admission is measured on the serialized message — the same unit the
-	// compaction budget and the drain use — so escaping-heavy text cannot
+	// rune compactor budget uses — so escaping-heavy text cannot
 	// slip past the bound on raw rune count alone. The bound itself is read
 	// per attempt from the thread's current config projection (issue #17):
 	// idempotency confirmation always precedes the size rejection, so a
@@ -238,49 +238,65 @@ func queuedRecordLanded(tail []store.Record, id, payload string) bool {
 }
 
 // drainInputs consumes the pending steering queue at a drain point: every
-// pending entry that fits availableRunes becomes one role=user message
+// pending entry that fits availableTokens becomes one role=user message
 // appended to history, and one input_consumed record lands atomically
 // before the round proceeds. Entries that do not fit stay queued for the
 // next drain, after compaction has freed space — an accepted input can
 // defer, but never push the run past its hard limit. The returned messages
 // must be appended to the live history by the caller.
-func (p *persistence) drainInputs(ctx context.Context, availableRunes int) ([]llm.Message, error) {
-	if err := p.absorbTail(ctx, p.cfgRead); err != nil {
-		return nil, err
-	}
-	if len(p.queue) == 0 {
-		return nil, nil
-	}
-	msgs := make([]llm.Message, 0, len(p.queue))
-	entries := make([]consumedInput, 0, len(p.queue))
-	used := 0
-	n := 0
-	for _, e := range p.queue {
-		cost := estimateRunes([]llm.Message{llm.UserMessage(e.Input)})
-		if used+cost > availableRunes {
-			break
+// Unmeasured standalone messages cost one estimated token per serialized rune.
+func (p *persistence) drainInputs(ctx context.Context, capacity func() int) ([]llm.Message, error) {
+	pending := -1
+	for attempt := 0; attempt < 4; attempt++ {
+		if err := p.absorbTail(ctx, p.cfgRead); err != nil {
+			return nil, err
 		}
-		used += cost
-		msgs = append(msgs, llm.UserMessage(e.Input))
-		entries = append(entries, consumedInput{ID: e.ID, Input: e.Input})
-		n++
+		if len(p.queue) == 0 {
+			return nil, nil
+		}
+		if pending < 0 {
+			pending = len(p.queue)
+		}
+		availableTokens := capacity()
+		msgs := make([]llm.Message, 0, len(p.queue))
+		entries := make([]consumedInput, 0, len(p.queue))
+		used := 0
+		for _, e := range p.queue[:pending] {
+			cost := estimateRunes([]llm.Message{llm.UserMessage(e.Input)})
+			if p.context != nil && p.context.anchor != nil {
+				// The measured prefix is nonempty. Its JSON append adds a
+				// comma in place of the standalone message's two brackets.
+				cost = dropDelta(cost, p.context.anchor.jsonMode)
+			}
+			if cost > availableTokens-used {
+				break
+			}
+			used += cost
+			msgs = append(msgs, llm.UserMessage(e.Input))
+			entries = append(entries, consumedInput{ID: e.ID, Input: e.Input})
+		}
+		if len(entries) == 0 {
+			return nil, nil
+		}
+		rec, err := encodeRecord(store.KindInputConsumed, newRecordNonce(), inputConsumedPayload{Inputs: entries})
+		if err != nil {
+			return nil, err
+		}
+		rec.Schema = store.SchemaV2
+		expected := p.head
+		head, err := p.a.store.Append(ctx, p.thread, expected, rec)
+		if errors.Is(err, store.ErrRevisionConflict) {
+			continue // absorb and select again using the current estimator
+		}
+		if err != nil {
+			return nil, err
+		}
+		p.head, p.cfgRead = head, expected+1
+		p.queue = p.queue[len(entries):]
+		p.carry = estimateRunes(msgs)
+		return msgs, nil
 	}
-	if n == 0 {
-		return nil, nil
-	}
-	rec, err := encodeRecord(store.KindInputConsumed, newRecordNonce(), inputConsumedPayload{Inputs: entries})
-	if err != nil {
-		return nil, err
-	}
-	rec.Schema = store.SchemaV2
-	if err := p.append(ctx, rec); err != nil {
-		return nil, err
-	}
-	// Remove only the consumed prefix: entries absorbed into the queue
-	// while this append was rebasing must survive for the next drain.
-	p.queue = p.queue[n:]
-	p.carry = estimateRunes(msgs)
-	return msgs, nil
+	return nil, fmt.Errorf("agent: persist steering drain on thread %q: %w", p.thread, store.ErrRevisionConflict)
 }
 
 // newRecordNonce mints a fresh random ID for a runner-written control

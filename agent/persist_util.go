@@ -17,6 +17,11 @@ import (
 // context the tail replay needs. The ID is bound to the record's future
 // position, keeping retries byte-identical.
 func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) error {
+	if p.cfgRead < p.head {
+		if err := p.absorbTail(ctx, p.cfgRead); err != nil {
+			return err
+		}
+	}
 	if err := p.anchorLegacyHistory(ctx, history); err != nil {
 		return err
 	}
@@ -32,30 +37,35 @@ func (p *persistence) checkpoint(ctx context.Context, history []llm.Message) err
 		// attempt: a rebase across a control-plane write must carry the
 		// absorbed config, not the one snapshotted before the conflict.
 		payload, merr := json.Marshal(agentCheckpoint{
-			CodecVersion: store.SchemaV4,
-			History:      history,
-			System:       p.system,
-			RunActive:    true,
-			RunID:        p.runID,
-			LastRound:    p.lastRound,
-			Config:       &p.cfg,
-			Queue:        p.queue,
-			ConfigSeq:    &p.cfgSeq,
-			Recovery:     p.recovery,
+			CodecVersion:  store.SchemaV5,
+			History:       history,
+			System:        p.system,
+			RunActive:     true,
+			RunID:         p.runID,
+			LastRound:     p.lastRound,
+			Config:        &p.cfg,
+			Queue:         p.queue,
+			ConfigSeq:     &p.cfgSeq,
+			Recovery:      p.recovery,
+			ContextAnchor: p.anchor,
 		})
 		if merr != nil {
 			return fmt.Errorf("agent: encode checkpoint: %w", merr)
 		}
 		var head int64
+		end := p.head + 1
 		head, err = p.a.store.Append(ctx, p.thread, p.head, store.Record{
-			Kind: store.KindCheckpoint, Schema: store.SchemaV4,
+			Kind: store.KindCheckpoint, Schema: store.SchemaV5,
 			ID:      fmt.Sprintf("cp-%d", p.head),
 			Payload: payload,
 		})
 		if err == nil {
 			p.head = head
-			if head > p.cfgRead {
-				p.cfgRead = head
+			if end > p.cfgRead {
+				p.cfgRead = end
+			}
+			if head > end {
+				return p.absorbTail(ctx, end)
 			}
 			return nil
 		}
@@ -133,7 +143,7 @@ func (v *threadView) applyCancellation(r store.Record) error {
 				return incompatible(r, "cancellation result does not match the recorded or canonical unknown outcome")
 			}
 		}
-		v.history = append(v.history, v.open.declared)
+		v.appendOpenAssistant()
 		v.history = append(v.history, p.Results...)
 	}
 	v.open, v.runActive, v.cancelled = nil, false, true

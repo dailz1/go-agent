@@ -94,6 +94,10 @@ func (p *persistence) replaceHistory(ctx context.Context, original []llm.Message
 	}
 	p.recovery = v.recovery
 	p.legacyHistory = false
+	p.anchor = nil
+	if p.context != nil {
+		p.context.replaceHistory()
+	}
 	return v.history, nil
 }
 

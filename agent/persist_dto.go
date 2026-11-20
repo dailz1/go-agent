@@ -38,11 +38,12 @@ type eventEnvelope struct {
 // per-invocation telemetry (their errors are not persistable) and stay out
 // of the log.
 type doneEventPayload struct {
-	Message    llm.Message `json:"message"`
-	ToolCalls  int         `json:"tool_calls"`
-	Truncated  bool        `json:"truncated"`
-	Usage      llm.Usage   `json:"usage"`
-	TotalUsage llm.Usage   `json:"total_usage"`
+	Message            llm.Message      `json:"message"`
+	ToolCalls          int              `json:"tool_calls"`
+	Truncated          bool             `json:"truncated"`
+	Usage              llm.Usage        `json:"usage"`
+	TotalUsage         llm.Usage        `json:"total_usage"`
+	ContextMeasurement *doneMeasurement `json:"context_measurement"`
 }
 
 // runStartedPayload opens a run: the exact input and the thread's system
@@ -65,7 +66,8 @@ type roundDeclaredPayload struct {
 	// Kind generalizes the declaration: "" is the legacy tool-round form
 	// (tool calls must follow), "terminal_text" declares a tool-free
 	// assistant turn persisted for a FinishRound-Continue decision.
-	Kind string `json:"kind,omitempty"`
+	Kind               string               `json:"kind,omitempty"`
+	ContextMeasurement *declaredMeasurement `json:"context_measurement,omitempty"`
 }
 
 // terminalTextDeclaration marks a tool-free declaration persisted for a
@@ -221,29 +223,30 @@ func (c configState) apply(base []llm.Option) []llm.Option {
 // open, its ID, its highest round) and the thread's system prompt would be
 // hidden behind it on replay, so they travel inside the snapshot.
 type agentCheckpoint struct {
-	CodecVersion int                 `json:"codec_version,omitempty"`
-	History      []llm.Message       `json:"history"`
-	System       string              `json:"system"`
-	RunActive    bool                `json:"run_active"`
-	RunID        string              `json:"run_id,omitempty"`
-	LastRound    int                 `json:"last_round"`
-	Config       *configState        `json:"config,omitempty"`
-	Queue        []queueEntry        `json:"queue,omitempty"`
-	ConfigSeq    *int64              `json:"config_seq,omitempty"`
-	Recovery     *recoveryProjection `json:"recovery"`
+	CodecVersion  int                      `json:"codec_version,omitempty"`
+	History       []llm.Message            `json:"history"`
+	System        string                   `json:"system"`
+	RunActive     bool                     `json:"run_active"`
+	RunID         string                   `json:"run_id,omitempty"`
+	LastRound     int                      `json:"last_round"`
+	Config        *configState             `json:"config,omitempty"`
+	Queue         []queueEntry             `json:"queue,omitempty"`
+	ConfigSeq     *int64                   `json:"config_seq,omitempty"`
+	Recovery      *recoveryProjection      `json:"recovery"`
+	ContextAnchor *contextAnchorProjection `json:"context_anchor"`
 }
 
 // checkpointVersion is checked even when the snapshot is not used. Unknown
 // versions must not disappear behind structural fallback to the full log.
 func checkpointVersion(r store.Record) error {
-	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV4 {
+	if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV5 {
 		return incompatible(r, fmt.Sprintf("checkpoint schema %d", r.Schema))
 	}
 	var version struct {
 		CodecVersion int `json:"codec_version"`
 	}
 	if err := json.Unmarshal(r.Payload, &version); err == nil {
-		if version.CodecVersion > store.SchemaV4 {
+		if version.CodecVersion > store.SchemaV5 {
 			return incompatible(r, fmt.Sprintf("checkpoint codec version %d", version.CodecVersion))
 		}
 	}
@@ -261,10 +264,14 @@ func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
 	if (r.Schema == store.SchemaV1 && cp.CodecVersion != 0) ||
 		(r.Schema == store.SchemaV2 && cp.CodecVersion != store.SchemaV2) ||
 		(r.Schema == store.SchemaV3 && cp.CodecVersion != store.SchemaV3) ||
-		(r.Schema == store.SchemaV4 && cp.CodecVersion != store.SchemaV4) {
+		(r.Schema == store.SchemaV4 && cp.CodecVersion != store.SchemaV4) ||
+		(r.Schema == store.SchemaV5 && cp.CodecVersion != store.SchemaV5) {
 		return nil, nil
 	}
 	if r.Schema < store.SchemaV4 && (cp.ConfigSeq != nil || cp.Recovery != nil) {
+		return nil, nil
+	}
+	if r.Schema < store.SchemaV5 && cp.ContextAnchor != nil {
 		return nil, nil
 	}
 	if !cp.RunActive || cp.RunID == "" || cp.LastRound < -1 || cp.History == nil {
@@ -273,7 +280,7 @@ func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
 	if _, err := partitionHistory(cp.History); err != nil || !checkpointSystemMatches(&cp) {
 		return nil, nil
 	}
-	if r.Schema == store.SchemaV4 {
+	if r.Schema >= store.SchemaV4 {
 		var presence struct {
 			Recovery json.RawMessage `json:"recovery"`
 		}
@@ -295,6 +302,9 @@ func decodeCheckpoint(r store.Record) (*agentCheckpoint, error) {
 			}
 			cp.Recovery = rp
 		}
+	}
+	if r.Schema == store.SchemaV5 && !validCheckpointAnchor(r.Payload, cp.ContextAnchor) {
+		return nil, nil
 	}
 	return &cp, nil
 }
@@ -346,6 +356,9 @@ func decodeRoundDeclared(r store.Record) (roundDeclaredPayload, error) {
 	if p.Kind != "" && p.Kind != terminalTextDeclaration {
 		return roundDeclaredPayload{}, fmt.Errorf("%w: round_declared seq %d: unknown declaration kind %q",
 			ErrIncompatibleLog, r.Seq, p.Kind)
+	}
+	if err := validateDeclaredMeasurement(r, p.ContextMeasurement); err != nil {
+		return roundDeclaredPayload{}, err
 	}
 	return p, nil
 }
@@ -473,6 +486,9 @@ func decodeAgentEvent(r store.Record) (doneEventPayload, error) {
 	var p doneEventPayload
 	if err := strictDecode(env.Payload, &p); err != nil {
 		return doneEventPayload{}, fmt.Errorf("%w: agent_event seq %d: %v", ErrIncompatibleLog, r.Seq, err)
+	}
+	if err := validateDoneMeasurement(r, env.Payload, p); err != nil {
+		return doneEventPayload{}, err
 	}
 	return p, nil
 }

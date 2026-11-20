@@ -479,6 +479,12 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 	// Return an iterator closure. The body executes lazily — nothing happens
 	// until the caller starts ranging over the returned Seq2.
 	return func(yield func(AgentEvent, error) bool) {
+		accounting := &contextRuntime{durable: sess != nil}
+		if sess != nil {
+			sess.context = accounting
+			accounting.restoreAnchor(sess.anchor, history)
+			defer func() { sess.context = nil }()
+		}
 		for i := 0; i < a.maxIter; i++ {
 			// Check for context cancellation before each LLM round-trip.
 			select {
@@ -504,6 +510,10 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					yield(nil, err)
 					return
 				}
+				if err := sess.anchorLegacyHistory(ctx, history); err != nil {
+					yield(nil, err)
+					return
+				}
 				opts = sess.cfg.apply(a.llmOpts)
 				// Provider resolution reads the same projection and shares the
 				// config pipeline: empty folded name = the thread never switched
@@ -522,9 +532,12 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				opts = a.llmOpts
 			}
 			opts = freezeLLMOptions(opts)
+			measurement := requestMeasurement(prov, opts, tools)
+			accounting.checkIdentity(measurement)
 			w := a.roundContextWindow(prov, opts)
 			recovery := overflowRecovery{a: a, sess: sess, provider: prov, opts: opts,
-				window: w, round: i + sessionRoundBase(sess), cfgSeq: -1}
+				window: w, round: i + sessionRoundBase(sess), cfgSeq: -1, context: accounting,
+				measurement: measurement}
 			if sess != nil {
 				recovery.state, recovery.cfgSeq = sess.recovery, sess.cfgSeq
 			}
@@ -535,7 +548,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}
 			}
 			if recovery.state == nil {
-				history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess, w)
+				history, ok = a.compactHistoryRound(ctx, history, prov, opts, yield, sess, w, accounting)
 				if !ok {
 					return
 				}
@@ -545,15 +558,18 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				// compaction, so they ride into this round's request. The
 				// drain consumes only what fits the hard limit; the rest
 				// stays queued for the next round.
-				available := a.steeringAdmissionRunesFor(w) - estimateRunes(history)
-				injected, err := sess.drainInputs(ctx, available)
+				injected, err := sess.drainInputs(ctx, func() int {
+					capacity := uint64(a.steeringAdmissionRunesFor(w))
+					estimated := accounting.estimate(history)
+					return int(capacity - min(capacity, estimated))
+				})
 				if err != nil {
 					yield(nil, err)
 					return
 				}
 				history = append(history, injected...)
 			}
-			if recovery.state == nil && a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCapFor(w) {
+			if recovery.state == nil && a.roundContextProvider != nil && accounting.estimate(history) > uint64(a.canonicalContextCapFor(w)) {
 				yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
 				return
 			}
@@ -590,6 +606,8 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}
 			}
 			history = append(history, assistantMsg)
+			recovery.measurement.captureConfigSeq = recovery.cfgSeq
+			accounting.activateMeasurement(recovery.measurement, accum.usage(), history, sess)
 			isLast := i == a.maxIter-1
 			finishEnd := false
 			declaredText := false
@@ -872,11 +890,42 @@ func (a *Agent) compactHistoryRound(
 	yield func(AgentEvent, error) bool,
 	sess *persistence,
 	w int,
+	accounting *contextRuntime,
 ) ([]llm.Message, bool) {
 	// Same overflow-safe idiom as toolResultRunes: floor(w*percent/100).
 	targetRunes := a.targetRunesFor(w)
-	beforeRunes := estimateRunes(history)
-	if a.compactor != nil && beforeRunes > targetRunes {
+	estimated := accounting.estimate(history)
+	anchored := accounting.anchor != nil
+	budgetRunes := targetRunes
+	beforeRunes := 0
+	triggered := a.compactor != nil && estimated > uint64(targetRunes)
+	if triggered {
+		beforeRunes = int(estimated)
+		if anchored {
+			beforeRunes = estimateRunes(history)
+			budgetRunes = int(compactionTargetRunes(int64(targetRunes), int64(beforeRunes), estimated))
+		}
+	}
+	usageTokens, tailTokens := int64(0), estimated
+	if anchor := accounting.anchor; anchor != nil {
+		usageTokens = anchor.inputTokens + anchor.outputTokens
+		tailTokens = uint64(anchor.suffixRunes)
+	}
+	fields := []any{"estimate_tokens", estimated, "anchor_valid", accounting.anchor != nil,
+		"usage_anchor_tokens", usageTokens, "tail_estimate_tokens", tailTokens}
+	if accounting.invalidationReason != "" {
+		fields = append(fields, "invalidation_reason", accounting.invalidationReason)
+		accounting.invalidationReason = ""
+	}
+	if triggered {
+		fields = append(fields, "budget_runes", budgetRunes)
+	}
+	a.logger.Debug("agent context budget", fields...)
+	if triggered {
+		if anchored && budgetRunes <= 0 {
+			yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
+			return history, false
+		}
 		if hasUnsupportedBlocks(history) {
 			a.logger.Warn("history compaction skipped: unsupported content block types cannot be isolated")
 		} else {
@@ -884,7 +933,7 @@ func (a *Agent) compactHistoryRound(
 			// in-place mutation cannot leak into the live history (issue #9).
 			// Validation below compares against the untouched original.
 			compactInput := deepCopyMessages(history)
-			result, err := a.compactor.Compact(ctx, compactInput, CompactionBudget{MaxRunes: targetRunes}, provider, opts)
+			result, err := a.compactor.Compact(ctx, compactInput, CompactionBudget{MaxRunes: budgetRunes}, provider, append([]llm.Option(nil), opts...))
 			if err == nil && result.Changed && sess != nil {
 				var canonical []llm.Message
 				canonical, err = durableHistory(history)
@@ -898,7 +947,6 @@ func (a *Agent) compactHistoryRound(
 			for _, strategyErr := range result.Errors {
 				a.logger.Warn("history compaction strategy failed", "error", strategyErr)
 			}
-			compactionVerified := false
 			if err != nil {
 				a.logger.Warn("history compaction failed", "error", err)
 			} else if (result.Changed && len(result.History) == 0) || hasUnsupportedBlocks(result.History) {
@@ -906,10 +954,31 @@ func (a *Agent) compactHistoryRound(
 			} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
 				a.logger.Warn("history compaction produced invalid history", "error", validationErr)
 			} else {
-				compactionVerified = true
+				if err := ctx.Err(); err != nil {
+					yield(nil, err)
+					return history, false
+				}
+				candidateEstimate := estimated
+				if result.Changed {
+					candidateEstimate = uint64(estimateRunes(result.History))
+				}
+				// Only a verified strategy result proves the history cannot
+				// fit. Check it before replacing history or announcing it.
+				// Steering carry remains bounded by the hard window.
+				if anchored || a.roundContextProvider == nil {
+					carry := 0
+					if sess != nil {
+						carry = sess.carry
+					}
+					limit := targetRunes + min(carry, w-targetRunes)
+					runeLimit := budgetRunes + min(carry, w-budgetRunes)
+					if (result.Changed && candidateEstimate > uint64(runeLimit)) || candidateEstimate > uint64(limit) {
+						yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
+						return history, false
+					}
+				}
 				if result.Changed {
 					adopted := deepCopyMessages(result.History)
-					afterRunes := estimateRunes(adopted)
 					// The compacted view is durable before it is announced, so
 					// replay never re-runs a (nondeterministic) summarizer.
 					if sess != nil {
@@ -924,11 +993,17 @@ func (a *Agent) compactHistoryRound(
 							yield(nil, err)
 							return history, false
 						}
+					}
+					if sess == nil {
+						accounting.replaceHistory()
+					}
+					afterRunes := int(candidateEstimate)
+					estimated = uint64(afterRunes)
+					if sess != nil {
 						if err := sess.checkpoint(ctx, adopted); err != nil {
 							yield(nil, err)
 							return history, false
 						}
-						afterRunes = estimateRunes(adopted)
 					}
 					history = adopted
 					a.logger.Warn("history compacted",
@@ -965,33 +1040,9 @@ func (a *Agent) compactHistoryRound(
 				return history, false
 			default:
 			}
-			// Gating this check on compactionVerified is intentional (issue #10
-			// review): reaching it means compaction ran to completion and still
-			// missed the budget — local proof the history cannot fit. Failure
-			// paths (compactor error, invalid output) only know compaction did
-			// not run; per contract they degrade non-fatally and let the
-			// provider arbitrate rather than fail the run on a heuristic
-			// estimate. See DESIGN.md "历史预算管理".
-			// Carry tolerance: steering injected by the previous round's
-			// drain legitimately pushed history past the target; compaction
-			// has just run and may not be able to shrink further.
-			if compactionVerified {
-				carry := 0
-				if sess != nil {
-					carry = sess.carry
-				}
-				limit := targetRunes + carry
-				if limit > w {
-					limit = w
-				}
-				if a.roundContextProvider == nil && estimateRunes(history) > limit {
-					yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
-					return history, false
-				}
-			}
 		}
 	}
-	if a.roundContextProvider != nil && estimateRunes(history) > a.canonicalContextCapFor(w) {
+	if a.roundContextProvider != nil && estimated > uint64(a.canonicalContextCapFor(w)) {
 		yield(nil, fmt.Errorf("canonical history exceeds round context budget: %w", ErrCompactionBudgetExceeded))
 		return history, false
 	}

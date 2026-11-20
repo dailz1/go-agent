@@ -41,7 +41,7 @@ func validateSuperseded(records []store.Record, r store.Record, p contextRecover
 			return incompatible(r, "superseded proof interval is incomplete")
 		}
 		next++
-		if record.Schema < store.SchemaV1 || record.Schema > store.SchemaV4 {
+		if record.Schema < store.SchemaV1 || record.Schema > store.SchemaV5 {
 			return incompatible(record, "unsupported schema in superseded proof")
 		}
 		if record.Kind == store.KindCheckpoint {
@@ -51,6 +51,10 @@ func validateSuperseded(records []store.Record, r store.Record, p contextRecover
 		} else if record.Schema == store.SchemaV4 &&
 			record.Kind != store.KindContextRecovery && record.Kind != store.KindHistoryReplaced {
 			return incompatible(record, "schema 4 on a legacy record")
+		}
+		if record.Schema == store.SchemaV5 && record.Kind != store.KindCheckpoint &&
+			record.Kind != store.KindRoundDeclared && record.Kind != store.KindAgentEvent {
+			return incompatible(record, "schema 5 on a record without context measurement")
 		}
 		if record.Kind != store.KindConfigChanged {
 			continue

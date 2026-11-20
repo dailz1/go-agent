@@ -56,7 +56,7 @@ func estimateOverlayIncrement(history []llm.Message, message llm.Message) int {
 	return estimateRunes(candidate) - estimateRunes(history)
 }
 
-func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message, request RoundContextRequest, w int) ([]llm.Message, error) {
+func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message, request RoundContextRequest, w int, estimated uint64, fitter overlayFitter) ([]llm.Message, error) {
 	if a.roundContextProvider == nil {
 		return history, nil
 	}
@@ -65,7 +65,7 @@ func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message,
 	}
 
 	envelope := roundContextMessage("")
-	if estimateOverlayIncrement(history, envelope) > a.overlayCapFor(w) {
+	if fitter.increment(envelope) > a.overlayCapFor(w) {
 		return nil, fmt.Errorf("round context envelope exceeds budget: %w", ErrCompactionBudgetExceeded)
 	}
 
@@ -80,7 +80,7 @@ func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message,
 		return history, nil
 	}
 
-	message, truncated, err := a.boundedRoundContextMessage(history, snapshot, w)
+	message, truncated, err := a.boundedRoundContextMessage(fitter, snapshot, w, estimated)
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +99,47 @@ func (a *Agent) roundContextOutbound(ctx context.Context, history []llm.Message,
 	return append(copyMessages(history), message), nil
 }
 
-func (a *Agent) boundedRoundContextMessage(history []llm.Message, snapshot string, w int) (llm.Message, bool, error) {
+// overlayFitter caches canonical encoding once for all candidates of this
+// history version. Unknown encoders retain the established full-estimate path.
+type overlayFitter struct {
+	history   []llm.Message
+	baseRunes int
+	knownJSON bool
+	known     bool
+}
+
+func newOverlayFitter(history []llm.Message) overlayFitter {
+	runes, jsonMode := estimateRunesMode(history)
+	known := knownBlockTypes(history)
+	return overlayFitter{history: history, baseRunes: runes, knownJSON: known && jsonMode, known: known}
+}
+
+func (f overlayFitter) increment(message llm.Message) int {
+	if !f.known {
+		return estimateOverlayIncrement(f.history, message)
+	}
+	if !f.knownJSON {
+		return fallbackRunes([]llm.Message{message})
+	}
+	size := estimateRunes([]llm.Message{message})
+	if len(f.history) == 0 {
+		return size - f.baseRunes
+	}
+	return dropDelta(size, true)
+}
+
+func (a *Agent) boundedRoundContextMessage(fitter overlayFitter, snapshot string, w int, estimated uint64) (llm.Message, bool, error) {
 	fits := func(payload string) (llm.Message, bool) {
 		message := roundContextMessage(payload)
-		candidate := append(copyMessages(history), message)
-		return message, estimateOverlayIncrement(history, message) <= a.overlayCapFor(w) &&
-			estimateRunes(candidate) <= w
+		increment := fitter.increment(message)
+		if increment > a.overlayCapFor(w) || increment > w {
+			return message, false
+		}
+		if !fitter.known {
+			candidate := append(copyMessages(fitter.history), message)
+			return message, estimateRunes(candidate) <= w
+		}
+		return message, estimated <= uint64(w-increment)
 	}
 	if message, ok := fits(snapshot); ok {
 		return message, false, nil

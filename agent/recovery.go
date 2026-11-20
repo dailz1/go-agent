@@ -29,15 +29,17 @@ func (e *ContextRecoveryError) Is(target error) bool { return target == ErrConte
 // overflowRecovery belongs to one logical round. Its request configuration
 // never changes when a persistence write absorbs newer control records.
 type overflowRecovery struct {
-	a        *Agent
-	sess     *persistence
-	state    *recoveryProjection
-	cause    error
-	provider llm.Provider
-	opts     []llm.Option
-	window   int
-	round    int
-	cfgSeq   int64
+	context     *contextRuntime
+	measurement contextMeasurement
+	a           *Agent
+	sess        *persistence
+	state       *recoveryProjection
+	cause       error
+	provider    llm.Provider
+	opts        []llm.Option
+	window      int
+	round       int
+	cfgSeq      int64
 }
 
 func recoveryBudget(window, target, history, previous int) int {
@@ -210,6 +212,9 @@ func (r *overflowRecovery) prepare(ctx context.Context, history *[]llm.Message, 
 		next := *r.state
 		next.Phase = "ready"
 		r.state = &next
+	}
+	if r.sess == nil && r.context != nil {
+		r.context.replaceHistory()
 	}
 	*history = adopted
 	return yield(CompactionEvent{

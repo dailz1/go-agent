@@ -134,8 +134,8 @@ func TestCompactionPersistsCheckpoint(t *testing.T) {
 	if err := strictDecode(state.Checkpoint.Payload, &cp); err != nil {
 		t.Fatalf("checkpoint payload: %v", err)
 	}
-	if state.Checkpoint.Schema != store.SchemaV4 || cp.CodecVersion != store.SchemaV4 {
-		t.Fatalf("checkpoint schema/codec = %d/%d, want 4/4", state.Checkpoint.Schema, cp.CodecVersion)
+	if state.Checkpoint.Schema != store.SchemaV5 || cp.CodecVersion != store.SchemaV5 {
+		t.Fatalf("checkpoint schema/codec = %d/%d, want 5/5", state.Checkpoint.Schema, cp.CodecVersion)
 	}
 	if !cp.RunActive {
 		t.Error("checkpoint run_active = false, want true (compaction happens mid-run)")

@@ -162,6 +162,7 @@ func (v *threadView) foldHistoryReplaced(r store.Record) error {
 		return incompatible(r, "non-overflow replacement during an active recovery episode")
 	}
 	v.history = deepCopyMessages(p.History)
+	v.anchor = nil
 	v.legacyHistory = false
 	if v.replacements == nil {
 		v.replacements = make(map[string]store.Record)

@@ -17,6 +17,7 @@ import (
 // state recovery must resolve. results is the round_result confirmed prefix
 // in declaration order; slots beyond it have no durable outcome.
 type openRound struct {
+	anchor   *contextAnchorProjection
 	runID    string
 	round    int
 	declared llm.Message
@@ -27,6 +28,7 @@ type openRound struct {
 // that the frozen system prompt is known — including the legitimate empty
 // prompt — so a later run cannot replace it from current configuration.
 type threadView struct {
+	anchor          *contextAnchorProjection
 	legacyHistory   bool
 	system          string
 	systemSet       bool
@@ -55,7 +57,7 @@ type threadView struct {
 // commit, which keeps the log canonical without a second synthesis pass.
 func (v *threadView) closeUnknown() []llm.Message {
 	results := v.open.resultsWithUnknown()
-	v.history = append(v.history, v.open.declared)
+	v.appendOpenAssistant()
 	v.history = append(v.history, results...)
 	v.open = nil
 	return results
@@ -142,7 +144,7 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 		proof = full
 		cfgSeq := int64(-1)
 		for _, r := range full {
-			if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV4 {
+			if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV5 {
 				return threadView{}, incompatible(r, "unsupported schema in checkpoint prefix")
 			}
 			if r.Kind == store.KindCheckpoint {
@@ -153,8 +155,15 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 				r.Kind != store.KindContextRecovery && r.Kind != store.KindHistoryReplaced {
 				return threadView{}, incompatible(r, "schema 4 on a legacy record")
 			}
-			if cpState != nil && cpState.CodecVersion == store.SchemaV3 && r.Schema == store.SchemaV4 {
-				cpState = nil // a legacy snapshot must not hide recovery state
+			if r.Schema == store.SchemaV5 && r.Kind != store.KindCheckpoint &&
+				r.Kind != store.KindRoundDeclared && r.Kind != store.KindAgentEvent {
+				return threadView{}, incompatible(r, "schema 5 on a record without context measurement")
+			}
+			if cpState != nil && r.Seq < state.Checkpoint.Seq && r.Schema > cpState.CodecVersion {
+				cpState = nil // an older snapshot must not hide newer semantics
+			}
+			if cpState != nil && cpState.CodecVersion == store.SchemaV3 && r.Schema >= store.SchemaV4 {
+				cpState = nil // v3 compacted views cannot interpret recovery tails
 			}
 			if r.Kind == store.KindConfigChanged && r.Seq < state.Checkpoint.Seq {
 				if _, err := decodeConfigChanged(r); err != nil {
@@ -167,7 +176,7 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 				configRevisions[r.Seq] = struct{}{}
 			}
 		}
-		if cpState != nil && cpState.CodecVersion == store.SchemaV4 {
+		if cpState != nil && cpState.CodecVersion >= store.SchemaV4 {
 			prefix := full
 			for len(prefix) > 0 && prefix[len(prefix)-1].Seq >= state.Checkpoint.Seq {
 				prefix = prefix[:len(prefix)-1]
@@ -207,6 +216,7 @@ func (a *Agent) replayThread(ctx context.Context, thread string) (threadView, er
 			v.queue = cpState.Queue
 		}
 		v.cfgSeq, v.recovery = *cpState.ConfigSeq, cpState.Recovery
+		v.anchor = cpState.ContextAnchor
 		v.replacements = replacements
 		v.episodes, v.configRevisions = episodes, configRevisions
 	}
@@ -241,7 +251,7 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 	}
 	for i := range records {
 		r := records[i]
-		if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV4 {
+		if r.Schema < store.SchemaV1 || r.Schema > store.SchemaV5 {
 			return v, fmt.Errorf("%w: seq %d schema %d", ErrIncompatibleLog, r.Seq, r.Schema)
 		}
 		if r.Kind == store.KindCheckpoint {
@@ -253,6 +263,9 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 		}
 		if r.Schema == store.SchemaV4 && r.Kind != store.KindContextRecovery && r.Kind != store.KindHistoryReplaced {
 			return v, incompatible(r, "schema 4 on a legacy record")
+		}
+		if r.Schema == store.SchemaV5 && r.Kind != store.KindRoundDeclared && r.Kind != store.KindAgentEvent {
+			return v, incompatible(r, "schema 5 on a record without context measurement")
 		}
 		switch r.Kind {
 		case store.KindContextRecovery:
@@ -310,6 +323,10 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 					return v, err
 				}
 			}
+			candidate, err := v.declarationAnchor(r, p.ContextMeasurement)
+			if err != nil {
+				return v, err
+			}
 			if p.Kind == terminalTextDeclaration {
 				// A FinishRound-Continue keeps the run alive after a
 				// tool-free turn: the turn joins history and no open
@@ -319,6 +336,9 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 				}
 				v.recovery = nil
 				v.history = append(v.history, p.Message)
+				if candidate != nil {
+					v.anchor = candidate
+				}
 				v.lastRound = p.Round
 				v.head = r.Seq + 1
 				continue
@@ -338,7 +358,7 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 				seen[call.ID] = struct{}{}
 			}
 			v.recovery = nil
-			v.open = &openRound{runID: p.RunID, round: p.Round, declared: p.Message}
+			v.open = &openRound{runID: p.RunID, round: p.Round, declared: p.Message, anchor: candidate}
 			v.lastRound = p.Round
 		case store.KindRoundResult:
 			p, err := decodeRoundResult(r)
@@ -397,7 +417,7 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 					return v, incompatible(r, fmt.Sprintf("committed batch alters recorded result %d", i))
 				}
 			}
-			v.history = append(v.history, v.open.declared)
+			v.appendOpenAssistant()
 			v.history = append(v.history, p.Results...)
 			v.open = nil
 		case store.KindConfigChanged:
@@ -407,6 +427,7 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 			if err != nil {
 				return v, err
 			}
+			v.invalidateAnchors(p)
 			v.cfg.fold(p)
 			v.cfgSeq = r.Seq
 			if v.configRevisions == nil {
@@ -492,6 +513,23 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 				if len(toolUseBlocks(p.Message)) > 0 {
 					return v, incompatible(r, "non-truncated done carries tool calls")
 				}
+				var measurement *declaredMeasurement
+				if p.ContextMeasurement != nil {
+					measurement = &declaredMeasurement{
+						measurementIdentity: p.ContextMeasurement.measurementIdentity,
+						CaptureConfigSeq:    p.ContextMeasurement.CaptureConfigSeq,
+					}
+					if p.ContextMeasurement.UsageReported {
+						measurement.Usage = &p.Usage
+					}
+				}
+				candidate, err := v.declarationAnchor(r, measurement)
+				if err != nil {
+					return v, err
+				}
+				if candidate != nil {
+					v.anchor = candidate
+				}
 				// An empty assistant turn is a legitimate terminal result and
 				// is preserved as a turn.
 				v.history = append(v.history, p.Message)
@@ -515,7 +553,7 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 				// then close. The legacy no-records behavior is kept verbatim.
 				// The resulting terminal state still refuses Resume.
 				results := v.open.resultsWithUnknown()
-				v.history = append(v.history, v.open.declared)
+				v.appendOpenAssistant()
 				v.history = append(v.history, results...)
 			}
 			v.open = nil
@@ -530,8 +568,9 @@ func replayRecords(v threadView, records []store.Record) (threadView, error) {
 	return v, nil
 }
 
-// All V4 snapshots, including proactive compaction checkpoints, must agree
-// with the canonical prefix before any of their state can be adopted.
+// V4/V5 snapshots must agree with the canonical prefix before adoption.
+// Anchor comparison also proves capture_config_seq through canonical response
+// activation; the checkpoint projection needs no duplicate provenance field.
 func checkpointProjectionMatches(cp *agentCheckpoint, v threadView) bool {
 	var cfg configState
 	if cp.Config != nil {
@@ -543,7 +582,8 @@ func checkpointProjectionMatches(cp *agentCheckpoint, v threadView) bool {
 		cp.ConfigSeq != nil && *cp.ConfigSeq == v.cfgSeq &&
 		reflect.DeepEqual(cp.History, seededHistory(v.system, v.history)) &&
 		reflect.DeepEqual(cfg, v.cfg) && slices.Equal(cp.Queue, v.queue) &&
-		reflect.DeepEqual(cp.Recovery, v.recovery)
+		reflect.DeepEqual(cp.Recovery, v.recovery) &&
+		reflect.DeepEqual(cp.ContextAnchor, v.anchor)
 }
 
 // checkpointSystemMatches verifies that the snapshot's entire system prefix

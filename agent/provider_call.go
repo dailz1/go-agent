@@ -11,6 +11,7 @@ import (
 )
 
 type providerCallResult struct {
+	measurement   contextMeasurement
 	stream        iter.Seq2[llm.Chunk, error]
 	err           error
 	providerError bool
@@ -36,12 +37,29 @@ func (r *overflowRecovery) chatWithRetryAndFallback(
 	var stream iter.Seq2[llm.Chunk, error]
 	var lastRetryErr error
 	var outboundRunes int
+	measurement := r.measurement
+	if measurement.fingerprintVersion == 0 {
+		measurement = requestMeasurement(r.provider, r.opts, tools)
+	}
 	prepare := func() ([]llm.Message, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		request.Attempt++
-		outbound, err := a.roundContextOutbound(ctx, deepCopyMessages(history), *request, r.window)
+		outbound := deepCopyMessages(history)
+		var err error
+		if a.roundContextProvider != nil {
+			var estimated uint64
+			var fitter overlayFitter
+			if r.context != nil {
+				estimated = r.context.estimate(history)
+				fitter = r.context.overlayFitter(history)
+			} else {
+				estimated = uint64(estimateRunes(history))
+				fitter = newOverlayFitter(history)
+			}
+			outbound, err = a.roundContextOutbound(ctx, outbound, *request, r.window, estimated, fitter)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +154,7 @@ func (r *overflowRecovery) chatWithRetryAndFallback(
 		return failed(fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w",
 			request.Round, maxAttempts, lastRetryErr))
 	}
-	return providerCallResult{stream: stream, outboundRunes: outboundRunes}
+	return providerCallResult{stream: stream, outboundRunes: outboundRunes, measurement: measurement}
 }
 
 func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {

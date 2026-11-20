@@ -93,7 +93,10 @@
 ### P1 运行时安全
 - 工具结果截断：按有效窗口占比设上限（约 30% 规则，W 见「模型上下文窗口声明与有效窗口」），掐头留尾，入库前执行（已落地，见 §7）
 - 模型上下文窗口声明与有效窗口（issue #17，2026-11-20）：上下文窗口资料由宿主经 Provider 提供，内核只查询、不维护模型目录、不做探测。`llm` 定义可选接口 `ContextWindowProvider interface { ContextWindow(model string) (int, bool) }`（实现时定稿命名）：主 `Provider` 接口不扩展，未实现该接口的 Provider 合法。四个仓内适配器以各自构造选项登记多模型窗口映射（构造时拷贝、后写覆盖、非正数视为未登记）；模型名匹配策略（精确、别名、快照家族）归适配器所有，内核不做任何名字归一。第三方 Provider 用 `llm` 提供的包装 helper 携带同一接口；普通包装器若不转发该接口，则该 Provider 的声明失效（退回构造值，不报错）。每轮顶部在配置投影解析与 provider 解析之后、压缩之前查询一次：线程生效 provider 实现接口且 `ContextWindow(生效模型)` 返回真 → 声明窗口 M；否则未声明。有效窗口 W = min(构造值 C, M)，未声明时 W = C 并记一条可见日志（含 provider 与模型名；频率控制为实现细节）。W 是本轮所有预算推导的唯一窗口来源，逐轮重算、轮内固定：全部 retry attempt 与非流式回退复用同一 W，从不写回 Agent 共享字段；线程切换与 checkpoint 吸收的新配置只在下一轮顶部生效。反应式恢复同样不改写 W（issue #18，2026-11-20）：恢复目标 B 自 min(W, 压缩目标 T, 被拒历史估算 H[, 上次恢复目标 Bprev]) × 75% 向下取整派生，只是传给 Compactor 的更紧目标，不写回窗口、不写回共享字段（推导与进展判据见 P1「Provider 超长分类与反应式恢复」）。
-- 历史预算管理：`Compactor` 策略接口 + 最简实现；`Compact` 调用面携带当轮生效 provider 与请求 options：循环内由内核自线程配置投影解析注入（线程热切换 provider 后，摘要压缩跟随新 provider 与线程生效模型）；手动调用者显式传参，摘要策略对 nil provider 走既有类型化错误并按非致命路径降级。对应 Go 契约：`Compactor.Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)`；`NewSummarizationCompactor()` 不再收 provider 参数。压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）。输入隔离契约（issue #9，2026-11-18）：循环内调用时 `Compact` 收到内核 history 的深拷贝，实现可自由修改与持有，改动不回流运行态；system 前缀校验对内核持有的原始 history 进行，改写必被拒收（Warn 后按非致命路径继续）；`Changed=true` 采纳时内核对 `result.History` 深拷贝后替换运行态，实现返回的内存不被内核继续持有；内核无法深拷贝的块类型（克隆白名单外，含用户嵌入内建块的自定义类型）出现于输入则本轮跳过压缩（Warn，非致命继续），出现于结果则拒收该结果（同校验失败路径，不采纳不写 checkpoint）（已落地，见 §7）。压缩链（CompactorChain）对每个候选结果在采纳前施加与最终结果一致的结构校验（分区合法、system 前缀与当前运行态逐字节一致、且不含克隆白名单外的块类型——复用 validateCompacted 与克隆白名单），校验失败的候选记录为策略错误并继续后续阶段，不采纳、也不因它触发预算提前退出（issue #13，2026-11-18）；采纳时对候选深拷贝，链内已采纳历史不与策略保留的内存共享可变数据；`Changed=false` 的候选是无操作声明，一律不替换运行态；`Changed=true` 且 History 为空按异常记录诊断后跳过。链在阶段边界处理取消与诊断（issue #14，2026-11-18）：每个阶段调用前后检查真实 `ctx.Err()`，阶段输入拷贝后复检一次；确认取消立即返回 `(result, ctx.Err())`，不再调用后续阶段。真实 `ctx.Err()` 的优先级高于阶段返回的错误——阶段自身报告的取消类错误（如阶段内部自有超时上下文的 DeadlineExceeded）在真实上下文存活时按普通策略错误处理，后续阶段照常运行；调用者取消期间阶段报告的同哨兵错误不会掩盖调用者自身的取消错误。嵌套链的 `CompactionResult.Errors` 在每次阶段返回后无条件并入外层结果，与候选采纳决策无关；阶段返回的错误若与该阶段候选已记录的是同一错误对象则不重复记录——按对象同一性判定而非 errors.Is 语义包含（join 或包裹的私有超时会部分命中哨兵但携带独立原因，独立原因必须保留）；嵌套链的 `CompactionResult.Errors` 在每次阶段返回后无条件并入外层结果，与候选采纳决策无关；阶段返回的错误若与该阶段候选已记录的是同一错误对象则不重复记录——按对象同一性判定（sameErrorObject，不可比较的错误类型无法判定同一性时两条都保留，不因比较技术性丢弃诊断），而 errors.Is 语义包含不用于去重（join 或包裹的私有超时会部分命中哨兵但携带独立原因，独立原因必须保留）。调用者自身的取消记录仅在候选显式标记 `RecordedContextCancellation`（本包边界检查置位）且返回了同一错误对象时去重；成功阶段的同哨兵私有诊断不代替调用者自身的取消记录。调用者自身的取消记录仅在候选显式标记 `RecordedContextCancellation`（本包边界检查置位）且返回了同一错误对象时去重；阶段自身的返回错误仅在候选以 `ReturnedError` 显式声明该错误时去重——同哨兵的两次私有尝试是不同事件，都保留。预算内的提前返回同样检查取消。采纳门之后、最终返回前再查一次真实 `ctx.Err()`，门内取消走取消路径。普通策略错误与超预算哨兵的阶段边界语义不变；压缩失败不终止运行、下一轮重试的契约不变。触发线与提交预算出自有效窗口 W（issue #17，2026-11-20）：target = W × threshold%；压缩成功后的 carry 容忍上限为 target + min(carry, W − target)，steering 注入造成的超线宽限不得越过缩窗后的新上限。内建摘要压缩器构造的摘要请求受同一预算约束：待摘要 span 超出预算时按预算截断（掐头留尾加标记，记 Warn），保证摘要请求总量不超过 target。主动与反应式的降级条件不同（issue #18，2026-11-20）：主动压缩失败按既有非致命路径 Warn 后继续——彼时远端尚未拒绝；反应式恢复携带远端明确拒绝的证据，必须用同一 Compactor 在严格更小的恢复目标下取得强制进展，同一预算下的重压空操作不再合法：采纳判据为 `Hafter ≤ B` 且 `Hafter < Hbefore`（`Changed=true` 但同大小同样失败），重发前完整 outbound 估算还须严格小于被拒请求估算；恢复中的摘要请求自身再报超长按本次压缩器失败处理（blocked），不递归启动恢复器（契约见 P1「Provider 超长分类与反应式恢复」）。
+- 用量锚定预算（issue #19，2026-11-20）：主动预算以估算 token 数与有效窗口 W 比较。有有效用量锚点时，估算值等于该次主请求的 InputTokens + OutputTokens，加上锚点之后消息的 rune 增量；没有有效锚点时，沿用 estimateRunes(history) 的数值。两种估算都不保证请求一定能被 Provider 接受。反应式恢复的 B、H 和 Bprev 仍按既有 rune 规则推导，不改为混合估算。
+- 历史预算管理：`Compactor` 策略接口 + 最简实现；`Compact` 调用面携带当轮生效 provider 与请求 options：循环内由内核自线程配置投影解析注入（线程热切换 provider 后，摘要压缩跟随新 provider 与线程生效模型）；手动调用者显式传参，摘要策略对 nil provider 走既有类型化错误并按非致命路径降级。对应 Go 契约：`Compactor.Compact(ctx context.Context, history []llm.Message, budget CompactionBudget, provider llm.Provider, opts []llm.Option) (CompactionResult, error)`；`NewSummarizationCompactor()` 不再收 provider 参数。压缩单位是"消息组"（工具调用与其结果不可拆分，system 不可动）。输入隔离契约（issue #9，2026-11-18）：循环内调用时 `Compact` 收到内核 history 的深拷贝，实现可自由修改与持有，改动不回流运行态；system 前缀校验对内核持有的原始 history 进行，改写必被拒收（Warn 后按非致命路径继续）；`Changed=true` 采纳时内核对 `result.History` 深拷贝后替换运行态，实现返回的内存不被内核继续持有；内核无法深拷贝的块类型（克隆白名单外，含用户嵌入内建块的自定义类型）出现于输入则本轮跳过压缩（Warn，非致命继续），出现于结果则拒收该结果（同校验失败路径，不采纳不写 checkpoint）（已落地，见 §7）。压缩链（CompactorChain）对每个候选结果在采纳前施加与最终结果一致的结构校验（分区合法、system 前缀与当前运行态逐字节一致、且不含克隆白名单外的块类型——复用 validateCompacted 与克隆白名单），校验失败的候选记录为策略错误并继续后续阶段，不采纳、也不因它触发预算提前退出（issue #13，2026-11-18）；采纳时对候选深拷贝，链内已采纳历史不与策略保留的内存共享可变数据；`Changed=false` 的候选是无操作声明，一律不替换运行态；`Changed=true` 且 History 为空按异常记录诊断后跳过。链在阶段边界处理取消与诊断（issue #14，2026-11-18）：每个阶段调用前后检查真实 `ctx.Err()`，阶段输入拷贝后复检一次；确认取消立即返回 `(result, ctx.Err())`，不再调用后续阶段。真实 `ctx.Err()` 的优先级高于阶段返回的错误——阶段自身报告的取消类错误（如阶段内部自有超时上下文的 DeadlineExceeded）在真实上下文存活时按普通策略错误处理，后续阶段照常运行；调用者取消期间阶段报告的同哨兵错误不会掩盖调用者自身的取消错误。嵌套链的 `CompactionResult.Errors` 在每次阶段返回后无条件并入外层结果，与候选采纳决策无关；阶段返回的错误若与该阶段候选已记录的是同一错误对象则不重复记录——按对象同一性判定而非 errors.Is 语义包含（join 或包裹的私有超时会部分命中哨兵但携带独立原因，独立原因必须保留）；嵌套链的 `CompactionResult.Errors` 在每次阶段返回后无条件并入外层结果，与候选采纳决策无关；阶段返回的错误若与该阶段候选已记录的是同一错误对象则不重复记录——按对象同一性判定（sameErrorObject，不可比较的错误类型无法判定同一性时两条都保留，不因比较技术性丢弃诊断），而 errors.Is 语义包含不用于去重（join 或包裹的私有超时会部分命中哨兵但携带独立原因，独立原因必须保留）。调用者自身的取消记录仅在候选显式标记 `RecordedContextCancellation`（本包边界检查置位）且返回了同一错误对象时去重；成功阶段的同哨兵私有诊断不代替调用者自身的取消记录。调用者自身的取消记录仅在候选显式标记 `RecordedContextCancellation`（本包边界检查置位）且返回了同一错误对象时去重；阶段自身的返回错误仅在候选以 `ReturnedError` 显式声明该错误时去重——同哨兵的两次私有尝试是不同事件，都保留。预算内的提前返回同样检查取消。采纳门之后、最终返回前再查一次真实 `ctx.Err()`，门内取消走取消路径。普通策略错误与超预算哨兵的阶段边界语义不变；压缩失败不终止运行、下一轮重试的契约不变。主动压缩的触发线为有效窗口 W × threshold%，启用逐轮环境上下文时再取 canonicalCap 上限（issue #17）。内核以混合估算 E 判断是否越线（P1「用量锚定预算」）；CompactionBudget.MaxRunes 仍表示 estimateRunes(candidate) 的上限，不表示 token 数（issue #19，2026-11-20）。无锚点时传入原目标 B；有锚点且 E > B 时传入 Q = min(B, R − 1, floor(R × B / E))，R 为当前完整 canonical history 的 rune 估算；计算须避免整数溢出，Q 非正时按压缩预算不足处理，该换算只是缩减目标、不承诺 token 精确等价。成功采纳 Changed=true 的替代历史时立即清除锚点，后续预算使用替代历史的 rune 估算，直至新的主请求报告有效用量；Changed=false 不更换历史或锚点。已消费 steering 的 carry 保留既有宽限：替代历史同时满足 min(W, Q + carry) 的 rune 上限与 min(W, B + carry) 的回退估算上限，无替换时以 E 检查 min(W, B + carry)；启用环境上下文时仍无条件检查 canonicalCap，不用 carry 放宽该上限。内建摘要压缩器构造的摘要请求受同一预算约束：待摘要 span 超出预算时按预算截断（掐头留尾加标记，记 Warn），保证摘要请求总量不超过 target。主动与反应式的降级条件不同（issue #18，2026-11-20）：主动压缩失败按既有非致命路径 Warn 后继续——彼时远端尚未拒绝；反应式恢复携带远端明确拒绝的证据，必须用同一 Compactor 在严格更小的恢复目标下取得强制进展，同一预算下的重压空操作不再合法：采纳判据为 `Hafter ≤ B` 且 `Hafter < Hbefore`（`Changed=true` 但同大小同样失败），重发前完整 outbound 的 estimateRunes 值还须严格小于被拒请求保存的 RejectedOutboundRunes（同一消息序列化 rune 口径，不使用随锚点失效而改变基准的混合 token 估算，issue #19）；恢复中的摘要请求自身再报超长按本次压缩器失败处理（blocked），不递归启动恢复器（契约见 P1「Provider 超长分类与反应式恢复」）。
+- 用量锚点生命周期（issue #19，2026-11-20）：用量锚点属于一次运行及其线程重放投影，不写入 Agent 的共享可变字段。只采纳主请求成功结束、assistant 组装通过后的有效 Usage；持久线程须先确认携带该回复的记录落库。InputTokens 必须为正，计数不得为负，CachedTokens 不得大于 InputTokens，求和不得溢出；nil、全零或失败请求的用量不能建立锚点；缓存 token 已包含在 InputTokens 中，ReasoningTokens 不另加到 InputTokens + OutputTokens。锚点边界包含对应回复的完整 assistant 消息，之后新增的消息才按 rune 增量估算；后续请求未报告有效用量时，若请求身份未变，保留旧边界并累计其后的全部消息。压缩或任何历史替换都清除锚点，不从保留下来的旧 assistant 再找回锚点；摘要请求的 Usage 不参与主会话估算。当轮生效 provider/model 改变，或冻结 options、工具定义的指纹改变时，在预算判断前清除锚点；记录保存实际完成请求的冻结身份，不使用写入时吸收的新配置替换该身份。模型选项为空时，只允许同次调用内复用锚点，跨调用恢复回退 rune 估算；宿主在同名 provider/model 下更换不可见配置仍可能造成估算偏差。持久配置记录中的 provider/model 显式值与已有锚点不一致时，吸收和重放都清除该锚点，待提交工具轮中的候选锚点同样适用；即使队列中的 A→B→A 尚未发出 B 请求，也不恢复旧 A 锚点；旧请求 A 的回复记录排在 B 配置记录之后时仍记录其真实身份 A，但当前显式配置不匹配时不激活该锚点。带非 nil Thinking 的配置记录也清除已有和待提交的锚点，不区分同值写入；未形成持久记录的失败请求或宿主配置变化不构成日志中的失效证据，恢复时只按持久记录和当前请求身份判断，可能重新使用正文未变、身份再次匹配的测量值。
+- 用量锚点身份补充（issue #19 评审修订）：provider 名称和模型选项允许为空，描述记录仍可重放；任一为空时，锚点只在同次调用内复用，跨调用恢复回退 rune 估算。首次从默认 provider 转为显式命名路由时，即使名称与模型相同，也清除已有及待提交的锚点，避免同名注册实例切换后复用旧测量。
 - Provider 请求历史隔离（issue #12，2026-11-18）：
   - 主循环每次直接调用 `Provider.ChatStream` 或 `Provider.Chat` 前，均从当轮运行历史构造该次调用独立的消息副本。流式 `ChatStream` 与非流式回退 `Chat` 直接返回的可重试错误均进入同一重试循环，按既有次数和取消约束决定后续尝试；每次直接调用重新复制历史。重试和 `ErrStreamingNotSupported` 后的非流式回退均不复用曾交付给 Provider 的请求，也不把请求副本采纳回运行历史。此处仅纠正重试来源的描述，不改变实现或重试语义。
   - 重试延迟单次解析契约（issue #16，2026-11-18）：`RetryInfo.Delay` 与重试睡眠出自同一次解析（`llm.ResolveRetryDelay`：APIError.RetryAfter 优先、否则抖动抽取一次、按 ctx 截止时间封顶），播报值即实际等待的计划值，`llm.WaitForRetry` 为该解析加睡眠的兼容组合。`MaxRetries` 在选项构造器按 maxRetryCap=math.MaxInt−2 钳位（保护周边 +1 算术不溢出，不施加更小的政策上限）；`Backoff` 在浮点转时长前按 maxDelay 饱和。非流式回退的块合成（synthesizeChunks）覆盖全部 12 种块形态（6 类型 × 值/指针，nil 指针跳过）。
@@ -112,9 +115,11 @@
   - `run_cancelled`：调用方明确放弃当前未终结 run 的终态，schema=2、固定 RunID 与 record ID。若仍有 open declaration，该单条记录同时保存全部声明调用的有序结果：已存在 `round_result` 的前缀原样保留，仅对未记录调用合成 outcome-unknown error；重放原子地追加完整 declaration/results 并关闭 run。没有 open declaration 时只关闭 run。已记录或已提交结果不改写；不追加假的 assistant 最终回复、不写 Done、不重执行工具、不回滚外部副作用。普通错误/ctx cancellation 不自动产生本记录。
   - `context_recovery`（issue #18，2026-11-20）：schema=4，恢复状态记录——只更新当前 run 当前逻辑轮的恢复投影，不携带对话消息；`provider/model/config_seq` 保存原失败请求的冻结身份与配置投影版本，`step` 只计同一 episode 的本类记录且从 0 连续（载荷与状态机见 docs/OVERFLOW-RECOVERY-DESIGN.md）；
   - `history_replaced`（issue #18，2026-11-20）：schema=4，原子历史替换记录——单条记录同时完成"以完整 History 替换 canonical history"与恢复状态推进（overflow 压缩的采纳与转 ready 在同一条记录内生效），是唯一提交单位，不得拆成必须同时成功的两条记录；所有成功采纳的主动压缩也经此写入口落库，再按需生成可选 checkpoint，"压缩结果只存 checkpoint"的旁路废除；`reason` ∈ `proactive_compaction` / `overflow_compaction` / `legacy_anchor`，`legacy_anchor` 用于把旧 v3 快照承载的压缩视图固定为规范起点（不要求变小）；两类记录只允许 active run、无 open declaration 且 RunID/round 匹配；
+  - 用量边界元数据（issue #19，2026-11-20）：`round_declared`（含 terminal_text）与非截断 `agent_event` Done 记录增加请求身份、用量来源与 measured prefix 边界，使用 schema=5；`round_declared` 的 `context_measurement` 保存 nullable usage，Done 使用既有 Usage 字段并以 `usage_reported` 区分缺失和零值。边界按含冻结 system 前缀的 canonical history 计数，重放必须核对边界与记录位置一致；无有效用量也保留请求身份，避免跨 provider/model 延用旧锚点；截断 Done 不重复携带 measurement，复用先前 declaration 的记录；`run_closed` 仍使用 schema=2，关闭时不移动用量边界；不新增独立用量记录 kind；
+  - 回复用量的配置来源（issue #19）：schema=5 的 declaration 与非截断 Done 的 `context_measurement` 必须携带 `capture_config_seq`（int64，无配置记录时为 -1）。它保存实际成功请求冻结的配置序号。激活新锚点时，该序号必须等于回复记录所在位置已折叠的配置序号；否则只保留回复和身份描述，不激活该次用量。每条 `config_changed` 都推进序号，包括相同值的更新。此规则让写入期间的 A→B→A 或 Thinking 更新在运行与重放时得到相同结果。checkpoint 不重复保存该字段，其锚点由规范日志重放核验。
   - 版本化事件信封：显式 DTO 编解码（sealed 接口直接 JSON 不可逆）；未知记录类型 / 信封版本 → 类型化兼容性错误，不静默忽略；
   - `round_result` 的首版使用 schema=1，不增加全局 schema 版本；旧记录、`round_committed`、`run_cancelled` 与 checkpoint 的既有 schema 不变。新 reader 对没有 `round_result` 的旧日志保持原行为。旧 agent 对尚未被完整 checkpoint 覆盖的新记录返回 `ErrIncompatibleLog`，不得忽略新结果继续运行；本次不提供向旧二进制降级写入。
-  - 检查点是可重建加速器，定位在自身 Seq；携带 canonical history、线程冻结 system、run_active、run_id、last_round；issue #18（2026-11-20）起新增 nullable `recovery` 投影与显式 `config_seq`，压缩视图的规范载体是 `history_replaced` 记录，checkpoint 只复制投影。新写 checkpoint 使用 schema=4 与 `codec_version:4`；schema=1-3 快照仍可读，但结构有效的旧 v3 快照须先确认其覆盖前缀不含 schema=4 记录才可按原语义采用，含 schema=4 记录必须全量重放，不得借旧快照隐藏恢复状态（迁移规则见 docs/OVERFLOW-RECOVERY-DESIGN.md）。checkpoint 只在 active 且无 open declaration 的压缩边界写入，不在取消结算后新增快照。读取先校验记录与 payload 版本；未知未来版本返回类型化兼容错误，已支持版本的解码/结构校验失败经 `History(ctx, thread, fromSeq)` 全量回退。版本标记不得让旧 reader 通过新 checkpoint 绕过取消记录。日志仍全量保留，checkpoint 不是生命周期真相，也不承担文件系统回滚。
+  - 检查点是可重建加速器，定位在自身 Seq；携带 canonical history、线程冻结 system、run_active、run_id、last_round；issue #18（2026-11-20）起新增 nullable `recovery` 投影与显式 `config_seq`，压缩视图的规范载体是 `history_replaced` 记录，checkpoint 只复制投影。issue #19（2026-11-20）起新增 nullable `context_anchor` 投影，新写 checkpoint 使用 schema=5 与 `codec_version:5`；schema=1-4 快照仍可读，但旧快照须先确认其覆盖前缀不含比自身更新的 schema 记录（如 v4 快照前缀出现 schema=5 记录）才可按原语义采用，含此类记录必须全量重放，不得借旧快照隐藏恢复状态或用量边界语义；非空 `context_anchor` 必须能与 canonical 日志前缀重放结果对账，不一致的已支持快照回退全量重放；旧 v3 压缩视图仍先经 `legacy_anchor` 固定为规范历史再写入新回复记录（迁移规则见 docs/OVERFLOW-RECOVERY-DESIGN.md）。checkpoint 只在 active 且无 open declaration 的压缩边界写入，不在取消结算后新增快照。读取先校验记录与 payload 版本；未知未来版本返回类型化兼容错误，已支持版本的解码/结构校验失败经 `History(ctx, thread, fromSeq)` 全量回退。版本标记不得让旧 reader 通过新 checkpoint 绕过取消记录。日志仍全量保留，checkpoint 不是生命周期真相，也不承担文件系统回滚。
 - 恢复语义：重放日志重建状态，**不向新流重放历史事件**（新消费者只看本次运行的事件）。中断轮 = 有 `round_declared` 无 `round_committed`：按宣告顺序保留已落库 `round_result` 的连续前缀，仅对其余未记录调用合成 role=tool、`IsError=true` 的"结果未知"消息，每个调用最终恰好一条结果；普通 Go 硬错误、ctx 取消、消费者中断与进程崩溃留下的 open declaration 均采用此规则。全部单结果已记录但轮未关闭时，补一条完整 `round_committed`，不制造 unknown。没有单结果的旧日志仍为全部调用补 unknown。恢复在再次请求模型前先保存完整的合并批结果并关闭该轮。maxIter 截断 = **确定未执行** → 合成"因达到迭代上限未执行"软结果（非"未知"）。绝不盲目重执行工具。悬挂输入：日志中未终结 run 存在时，`Run` / `RunStream`（`WithThread`）仍拒绝新输入（`ErrRunIncomplete`），不得以放宽此保护实现改向。调用方可选择 `ResumeThread` 继续原输入，也可在执行者已收敛后通过 `SettleThread(ctx, target SettlementToken)` 明确结算原 run 为 cancelled，再提交新输入；target 必须在原 session 释放 ownership 前绑定其 ThreadID、RunID 与最后确认的 durable head，不得在释放后从 Latest 选择当前 run。恢复 active run 时仍先修复结果配对、继续旧输入、不追加 user message；恢复最后一个已 cancelled 的 run 时只返回 `RunResult{Cancelled:true, ThreadID, History}` 与 nil error，不调用模型、工具、审批、overlay、退出回调或 compactor，不写日志，不产生事件。该结果 Message 与本次执行统计为零值，不代表旧任务成功或历史费用为零。此快照可重复读取，后续新 run_started 一旦提交便成为新的恢复目标。无记录、最后 run 为正常 Done/maxIter Done/兼容 KindError 时仍返回 `ErrNothingToResume`。旧日志中没有单结果的兼容 KindError 保持原重放行为；若 KindError 关闭含单结果的 open declaration，先保留已记录前缀并补齐其余 unknown，再关闭 run。崩溃先于终态落库的模型回复可能丢失并在恢复时重新生成（at-least-once，显式记录）；普通工具副作用完成后、对应 `round_result` 落库前仍存在如实报"结果未知"的窗口，不承诺外部副作用 exactly-once。结果记录已落地但尚未投递的调用，恢复同样保留其结果。日志存在活动恢复状态时（issue #18，2026-11-20），`ResumeThread` 在配置解析与 W 计算之后、普通压缩触发线之前先处理恢复投影：不检查普通触发线、不先 drain，按 pending/preparing/ready/dispatched 的持久状态强制缩小历史后再请求；恢复名额（每 episode 至多两个）与已保存的压缩结果跨崩溃、跨 Resume 保留，重启不重新获得名额，重放遇 preparing/dispatched 未确认完成状态时保守消耗剩余名额。状态机与载荷详见 docs/OVERFLOW-RECOVERY-DESIGN.md。
 - 消费者中途断开：普通可执行工具轮在 TC/TR delivery 中断时保持 incomplete/resumable；已交付 TR 对应的单结果必已保存，恢复保留该前缀，仅为未记录调用补 unknown。即使最后一个 TR 已交付，消费者在它上面 break 仍可能使轮尚未关闭；恢复只补完整轮关闭，不重复结果。唯一例外是已经完整 durable precommit 的 `maxIter` terminal skip batch：它在首个 terminal TC 前已写 declaration、all skipped results、commit、Done；consumer 在 TC 或 TR break 只停止该 consumer 的 delivery，thread 已 closed，`ResumeThread` 返回 `ErrNothingToResume`。普通 early-break 不自动结算，且没有 RunInterruptedError 可交付；配置 WithRunExitFn 后，内核在 iterator unwind 完成且 ownership 尚未释放时同步交付本 session 的 SettlementToken，controller 保存后等 iterator 退出再结算。不增加 AgentEvent，不在 release 后回填 token；无 session/未 range 不回调。未配置回调的 early-break 不承诺交付原 run 身份，ThreadID 本身不能替代结算凭据。匿名持久 stream 同样可用退出回调取得原 token。消费者在 CompactionEvent 上 break（issue #18，2026-11-20）同样适用上述规则：压缩结果与恢复状态（ready）已 durable-before-visible，Resume 直接沿用已保存结果继续，不重复摘要、不另占名额、不产生假的 Done。
 - 并发：每线程非阻塞运行所有权——第二个并发运行在**任何模型调用之前**即得类型化冲突（单纯加锁等待是串行化，不是冲突）；乐观版本号追加 + record_id 幂等重试作为其他写者的后盾。不可变记录批次与 ID 只生成一次，重试逐字节同一内容。SettleThread、SettlementTarget 和 cancelled 快照读取必须使用同一（Store 实例，ThreadID）所有权；仍有执行者时 ErrThreadBusy，不等待、不抢占。结算与随后同线程新 run 是两个所有权区间。退出 token 的 RunID/head 在原 session 持有 ownership 时冻结；新写结算必须同时匹配 replay 的 runID 与 current head。revision 或身份不符即 ErrRevisionConflict，不自动刷新。唯一例外是原 ExpectedHead 处已存在同一原 RunID 的合法取消记录，此时只读确认、不追加。即使后继 run 已启动或已 incomplete，迟到请求也不得改变它。
@@ -164,7 +169,7 @@ DoneEvent。RunResult 新增 Cancelled，仅 Resume 的终态读取分支
 
 （issue #18，2026-11-20）新增 SchemaV4=4 与 `context_recovery` / `history_replaced`
 两个 kind（schema 恰为 4，不得让 Schema=0 默认成 1）；新写 checkpoint 为
-schema/codec 4，旧 reader 对 schema=4 记录与 codec=4 checkpoint 必须报兼容性
+schema/codec 4（issue #19，2026-11-20 起升为 schema/codec 5，见下方用量锚定条目），旧 reader 对 schema=4 记录与 codec=4 checkpoint 必须报兼容性
 错误，不得借未知 kind、KindError 或旧 checkpoint 隐藏恢复状态与新历史替换。
 `run_cancelled` 按既有 RunID/稳定 ID 校验通过后清除该 run 的恢复投影；无身份
 载荷的 legacy KindError 失败终态沿用旧语义清除 recovery，是唯一兼容例外，
@@ -172,6 +177,12 @@ schema/codec 4，旧 reader 对 schema=4 记录与 codec=4 checkpoint 必须报�
 与 replayThread 使用同一有限区间配置证明上下文（修订：评审 N1）：以原 token
 的 ExpectedHead 界定前缀，superseded 记录按其冻结版本 `o < Seq ≤ s` 幂等重验，
 不跳过证明、不借 h 之后的记录或最新配置补证。
+
+（issue #19，2026-11-20）新增 SchemaV5=5：仅 round_declared（含 terminal_text）、非截断
+agent_event Done 记录与 checkpoint（codec_version=5）允许 schema=5；
+context_recovery / history_replaced 仍恰为 schema=4，新上限不放开任意
+kind/schema 组合；旧 reader 对 schema=5 记录与 codec=5 checkpoint 必须报兼容性
+错误，不得静默跳过用量边界语义。
 
 #### 父子线程的取消结算
 
@@ -228,18 +239,26 @@ checkpoint；不改变 sealed 7-event set。canonical history 的 system 前缀
 单个 instructions，故中途 system 没有统一语义。所有现有 adapter 保留
 trailing user，故它是共同 carrier。每次 callback 返回完整有效快照，内核
 不按内容去重；空字符串表示该次无 overlay。每一次实际重发（含恢复周期）
-前 callback 重新生成快照（issue #18，2026-11-20），且完整 outbound 估算
-必须严格小于被拒请求保存的基线估算，不满足即停止本次重发，不静默删改
+前 callback 重新生成快照（issue #18，2026-11-20），且完整 outbound 的 estimateRunes 值必须严格小于被拒请求保存的
+RejectedOutboundRunes——同一消息序列化 rune 口径，不使用随锚点失效而改变
+基准的混合 token 估算（issue #19），不满足即停止本次重发，不静默删改
 overlay 凑进度。
 
-预算只承诺 `estimateRunes([]llm.Message)` 的 message-rune 启发式，不含
-tool schema、provider wire 映射、reserved output 或真实 tokenizer。启用
-时令 overlayCap 为有效窗口 W 的 20%，canonicalCap 为其余部分（2026-11-20 修订，issue #17：原文 window 一律指 W，契约见 P1「模型上下文窗口声明与有效窗口」）；compaction
-后无条件检查 canonicalCap（包括 nil/error/invalid compactor 路径），超限
-即在 callback 前以 `ErrCompactionBudgetExceeded` 失败。随后以完整 outbound
-candidate 的实际 `estimateRunes` 计入 envelope/JSON 开销；只有 envelope、
+预算使用「Provider 报告的历史用量 + 未测消息的 rune 增量」（issue #19，
+2026-11-20），没有有效锚点时沿用 estimateRunes(history)。Provider 报告值
+可能包含工具定义、wire 包装与上一次瞬态快照，这些部分没有独立 token
+计数，内核不按猜测值扣除；当前快照按完整消息的 rune 增量另计，因此边界
+轮可能同时计入上次快照的已报告成本与本次快照的估算成本，但不会将历次
+快照无限累加（下一次有效报告替换旧锚点）。该预算不使用真实 tokenizer，
+也不预留 reserved output。启用时令 overlayCap 为有效窗口 W 的 20%，
+canonicalCap 为其余部分（issue #17 修订：原文 window 一律指 W）；compaction
+后无条件以混合估算检查 canonicalCap（包括 nil/error/invalid compactor
+路径），超限即在 callback 前以 `ErrCompactionBudgetExceeded` 失败。随后以
+完整 outbound candidate 的实际估算（有锚点时为 E 加当前 overlay 的 rune
+增量，无锚点时为 estimateRunes）计入 envelope/JSON 开销；只有 envelope、
 marker、首尾 rune 都可容纳才截断，否则以同一预算错误失败。若 tiny window
 连 envelope 也容不下，同样在 callback 前失败，绝不发送破碎 overlay。
+压缩后的新历史因锚点已清除，按 rune 回退估算检查。
 压缩/checkpoint/`CompactionEvent` 只处理 canonical history；因此 callback
 failure 前可能已有合法 CompactionEvent/checkpoint，但绝无 overlay、
 provider-response 或 Done event。
@@ -258,8 +277,9 @@ ThreadID；嵌套 child 的 inner wrapper 因此保留为 cause，而 caller 的
 RunInterruptedError 的 reservation/setup `ErrThreadBusy`，不会把
 post-session cause 误当作安全重建。callback 专有错误则在该外层内部保留
 `RoundContextError{Round, Attempt, Err}`；callback 前取消不伪造该内层。
-Resume 先重放 canonical history，再执行 live callback，故不重放、累积
-或双计旧快照。
+Resume 先重放 canonical history 和可恢复的用量边界，再执行 live callback；
+旧快照正文不重放、不进入历史，上一次已报告总量中无法拆出的快照成本按
+预算规则保留（issue #19）。
 
 RunInterruptedError 保留 ThreadID、Err 与 Unwrap，新增
 Settlement *SettlementToken；执行错误交付前，在原 session 仍持有
@@ -285,6 +305,7 @@ cancelled 快照读取都不启动执行，不新增该包装或退出回调。
 新 API `SetThreadConfig(ctx, store, thread, ConfigChange) error`：外部写者，接受即落库——Append 前重读 head、同幂等键重试（bounded，超限 `ErrThreadBusy`）；全字段 nil 拒绝（`ErrEmptyConfig`）；未配置 Store 的调用返回 `ErrNoStore`。要求 Store 值可比较（同所有权登记规则）。
 
 runner 写点吸收协议（D6-a）：runner 不再盲信 session 缓存 head；每个写点（declare/commit/checkpoint/终态）Append 前重读日志尾，发现尾部的新 `config_changed` 则吸收进生效配置投影，遇白名单外的未知记录仍按冲突失败。生效读取点在每轮顶部：**读配置 → provider 解析与有效窗口 W 查询 → 压缩 → drain（②③批生效）→ 预算检查 → 请求**，本轮请求的 options = 叠加后配置覆盖 `a.llmOpts`，按轮快照不回写 `a.llmOpts`。W 由当轮生效 provider 与生效模型派生（契约见 P1「模型上下文窗口声明与有效窗口」），轮内固定，全部 retry attempt 与非流式回退复用；checkpoint 吸收的新配置同样只在下一轮生效。
+用量锚点与控制面（issue #19，2026-11-20）：配置解析后、压缩前先核对用量锚点的请求身份，不匹配即在预算判断前清除。steering 入队仍按单消息 rune 大小检查，drain 以当前混合估算扣除已用额度，再按未测消息的 rune 成本消费 FIFO 前缀，接受入队仍不保证本轮消费。run_closed 的 Usage/TotalUsage 继续用于用量记录，不单独据此恢复测量边界。
 
 checkpoint：codec_version 升至 3，快照新增 `effective_config` 投影；旧版本快照遇含新 kind 的日志按既有规则回退 `History(ctx, thread, fromSeq)` 全量重放，不得借旧快照绕过新语义。
 
@@ -527,7 +548,7 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 ### Chat Completions 采样与工具参数（llm 包，冻结契约 2026-11-05，issue #6）
 
 - **定位**：`llm.Options` 是 provider 无关的盲传载体——agent 循环从 `llmOpts` 经 `configState.apply`（只追加 Model/Thinking 覆盖）到 `ChatStream/Chat` 全程不解释、不过滤字段。本契约只扩展 llm 层类型与 openai/glm 两个 Chat Completions 适配器的序列化面；agent、store、tool 零引用。
-- **类型**：`Options` 增量字段全部指针三态(nil = 不发送):`MaxCompletionTokens *int64`、`TopP *float64`、`Seed *int64`、`PresencePenalty/FrequencyPenalty *float64`、`ParallelToolCalls *bool`、`ToolChoice *ToolChoice`。`ToolChoice{Mode ToolChoiceMode; Name string}`，Mode ∈ none/auto/required，Name 非空时序列化为指定工具对象形式 `{"type":"function","function":{"name":…}}`，否则为 Mode 的字符串形态；nil 与零值字面量 `&llm.ToolChoice{}`（空 Mode 且空 Name）均整体省略；四个命名构造函数使非法组合在选项层不可表示，`WithToolChoiceTool("")` 为不设置的 no-op。`Usage` 增 `CachedTokens int64`（`Add` 求和、`IsZero` 纳入、`String` 格式不变）。
+- **类型**：`Options` 增量字段全部指针三态(nil = 不发送):`MaxCompletionTokens *int64`、`TopP *float64`、`Seed *int64`、`PresencePenalty/FrequencyPenalty *float64`、`ParallelToolCalls *bool`、`ToolChoice *ToolChoice`。`ToolChoice{Mode ToolChoiceMode; Name string}`，Mode ∈ none/auto/required，Name 非空时序列化为指定工具对象形式 `{"type":"function","function":{"name":…}}`，否则为 Mode 的字符串形态；nil 与零值字面量 `&llm.ToolChoice{}`（空 Mode 且空 Name）均整体省略；四个命名构造函数使非法组合在选项层不可表示，`WithToolChoiceTool("")` 为不设置的 no-op。`Usage` 增 `CachedTokens int64`（`Add` 求和、`IsZero` 纳入、`String` 格式不变）。`Usage.Total()` 为 InputTokens + OutputTokens；上下文锚点不再加 CachedTokens 或 ReasoningTokens，这些明细不代表额外的一份上下文；累计 TotalUsage 只表示调用用量累计，不表示当前上下文长度（issue #19，2026-11-20）。
 - **优先级与语义**：`MaxCompletionTokens` 非空时完全压制 `max_tokens`（o 系列拒绝 max_tokens，两者并存同被拒绝；`MaxTokens` 保留给旧模型与兼容端点）。`Seed` 尽力而为、随 provider 而异（OpenAI Beta 且官方 schema 已标 deprecated，最新模型可能忽略或拒绝；DeepSeek/Ollama/vLLM 等兼容端点仍有效）。`WithToolChoiceRequired` 的 footgun：required 阻止模型产出终止性文本，agent 循环终态判定是"本轮无工具调用"，故循环只能由 maxIter 终止。`ParallelToolCalls` 约束模型单轮产出形态，与 agent 层工具并行执行（P2-2）相互独立。
 - **适配器范围**:openai 序列化全部新字段。glm 仅序列化 GLM 线格式存在的参数:`top_p` 读共享字段、调用级优先于构造器级 `glm.WithTopP`(后者保留签名、不再 clamp,值原样透传,越界由服务端拒绝,文档区间 [0.01,1.0] 限两位小数);`tool_choice` 仅发送 GLM 文档支持的 "auto",其余值丢弃并记 Debug 日志(对齐热换降级契约:线程不因参数不适配中断);`MaxCompletionTokens/Seed/presence_penalty/frequency_penalty/parallel_tool_calls` 在 glm 端不发送（GLM 线格式无此参数，字段惰性）。转换 helper 双适配器各留一份（duplication by design）。参数级热换降级以本节「适配器范围」条款为准——既有降级契约表只约束推理内容块（ReasoningBlock/ReasoningItemBlock）的出站转换，不覆盖线格式参数；`config_changed` 字段域冻结为 {model,thinking,provider}，参数不适配时 glm 丢弃而非报错，是内容块降级“线程必须活”原则在参数层的对应物。
 - **观测**：`Usage.CachedTokens` ← openai `prompt_tokens_details.cached_tokens`（非流式与流式最终 usage 块均有）；glm 同名响应字段（非流式有、流式 chunk 无 details，缺省为零）。`finish_reason` 的唯一暴露面是既有 `DoneChunk.FinishReason`（openai/glm 流式均填充；glm 先将 network_error/model_context_window_exceeded 升级为 APIError）；非流式 `Chat` 不返回 finish_reason（openai 记日志丢弃、glm 错误分类后丢弃），agent 非流式回退按内容合成 stop/tool_calls，循环终态判定从不消费 finish_reason。
@@ -585,13 +606,13 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 - 模块 `github.com/dailz1/go-agent`，Go 1.26，git 已建（main，基线 `d5281c9`）；kernel package closure 维持 stdlib-only，MCP SDK 仅允许位于未来 `mcp/` packages。
 - 已有能力：基础循环、流式事件、工具注册与审批、429/5xx/网络错误重试（有上限）、openai/glm/openairesponses 适配、token 用量统计、完整测试（7 包全绿）。
 - 工具结果截断（单结果 ≤ max(128, 有效窗口 W×30%) rune，50/50 掐头留尾；未声明模型时 W=构造窗口，默认 8192）。
-- 历史预算管理（触发线=有效窗口 W×threshold%，W 见 P1「模型上下文窗口声明与有效窗口」，默认构造窗口时即 80%：折叠老工具组→滑窗，可选 AI 摘要（provider 不在构造期注入，跟随 `Compact` 调用面携带的当轮生效 provider 与 options）；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。压缩只消费工具结果文本：压缩后的替代历史不携带工具结果图片（与用户侧图片在压缩中的处理一致）；压缩窗口预算按图片字节数计入工具结果图片。
+- 历史预算管理（触发线=混合估算 token 数超过有效窗口 W×threshold%，issue #19，2026-11-20：Compactor 策略预算仍为 rune，见 P1「用量锚定预算」；W 见 P1「模型上下文窗口声明与有效窗口」，默认构造窗口时即 80%：折叠老工具组→滑窗，可选 AI 摘要（provider 不在构造期注入，跟随 `Compact` 调用面携带的当轮生效 provider 与 options）；恒保护 system/首末 user/最近组；Compactor 接口可手动对任意历史执行）。压缩只消费工具结果文本：压缩后的替代历史不携带工具结果图片（与用户侧图片在压缩中的处理一致）；压缩窗口预算按图片字节数计入工具结果图片。
 - 近期变更：已删除 provider factory 死代码；`Run` 已并入 `runStreamInternal`，形成单一执行路径。
 - 事件/History 契约已更新：maxIter terminal tool calls 以 TC + deterministic skipped TR 公开，Store 与非 Store 的 Done History 相同且可 paired continuation。`DoneEvent.History` 是完全历史的 canonical snapshot；OpenAI Responses reasoning items 不单独成为 AgentEvent，故 consumer/test fold 在 Done snapshot reconciliation，而非宣称 raw event stream 独立编码所有 assistant blocks。覆盖位于 `agent_fold_test.go`、`reasoning_order_test.go` 及 persistence stream tests。
 - Store v1 契约已裁决冻结（2026-09-10）：内核自动持久化（WithStore/RunThread），双提交点（run-start/round-commit），规范记录日志（run_started/agent_event 信封/round_commit/error，含 schema 版本、record_id、逻辑序号），检查点为可重建加速器（History + next_seq），乐观并发 + record_id 幂等，v1 单进程每线程串行，JSONL fsync 先于确认/撕裂尾截断/内部损坏报错。设计经对抗评审 st_01a08a3f：D1 按其修订采纳内核写入与生命周期记录；检查点定位按 M1 修正为加速器（原“正确性必需”论证有误，CompactionEvent 本身可全量重放）；HITL 中断等待仍留 Backlog。Store v1 已实现并提交：agent 侧 16feb3b（WithStore/RunThread/ResumeThread/RunThreadStream），store 契约实现 dfb7803。
 - OpenAI Responses 适配器已实现并提交（fe2c7d6，llm/openairesponses）：typed items、store:false 全量回放、reasoning items（含 encrypted_content）；内置工具/结构化输出/previous_response_id 不支持（v1）。
 - 工具调用事件采用"先宣告后执行"顺序：同轮的全部 `ToolCallEvent` 连续发出后再逐个执行，跨轮因此可分辨（2026-09-10 裁决）；取消或首个调用硬失败时，已宣告调用随 assistant 消息完整可重建，`ToolCallEvent` 语义为"模型请求的宣告"而非"已执行"。交付是同步的：消费者未确认宣告会推迟对应执行，在宣告批内提前断开则本轮不执行任何工具。
-- 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组自身超预算时报 ErrCompactionBudgetExceeded；rune 估算为启发式非保证。
+- 已落地工具结果截断与历史预算管理（Compactor），聚合溢出已知限制关闭；残余：保护组可能无法满足传入的 rune 目标；测量之后的消息、瞬态快照和输出保留情况仍有估算误差；无锚点路径使用原 rune 启发式，所有路径均不保证 Provider 必然接受请求。
 - P3-1 已扩展 `tool.ParameterSchema`/`Property`：typed recursive schema、nullable canonical codec、carrier、presence state 与 marshal/Registry cycle safety 均已落地；旧公开模型构造值的 JSON 保持 byte-exact。
 - 工具热变更（P2-4）已裁决并落地：Registry Unregister/Replace/Apply、Agent `WithDynamicTools()` 轮级刷新、Bridge Close 反注册与手动 `Refresh`；P2-2 广播快照默认行为不变，P3-3 静态发现条款按手动对账语义修订。
 

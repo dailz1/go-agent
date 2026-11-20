@@ -33,6 +33,7 @@ const (
 	SchemaV2 = 2
 	SchemaV3 = 3
 	SchemaV4 = 4
+	SchemaV5 = 5
 )
 
 // Record kinds. Append rejects unknown kinds so a stale binary cannot write
@@ -226,7 +227,11 @@ func validateRecord(r *Record) error {
 	if r.ID == "" {
 		return ErrInvalidRecord
 	}
-	if r.Schema < 0 || r.Schema > SchemaV4 {
+	if r.Schema < 0 || r.Schema > SchemaV5 {
+		return ErrUnsupportedSchema
+	}
+	if r.Schema == SchemaV5 && r.Kind != KindRoundDeclared &&
+		r.Kind != KindAgentEvent && r.Kind != KindCheckpoint {
 		return ErrUnsupportedSchema
 	}
 	if r.Schema == SchemaV4 && r.Kind != KindCheckpoint &&

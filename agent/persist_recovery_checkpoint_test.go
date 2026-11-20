@@ -79,7 +79,7 @@ func TestRecoveryCheckpointPresenceAndVersions(t *testing.T) {
 		{"old codec on v4 schema", "codec_version", "3", false},
 		{"missing codec on v4 schema", "codec_version", "", false},
 		{"null codec on v4 schema", "codec_version", "null", false},
-		{"future codec", "codec_version", "5", true},
+		{"future codec", "codec_version", "6", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var value json.RawMessage
@@ -102,12 +102,12 @@ func TestRecoveryCheckpointPresenceAndVersions(t *testing.T) {
 			}
 		})
 	}
-	for _, schema := range []int{1, 2, 3, 5} {
+	for _, schema := range []int{1, 2, 3, 5, 6} {
 		t.Run("schema "+jsonNumber(schema), func(t *testing.T) {
 			bad := cp
 			bad.Schema = schema
 			got, err := decodeCheckpoint(bad)
-			if got != nil || (schema == 5 && !errors.Is(err, ErrIncompatibleLog)) || (schema < 5 && err != nil) {
+			if got != nil || (schema == 6 && !errors.Is(err, ErrIncompatibleLog)) || (schema < 6 && err != nil) {
 				t.Fatalf("schema/codec mismatch: %+v, %v", got, err)
 			}
 		})
@@ -321,7 +321,7 @@ func TestRecoveryCheckpointWriterCarriesLiveProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &persistence{a: a, thread: "t", runID: "r", head: v.head, lastRound: -1, open: -1,
-		cfgSeq: v.cfgSeq, recovery: v.recovery}
+		cfgRead: v.head, cfgSeq: v.cfgSeq, recovery: v.recovery}
 	if err := p.checkpoint(t.Context(), v.history); err != nil {
 		t.Fatal(err)
 	}

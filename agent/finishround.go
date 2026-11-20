@@ -91,7 +91,7 @@ func (a *Agent) callFinishRound(ctx context.Context, fc FinishRoundContext) (Fin
 // run_cancelled closes a run without inventing messages.
 // copyMessage deep-copies one message (single-message variant of
 // copyMessages).
-func copyMessage(m llm.Message) llm.Message { return copyMessages([]llm.Message{m})[0] }
+func copyMessage(m llm.Message) llm.Message { return deepCopyMessages([]llm.Message{m})[0] }
 
 // trailingToolResults returns the trailing run of role=tool result messages
 // at the end of history — exactly what the just-committed round appended,
@@ -102,7 +102,7 @@ func trailingToolResults(history []llm.Message) []llm.Message {
 	for start > 0 && history[start-1].Role == llm.RoleTool {
 		start--
 	}
-	return copyMessages(history[start:end])
+	return deepCopyMessages(history[start:end])
 }
 
 func runClosedFor(runID string, toolCalls int, usage, total llm.Usage) (store.Record, error) {

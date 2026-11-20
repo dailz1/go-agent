@@ -127,7 +127,7 @@ func TestRecoveryCanonicalHistoryDoesNotDependOnCheckpoint(t *testing.T) {
 	}
 }
 
-func TestRecoveryLegacyCheckpointWriteAnchorsBeforeV4(t *testing.T) {
+func TestRecoveryLegacyCheckpointWriteAnchorsBeforeV5(t *testing.T) {
 	st := store.NewMemory()
 	history := []llm.Message{llm.UserMessage("legacy summary")}
 	records := []store.Record{
@@ -152,8 +152,8 @@ func TestRecoveryLegacyCheckpointWriteAnchorsBeforeV4(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(log) != 4 || log[2].Kind != store.KindHistoryReplaced || log[3].Schema != store.SchemaV4 {
-		t.Fatalf("v4 checkpoint preceded anchor: %+v", log)
+	if len(log) != 4 || log[2].Kind != store.KindHistoryReplaced || log[3].Schema != store.SchemaV5 {
+		t.Fatalf("v5 checkpoint preceded anchor: %+v", log)
 	}
 	v, err := replayRecords(threadView{lastRound: -1, cfgSeq: -1}, log)
 	if err != nil || !reflect.DeepEqual(v.history, history) {

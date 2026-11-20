@@ -16,6 +16,9 @@ import (
 // abort the round (fail-safe: the model never advances past a write that did
 // not land). All methods are called from the single run goroutine.
 type persistence struct {
+	anchor          *contextAnchorProjection
+	measurement     *stagedMeasurement
+	context         *contextRuntime // borrowed from the running iterator; never persisted
 	legacyHistory   bool
 	a               *Agent
 	thread          string
@@ -88,7 +91,7 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 			if err != nil {
 				return nil, nil, err
 			}
-			head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.cfgSeq, &v.configRevisions, &v.queue, rec)
+			head, err := a.appendRebaseable(ctx, st, thread, &v, rec)
 			if err != nil {
 				return nil, nil, fmt.Errorf("agent: persist recovery commit: %w", err)
 			}
@@ -97,6 +100,7 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 		sess := &persistence{a: a, thread: thread, runID: v.runID, system: v.system, head: v.head, roundBase: v.lastRound + 1, lastRound: v.lastRound, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: v.head, cfgSeq: v.cfgSeq, recovery: v.recovery}
 		sess.episodes, sess.configRevisions = v.episodes, v.configRevisions
 		sess.legacyHistory = v.legacyHistory
+		sess.anchor = v.anchor
 		return sess, seededHistory(v.system, v.history), nil
 	}
 	if v.runActive {
@@ -115,14 +119,19 @@ func (a *Agent) prepareSessionLocked(ctx context.Context, st store.Store, thread
 	if err != nil {
 		return nil, nil, err
 	}
-	head, err := a.appendRebaseable(ctx, st, thread, v.head, &v.cfg, &v.cfgSeq, &v.configRevisions, &v.queue, rec)
+	started, err := decodeRunStarted(rec)
+	if err != nil {
+		return nil, nil, err
+	}
+	head, err := a.appendRebaseable(ctx, st, thread, &v, rec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent: persist run start on thread %q: %w", thread, err)
 	}
 	sess := &persistence{a: a, thread: thread, runID: runID, system: system, head: head, roundBase: 0, lastRound: -1, open: -1, cfg: v.cfg, queue: v.queue, cfgRead: head, cfgSeq: v.cfgSeq}
 	sess.episodes, sess.configRevisions = v.episodes, v.configRevisions
 	sess.legacyHistory = v.legacyHistory
-	return sess, seededHistory(system, append(v.history, llm.UserMessage(input))), nil
+	sess.anchor = v.anchor
+	return sess, seededHistory(system, append(v.history, llm.UserMessage(started.Input))), nil
 }
 
 // reserveGeneratedThread reserves a kernel-generated thread ID at revision
@@ -185,6 +194,11 @@ func (a *Agent) reserveGeneratedThread(ctx context.Context, st store.Store, thre
 // true head — the D6(a) absorb protocol. Any non-control record in the gap
 // is unabsorbable and fails loudly.
 func (p *persistence) append(ctx context.Context, records ...store.Record) error {
+	if p.cfgRead < p.head {
+		if err := p.absorbTail(ctx, p.cfgRead); err != nil {
+			return err
+		}
+	}
 	const maxAttempts = 4
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -194,11 +208,25 @@ func (p *persistence) append(ctx context.Context, records ...store.Record) error
 			}
 		}
 		var head int64
-		head, err = p.a.store.Append(ctx, p.thread, p.head, records...)
+		expected := p.head
+		head, err = p.a.store.Append(ctx, p.thread, expected, records...)
 		if err == nil {
 			p.head = head
-			if head > p.cfgRead {
-				p.cfgRead = head
+			end := expected + int64(len(records))
+			if end > p.cfgRead {
+				p.cfgRead = end
+			}
+			// Confirm each response at its append position, before applying
+			// controls that landed after the batch, just as replay does.
+			for i, record := range records {
+				if record.Schema == store.SchemaV5 &&
+					(record.Kind == store.KindRoundDeclared || record.Kind == store.KindAgentEvent) {
+					record.Seq = expected + int64(i)
+					p.confirmMeasurement(record)
+				}
+			}
+			if head > end {
+				return p.absorbTail(ctx, end)
 			}
 			return nil
 		}
@@ -233,6 +261,7 @@ func (p *persistence) absorbTail(ctx context.Context, from int64) error {
 			if derr != nil {
 				return derr
 			}
+			p.invalidateAnchors(cp)
 			p.cfg.fold(cp)
 			p.cfgSeq = r.Seq
 			if p.configRevisions == nil {
@@ -267,47 +296,59 @@ func (p *persistence) absorbTail(ctx context.Context, from int64) error {
 // records must carry fresh IDs and content that does not depend on the log
 // position; lifecycle-position-bound payloads (checkpoints) use their own
 // re-serializing loops instead.
-func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread string, head int64, cfg *configState, cfgSeq *int64, configRevisions *map[int64]struct{}, queue *[]queueEntry, records ...store.Record) (int64, error) {
+func (a *Agent) appendRebaseable(ctx context.Context, st store.Store, thread string, v *threadView, records ...store.Record) (int64, error) {
 	const maxAttempts = 4
+	head := v.head
+	absorb := func() error {
+		recs, err := st.History(ctx, thread, head)
+		if err != nil {
+			return fmt.Errorf("agent: absorb control records on thread %q: %w", thread, err)
+		}
+		for _, r := range recs {
+			switch r.Kind {
+			case store.KindConfigChanged:
+				cp, err := decodeConfigChanged(r)
+				if err != nil {
+					return err
+				}
+				v.invalidateAnchors(cp)
+				v.cfg.fold(cp)
+				v.cfgSeq = r.Seq
+				if v.configRevisions == nil {
+					v.configRevisions = make(map[int64]struct{})
+				}
+				v.configRevisions[r.Seq] = struct{}{}
+			case store.KindInputQueued:
+				qp, err := decodeInputQueued(r)
+				if err != nil {
+					return err
+				}
+				v.queue = append(v.queue, queueEntry{ID: r.ID, Input: qp.Input})
+			default:
+				return fmt.Errorf("agent: unabsorbable record %s at seq %d on thread %q: %w", r.Kind, r.Seq, thread, store.ErrRevisionConflict)
+			}
+			head = max(head, r.Seq+1)
+		}
+		return nil
+	}
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			recs, rerr := st.History(ctx, thread, head)
-			if rerr != nil {
-				return 0, fmt.Errorf("agent: absorb control records on thread %q: %w", thread, rerr)
+			if err := absorb(); err != nil {
+				return 0, err
 			}
-			high := head
-			for _, r := range recs {
-				switch r.Kind {
-				case store.KindConfigChanged:
-					cp, derr := decodeConfigChanged(r)
-					if derr != nil {
-						return 0, derr
-					}
-					cfg.fold(cp)
-					*cfgSeq = r.Seq
-					if *configRevisions == nil {
-						*configRevisions = make(map[int64]struct{})
-					}
-					(*configRevisions)[r.Seq] = struct{}{}
-				case store.KindInputQueued:
-					qp, derr := decodeInputQueued(r)
-					if derr != nil {
-						return 0, derr
-					}
-					*queue = append(*queue, queueEntry{ID: r.ID, Input: qp.Input})
-				default:
-					return 0, fmt.Errorf("agent: unabsorbable record %s at seq %d on thread %q: %w", r.Kind, r.Seq, thread, store.ErrRevisionConflict)
-				}
-				if r.Seq+1 > high {
-					high = r.Seq + 1
-				}
-			}
-			head = high
 		}
 		var applied int64
 		applied, err = st.Append(ctx, thread, head, records...)
 		if err == nil {
+			end := head + int64(len(records))
+			if applied > end {
+				head = end
+				if err := absorb(); err != nil {
+					return 0, err
+				}
+				applied = max(applied, head)
+			}
 			return applied, nil
 		}
 		if !errors.Is(err, store.ErrRevisionConflict) {
@@ -325,10 +366,11 @@ func (p *persistence) declareRound(ctx context.Context, round int, msg llm.Messa
 		return err
 	}
 	rec, err := encodeRecord(store.KindRoundDeclared, recordID(p.runID, "-d"+strconv.Itoa(r)),
-		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg})
+		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg, ContextMeasurement: p.measurementPayload()})
 	if err != nil {
 		return err
 	}
+	rec.Schema = store.SchemaV5
 	if err := p.append(ctx, rec); err != nil {
 		return err
 	}
@@ -352,10 +394,11 @@ func (p *persistence) declareTerminalRound(ctx context.Context, round int, msg l
 		return err
 	}
 	rec, err := encodeRecord(store.KindRoundDeclared, recordID(p.runID, "-d"+strconv.Itoa(r)),
-		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg, Kind: "terminal_text"})
+		roundDeclaredPayload{RunID: p.runID, Round: r, Message: msg, Kind: "terminal_text", ContextMeasurement: p.measurementPayload()})
 	if err != nil {
 		return err
 	}
+	rec.Schema = store.SchemaV5
 	if err := p.append(ctx, rec); err != nil {
 		return err
 	}
@@ -443,7 +486,15 @@ func (p *persistence) finishRun(ctx context.Context, msg llm.Message, toolCalls 
 	if err := p.checkRecoveryRound(p.lastRound + 1); err != nil {
 		return err
 	}
-	inner, err := json.Marshal(doneEventPayload{Message: msg, ToolCalls: toolCalls, Truncated: truncated, Usage: usage, TotalUsage: total})
+	var measurement *doneMeasurement
+	if !truncated && p.measurement != nil {
+		measurement = &doneMeasurement{
+			measurementIdentity: p.measurement.payload.measurementIdentity,
+			UsageReported:       p.measurement.payload.Usage != nil,
+			CaptureConfigSeq:    p.measurement.payload.CaptureConfigSeq,
+		}
+	}
+	inner, err := json.Marshal(doneEventPayload{Message: msg, ToolCalls: toolCalls, Truncated: truncated, Usage: usage, TotalUsage: total, ContextMeasurement: measurement})
 	if err != nil {
 		return fmt.Errorf("agent: encode done payload: %w", err)
 	}
@@ -452,6 +503,7 @@ func (p *persistence) finishRun(ctx context.Context, msg llm.Message, toolCalls 
 	if err != nil {
 		return err
 	}
+	rec.Schema = store.SchemaV5
 	if err := p.append(ctx, rec); err != nil {
 		return err
 	}

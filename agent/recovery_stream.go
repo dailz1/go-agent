@@ -73,6 +73,7 @@ func (r *overflowRecovery) receiveRound(
 			return nil, false
 		}
 		if call.err == nil {
+			r.measurement = call.measurement
 			return accum, true
 		}
 		if !errors.Is(call.err, llm.ErrContextOverflow) {
