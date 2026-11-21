@@ -593,6 +593,8 @@ error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.Err
 
 `skills/`（已落地）：stdlib-only 技能加载卫星——目录扫描 + SKILL.md 扁平 frontmatter 子集 + opencode 形态分发工具；契约见 skills/README.md；内核 diff 零。
 
+`modelmeta/`：models.dev 派生的模型窗口数据卫星，提供随包快照和显式刷新；普通 provider 取 v1，Codex OAuth 的 `openai-codex` 取显式加入的实验 v2，合并为一份目录，首版包含该专用目录。窗口表交给宿主构造 provider，名字解释仍由 provider 负责。依赖从卫星指向 `llm` 公开接口，内核不导入卫星。两源都成功才更新，目录年龄取成功取得并验证结构的两个时间中的较早者；宿主把同一目录的 Guard 结果接入 Agent 后，每次窗口查询检查年龄，默认 30 天且可调整，到期返回未声明；已开始轮次的预算保持不变。详细契约见 [modelmeta/README.md](../modelmeta/README.md)，内核代码改动为零。
+
 ## 6. 关键调研结论（2026-09-09）
 
 - 事件分类、只读事件 + 包装器扩展，均与业界共识一致（OpenAI Agents SDK / Vercel AI SDK / PydanticAI）。
