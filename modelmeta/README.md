@@ -95,7 +95,7 @@ a := agent.New(provider, registry, agent.WithContextWindowTokens(128000))
 
 `Guard` 允许包装已经过期的目录，不在构造时返回 `ErrStale`。nil、typed-nil、没有窗口接口的 provider、无效目录或负年龄都会返回 nil provider 和 `ErrInvalidArgument`。包装失败后应处理错误，不要改用带旧数字的底层对象。
 
-包装仅保证 `llm.Provider` 和 `llm.ContextWindowProvider` 两个接口。`Name`、`Chat`、`ChatStream` 原样委托，流式迭代器不预读；其他可选能力不会转发。包装只存取得时间、年龄和底层接口，不持有可写共享窗口表。底层 provider 的并发要求仍由底层实现决定。
+包装保证 `llm.Provider` 和 `llm.ContextWindowProvider` 两个接口，并始终以委托方式满足 `llm.DefaultModelReporter`（issue #23）：底层有该能力就原样转发名称，没有就返回空字符串；名称报告不受目录年龄影响。`Name`、`Chat`、`ChatStream` 原样委托，流式迭代器不预读；其余可选能力不会转发。包装只存取得时间、年龄和底层接口，不持有可写共享窗口表。底层 provider 的并发要求仍由底层实现决定。
 
 建议底层只登记本目录导出的数字。混入手工登记后，Guard 会使整份声明一起到期。刷新得到新目录后，要重新导表、构造和接入新包装；不能用新目录的时间包旧窗口延长寿命。旧目录、旧 provider 和旧 Guard 都不会被 `Fetch` 修改。
 

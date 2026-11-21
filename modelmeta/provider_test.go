@@ -91,6 +91,92 @@ func TestGuardArgumentsAndAge(t *testing.T) {
 	}
 }
 
+// reportingStubProvider adds the issue #23 diagnostic capability to stubProvider.
+type reportingStubProvider struct {
+	*stubProvider
+	report string
+}
+
+func (p *reportingStubProvider) DefaultModelName() string { return p.report }
+
+func TestGuardForwardsDefaultModelNameAcrossAges(t *testing.T) {
+	c := testCatalog()
+	for _, tc := range []struct {
+		name       string
+		at         time.Time
+		wantWindow bool
+	}{
+		{"fresh", fixedAt, true},
+		{"exact expiry", fixedAt.Add(time.Hour), false},
+		{"before verification", fixedAt.Add(-time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setClock(t, func() time.Time { return tc.at })
+			windowCalls := 0
+			base := &reportingStubProvider{stubProvider: &stubProvider{window: func(string) (int, bool) {
+				windowCalls++
+				return 1000, true
+			}}, report: "base-default"}
+			p, err := c.Guard(base, time.Hour)
+			if err != nil {
+				t.Fatalf("guard: %v", err)
+			}
+			reporter, ok := p.(llm.DefaultModelReporter)
+			if !ok {
+				t.Fatal("guard must satisfy llm.DefaultModelReporter")
+			}
+			if _, ok := p.(llm.ContextWindowProvider).ContextWindow("m"); ok != tc.wantWindow {
+				t.Fatalf("ContextWindow ok = %v, want %v", ok, tc.wantWindow)
+			}
+			before := windowCalls
+			clockReads := 0
+			setClock(t, func() time.Time {
+				clockReads++
+				return tc.at
+			})
+			if got := reporter.DefaultModelName(); got != "base-default" {
+				t.Fatalf("DefaultModelName = %q", got)
+			}
+			if clockReads != 0 {
+				t.Fatalf("DefaultModelName read the clock %d times, want 0", clockReads)
+			}
+			if windowCalls != before {
+				t.Fatalf("DefaultModelName consulted the window delegate (%d -> %d)", before, windowCalls)
+			}
+		})
+	}
+}
+
+func TestGuardDefaultModelNameDegradation(t *testing.T) {
+	c := testCatalog()
+	p, err := c.Guard(&stubProvider{}, time.Hour)
+	if err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	if got := p.(llm.DefaultModelReporter).DefaultModelName(); got != "" {
+		t.Fatalf("capability-less base = %q, want empty", got)
+	}
+	p, err = c.Guard(&reportingStubProvider{stubProvider: &stubProvider{}}, time.Hour)
+	if err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	if got := p.(llm.DefaultModelReporter).DefaultModelName(); got != "" {
+		t.Fatalf("empty report = %q, want empty", got)
+	}
+	base := &reportingStubProvider{stubProvider: &stubProvider{}, report: "base-default"}
+	wrapped, err := llm.WithContextWindows(base, map[string]int{"m": 1000})
+	if err != nil {
+		t.Fatalf("WithContextWindows: %v", err)
+	}
+	p, err = c.Guard(wrapped, time.Hour)
+	if err != nil {
+		t.Fatalf("guard over wrapper: %v", err)
+	}
+	if got := p.(llm.DefaultModelReporter).DefaultModelName(); got != "" {
+		t.Fatalf("cross-layer read = %q, want empty", got)
+	}
+}
+
 func TestGuardSamplesAtQueryStartAndReadsConcurrently(t *testing.T) {
 	at := fixedAt
 	setClock(t, func() time.Time { return at })

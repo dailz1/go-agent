@@ -11,7 +11,9 @@ import (
 // Guard delegates model calls and checks age at the start of each window query.
 // Use the result in agent.New or agent.WithProviders. The underlying provider
 // must carry windows exported from this same catalog with the same age policy.
-// Only llm.Provider and llm.ContextWindowProvider are preserved.
+// llm.Provider and llm.ContextWindowProvider are preserved; llm.DefaultModelReporter
+// is always satisfied by delegation, reporting an empty name when the base does
+// not implement it (issue #23).
 func (c *Catalog) Guard(provider llm.Provider, maxAge time.Duration) (llm.Provider, error) {
 	if c == nil || c.info.VerifiedAt.IsZero() || len(c.windows) == 0 || maxAge < 0 {
 		return nil, fmt.Errorf("guard catalog or age: %w", ErrInvalidArgument)
@@ -55,4 +57,15 @@ func (p guardedProvider) ContextWindow(model string) (int, bool) {
 		return 0, false
 	}
 	return p.windows.ContextWindow(model)
+}
+
+// DefaultModelName implements llm.DefaultModelReporter by delegation. The
+// diagnostic name is age-independent: an expired catalog still reports the
+// name, since expiry is exactly the condition the undeclared-window
+// warning explains.
+func (p guardedProvider) DefaultModelName() string {
+	if reporter, ok := p.Provider.(llm.DefaultModelReporter); ok {
+		return reporter.DefaultModelName()
+	}
+	return ""
 }

@@ -1,6 +1,10 @@
 package glm
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/dailz1/go-agent/llm"
+)
 
 func TestModelContextWindows(t *testing.T) {
 	windows := map[string]int{"m-big": 200000, "default-model": 8192}
@@ -28,5 +32,22 @@ func TestModelContextWindows(t *testing.T) {
 	p3 := NewProvider("key", "m")
 	if _, ok := p3.ContextWindow("m"); ok {
 		t.Fatal("unregistered provider must be undeclared")
+	}
+}
+
+func TestDefaultModelName(t *testing.T) {
+	p := NewProvider("key", "default-model")
+	reporter, ok := any(p).(llm.DefaultModelReporter)
+	if !ok {
+		t.Fatal("provider must implement llm.DefaultModelReporter")
+	}
+	if got := reporter.DefaultModelName(); got != "default-model" {
+		t.Fatalf("DefaultModelName = %q, want constructor default", got)
+	}
+	if got := NewProvider("key", "").DefaultModelName(); got != "" {
+		t.Fatalf("empty constructor default = %q, want empty", got)
+	}
+	if got := NewProvider("key", " Mixed-Case ").DefaultModelName(); got != " Mixed-Case " {
+		t.Fatalf("name must not be normalized: %q", got)
 	}
 }

@@ -22,6 +22,17 @@ type ContextWindowProvider interface {
 	ContextWindow(model string) (int, bool)
 }
 
+// DefaultModelReporter is an optional Provider capability: reporting the
+// default model name the provider would use when no model is configured,
+// for diagnostics only (issue #23). An empty result means the name is
+// unavailable. The agent uses it solely to attribute the
+// undeclared-window warning; never for window queries, request
+// construction, or request identity. Implementations must be safe for
+// concurrent calls and perform no I/O.
+type DefaultModelReporter interface {
+	DefaultModelName() string
+}
+
 // WithContextWindows attaches per-model context-window metadata (in tokens)
 // to any Provider, returning a Provider that also implements
 // [ContextWindowProvider]. It exists so providers that do not implement the
@@ -30,7 +41,10 @@ type ContextWindowProvider interface {
 // non-positive values are treated as undeclared and dropped. Registering an
 // empty-string model declares the window for requests that carry no model.
 // A nil provider is rejected; nil or fully filtered windows return the
-// original provider unchanged.
+// original provider unchanged, preserving any capabilities it already has.
+// A returned wrapper implements only [Provider] and
+// [ContextWindowProvider]; it does not forward other optional capabilities
+// such as [DefaultModelReporter].
 func WithContextWindows(p Provider, windows map[string]int) (Provider, error) {
 	if p == nil || isNilProviderValue(p) {
 		return nil, errors.New("llm: WithContextWindows requires a non-nil provider")

@@ -78,3 +78,58 @@ func TestContextWindowWrapperEmptyModelKey(t *testing.T) {
 		t.Fatal("unknown model must be undeclared")
 	}
 }
+
+type reportingStubProvider struct {
+	stubProvider
+	report string
+	calls  int
+}
+
+func (p *reportingStubProvider) DefaultModelName() string {
+	p.calls++
+	return p.report
+}
+
+func TestWithContextWindowsWrappingDropsReporter(t *testing.T) {
+	base := &reportingStubProvider{report: "base-default"}
+	p, err := WithContextWindows(base, map[string]int{"base-default": 4096})
+	if err != nil {
+		t.Fatalf("WithContextWindows: %v", err)
+	}
+	if _, ok := p.(DefaultModelReporter); ok {
+		t.Fatal("actual wrapper must not claim DefaultModelReporter")
+	}
+	cp := p.(ContextWindowProvider)
+	if _, ok := cp.ContextWindow(""); ok {
+		t.Fatal("empty selector must not resolve through the wrapped provider default")
+	}
+	if got, ok := cp.ContextWindow("base-default"); !ok || got != 4096 {
+		t.Fatalf("ContextWindow(base-default) = %d,%v", got, ok)
+	}
+	if base.calls != 0 {
+		t.Fatalf("DefaultModelName calls = %d, want 0", base.calls)
+	}
+}
+
+func TestWithContextWindowsEmptyReturnsOriginalPreservesReporter(t *testing.T) {
+	base := &reportingStubProvider{report: "base-default"}
+	for _, windows := range []map[string]int{nil, {}, {"m": -1}} {
+		p, err := WithContextWindows(base, windows)
+		if err != nil {
+			t.Fatalf("WithContextWindows: %v", err)
+		}
+		if p != Provider(base) {
+			t.Fatal("ineffective registration must return the original provider object")
+		}
+		reporter, ok := p.(DefaultModelReporter)
+		if !ok {
+			t.Fatal("original provider must keep DefaultModelReporter")
+		}
+		if got := reporter.DefaultModelName(); got != "base-default" {
+			t.Fatalf("DefaultModelName = %q", got)
+		}
+		if _, ok := p.(ContextWindowProvider); ok {
+			t.Fatal("ineffective registration must not claim the window capability")
+		}
+	}
+}

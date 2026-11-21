@@ -22,3 +22,10 @@ func (p *Provider) ContextWindow(model string) (int, bool) {
 	tokens, ok := p.contextWindows[model]
 	return tokens, ok
 }
+
+// DefaultModelName implements llm.DefaultModelReporter. It reports the
+// constructor default model verbatim for diagnostics; an empty
+// constructor model reports an empty name.
+func (p *Provider) DefaultModelName() string {
+	return p.model
+}

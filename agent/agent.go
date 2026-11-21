@@ -830,12 +830,25 @@ func (a *Agent) roundContextWindow(prov llm.Provider, opts []llm.Option) int {
 		}
 		return a.contextWindowTokens
 	}
-	a.warnUndeclaredWindow(prov.Name(), model)
+	// Issue #23: attribute the warning to the provider-reported default
+	// model when the round carries no selector. Diagnostics only — the
+	// empty selector still went to ContextWindow and requests stay
+	// untouched.
+	warningModel := model
+	if warningModel == "" {
+		if reporter, isReporter := prov.(llm.DefaultModelReporter); isReporter {
+			warningModel = reporter.DefaultModelName()
+		}
+	}
+	a.warnUndeclaredWindow(prov.Name(), warningModel)
 	return a.contextWindowTokens
 }
 
 // warnUndeclaredWindow logs the fallback once per provider+model pair per
-// process, so hosts can see which models run unprotected.
+// Agent (all runs and threads of one Agent share the table), so hosts can
+// see which models run unprotected. model is the final warning name: the
+// round's selector, or the provider-reported default when the selector is
+// empty (issue #23).
 func (a *Agent) warnUndeclaredWindow(providerName, model string) {
 	key := providerName + "\x00" + model
 	a.warnMu.Lock()
