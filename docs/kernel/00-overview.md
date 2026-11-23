@@ -209,14 +209,13 @@ type Store interface {                                       // store/store.go:1
 
 判据是"这层的变体增长由谁负责"：chunk 变体随厂商协议长（外部世界的事，宽容）；事件变体随内核契约长（自己的事，从严）。写新消费代码时先问自己站在哪一层。
 
-### 5.3 value 与 pointer 双形态纪律
+### 5.3 单一指针形态纪律
 
-三个 marker 都是**值接收者**（如 `func (TextBlock) blockType() string`，llm/message.go:39）。Go 的方法集规则因此允许 `T` 与 `*T` 同时满足接口——`[]ContentBlock` 里可以混存值形态与指针形态，而且两种形态在实践中都真实出现：
+`llm` 两个数据接口的 marker 是**指针接收者**（如 `func (*TextBlock) blockType() string`，llm/message.go:40；`func (*TextDeltaChunk) chunkType() string`，llm/chunk.go:35）。只有 `*T` 满足接口——`[]ContentBlock` 里只存在指针形态，把值字面量直接赋给接口不再编译。type switch 对每个变体恰好写一个 `*T` case；漏写不再是"被 default 静默吞掉"而是编译错误（impossible type switch case）。typed-nil（如 `(*TextBlock)(nil)`）仍满足接口——非 nil 接口包裹 nil 指针——消费代码里 `if typed != nil` 守卫必须保留。
 
-- 构造器与 JSON 解码产出**值形态**：`unmarshalContentBlock`（llm/message.go:192）按 type 判别符解出 `TextBlock{}` 等值；`SystemMessage` / `UserMessage` 等构造器同理。
-- 使用者历史、中间件包装、跨适配器回放可能持有**指针形态**：适配器契约明确要求"值与指针形式都支持"（如 codex 的入站映射，docs/DESIGN.md §Codex 适配器）。
+事件层的七个 `AgentEvent` marker（`eventType()`，agent/event.go）仍为值接收者，不在本次收紧范围；事件面的密封纪律见第 10 篇。
 
-由此产生一条硬纪律（项目 CONVENTIONS："type switches must handle value AND pointer forms"）：**任何对密封联合的 type switch 必须同时列出 `T` 与 `*T` 两个 case**。仓内范本是 `deepCopyMessages`（agent/agent.go:35）——对每个可变块同时处理 `llm.TextBlock` 与 `*llm.TextBlock`、`llm.ToolUseBlock` 与 `*llm.ToolUseBlock`……漏掉一个形态不会编译报错（default 分支会吞掉它），只会让深拷贝静默共享底层切片/指针，酿成跨 run 的数据别名 bug。所以这条纪律靠两层保证：写 switch 时成对列 case；测试里显式构造两种形态各跑一遍（持久化与适配器的 round-trip 测试均覆盖指针形态）。
+历史：2026-11-23 之前 marker 为值接收者，`T` 与 `*T` 双形态并存，type switch 须成对列 case、漏列形态由 default 静默吞掉（曾有 glm/openai 转换漏列指针形态落硬错误、codex 以 reflect 运行时归一化的不一致）。issue #24 一次性收紧为单一指针形态，论证与兼容性结论见 `docs/kernel/41-decisions.md` A8。
 
 ## 后续文档索引
 

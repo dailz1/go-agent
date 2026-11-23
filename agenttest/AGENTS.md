@@ -13,7 +13,7 @@ Public deterministic test doubles for downstream consumers (the kernel's own in-
 | Wire decode | wire_decode.go:15-38 — hand-rolled strict decoder; version gate accepts 1|recordingVersion |
 
 ## CONVENTIONS (differs from parent)
-- Recording grammar is VALUE-form only: pointer-form chunks are `UnsupportedChunkError`.
+- Recording grammar is pointer-form only (single-form sealed unions, issue #24); `UnsupportedChunkError` was removed — pointer chunks encode normally.
 - Record/replay is order-strict — exchanges and stream positions must match exactly (record.go:89).
 - Sentinels come as typed wrappers with `Unwrap` to the sentinel (record.go:17-29).
 

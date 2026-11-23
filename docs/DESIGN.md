@@ -103,9 +103,9 @@
 - 用量锚点身份补充（issue #19 评审修订）：provider 名称和模型选项允许为空，描述记录仍可重放；任一为空时，锚点只在同次调用内复用，跨调用恢复回退 rune 估算。首次从默认 provider 转为显式命名路由时，即使名称与模型相同，也清除已有及待提交的锚点，避免同名注册实例切换后复用旧测量。
 - Provider 请求历史隔离（issue #12，2026-11-18）：
   - 主循环每次直接调用 `Provider.ChatStream` 或 `Provider.Chat` 前，均从当轮运行历史构造该次调用独立的消息副本。流式 `ChatStream` 与非流式回退 `Chat` 直接返回的可重试错误均进入同一重试循环，按既有次数和取消约束决定后续尝试；每次直接调用重新复制历史。重试和 `ErrStreamingNotSupported` 后的非流式回退均不复用曾交付给 Provider 的请求，也不把请求副本采纳回运行历史。此处仅纠正重试来源的描述，不改变实现或重试语义。
-  - 重试延迟单次解析契约（issue #16，2026-11-18）：`RetryInfo.Delay` 与重试睡眠出自同一次解析（`llm.ResolveRetryDelay`：APIError.RetryAfter 优先、否则抖动抽取一次、按 ctx 截止时间封顶），播报值即实际等待的计划值，`llm.WaitForRetry` 为该解析加睡眠的兼容组合。`MaxRetries` 在选项构造器按 maxRetryCap=math.MaxInt−2 钳位（保护周边 +1 算术不溢出，不施加更小的政策上限）；`Backoff` 在浮点转时长前按 maxDelay 饱和。非流式回退的块合成（synthesizeChunks）覆盖全部 12 种块形态（6 类型 × 值/指针，nil 指针跳过）。
+  - 重试延迟单次解析契约（issue #16，2026-11-18）：`RetryInfo.Delay` 与重试睡眠出自同一次解析（`llm.ResolveRetryDelay`：APIError.RetryAfter 优先、否则抖动抽取一次、按 ctx 截止时间封顶），播报值即实际等待的计划值，`llm.WaitForRetry` 为该解析加睡眠的兼容组合。`MaxRetries` 在选项构造器按 maxRetryCap=math.MaxInt−2 钳位（保护周边 +1 算术不溢出，不施加更小的政策上限）；`Backoff` 在浮点转时长前按 maxDelay 饱和。非流式回退的块合成（synthesizeChunks）覆盖全部 6 种块类型（指针形态，nil 指针跳过）。
   - 深拷贝先于该次 `roundContextOutbound` 构造。未启用环境上下文或 callback 返回空字符串时，返回的仍是本次副本；非空 overlay 仍仅存在于本次请求，不进入 history、事件、Store 或 checkpoint。环境快照仍逐次重新生成，Attempt、预算、截断和错误处理沿用逐轮运行环境上下文契约。
-  - 完整隔离范围为 `TextBlock`、`ReasoningBlock`、`ReasoningItemBlock`、`ToolUseBlock`、`ToolResultBlock`、`ImageBlock` 的值和指针形式。消息与 Content 切片、块指针、工具调用 Input、推理条目 Summary、图片 Data，以及工具结果 Images 和逐图 Data 均与运行历史及其他调用分离。字符串按不可变值共享。保留现有复制器的空切片处理，不新增输入校验语义。
+  - 完整隔离范围为 `*TextBlock`、`*ReasoningBlock`、`*ReasoningItemBlock`、`*ToolUseBlock`、`*ToolResultBlock`、`*ImageBlock` 的指针形态（2026-11-23 issue #24：marker 收紧为指针接收者，值形态不再满足密封接口）。消息与 Content 切片、块指针、工具调用 Input、推理条目 Summary、图片 Data，以及工具结果 Images 和逐图 Data 均与运行历史及其他调用分离。字符串按不可变值共享。保留现有复制器的空切片处理，不新增输入校验语义。
   - 内核无法识别并深拷贝的外来块，包括嵌入内建块的自定义类型，保留原类型继续传递；仅保证所在 Message 与 Content 外层切片独立，不保证外来块内部及其引用可达对象隔离。Provider 边界不因此新增 run 错误或警告。只有全由上述内建类型组成的历史获得完整请求隔离保证；混有外来块的历史仍可能被其内部引用改写或产生数据竞争。此规则不改变压缩边界遇到外来输入跳过压缩、遇到外来结果拒收的既有处理，也不取消预算、取消、编解码或适配器原有错误。
   - 内建摘要压缩器每次直接调用 Provider 时，也深拷贝它构造的摘要请求，使其中的 system 块与压缩输入、待采纳结果分离。自定义压缩器内部自行发起的 Provider 调用不由内核自动拦截。
   - 反应式恢复周期的每次 Provider 调用（主请求重发与摘要请求）同样获得独立深拷贝（issue #18，2026-11-20）；provider helper 不得在内部消化恢复相关失败，错误须原样返回恢复控制层分类处置，包装器守则的透传义务不变（尤其不得吞 `ErrStreamingNotSupported` 与 overflow 标记，见「ChatStream 建连两形态契约」）。
@@ -339,7 +339,7 @@ drain 点全循环唯一：每轮顶部顺序 = 读配置 → 压缩 → **drain
 - 输入映射：system 消息 → 顶层 `instructions`；user/assistant 消息 → `message` item；assistant 的 `tool_use` block → `function_call` item；`tool_result` → `function_call_output`（`call_id` 关联）；`reasoning_item` block → `reasoning` item（`encrypted_content` 原样透传，置于其 `function_call` 之前，保持声明顺序）。
 - 输出映射：`message.output_text` → `TextBlock`；`reasoning` → `ReasoningItemBlock`；`function_call` → `ToolUseBlock`（`call_id` 即块 ID）；未知输出 item 类型忽略（debug 日志，向前兼容）。
 - 流式映射（保序）：`response.output_text.delta` → `TextDeltaChunk`（携带 output_index）；`response.reasoning_summary_text.delta` → `ReasoningDeltaChunk`；`response.output_item.added`(function_call) → `ToolCallStartChunk`（index = output_index）；`response.function_call_arguments.delta` → `ToolCallArgsChunk`；`response.output_item.done`(reasoning) → `ReasoningItemChunk`（携带加密推理项与其 output_index）；`response.completed` → 补发未交付的 reasoning 项 + `DoneChunk`（usage）；`response.failed`/`response.incomplete`/`error` → 错误。未知流式事件类型忽略。装配按 output_index 跨类合并（reasoning 项与 function_call 交错时保持宣告顺序）；CC 协议无 reasoning 项，维持原分桶装配。
-- `llm` 新增 `ContentBlock` 变体 `ReasoningItemBlock{ID, EncryptedContent, Summary}`（type `reasoning_item`）：条目级推理项，与 `ReasoningBlock`（CC 协议内嵌推理文本）语义不同；持久化原样承载（深拷贝含 Summary 切片；值/指针两种形态都妥善处理）。既有适配器转换时跳过该 block，不产出也不出错。
+- `llm` 新增 `ContentBlock` 变体 `ReasoningItemBlock{ID, EncryptedContent, Summary}`（type `reasoning_item`）：条目级推理项，与 `ReasoningBlock`（CC 协议内嵌推理文本）语义不同；持久化原样承载（深拷贝含 Summary 切片；指针形态妥善处理——issue #24 后唯一形态）。既有适配器转换时跳过该 block，不产出也不出错。
 - `llm` 新增 `Chunk` 变体 `ReasoningItemChunk{OutputIndex, Item}`：流式交付加密推理项；`TextDeltaChunk` 增加 `OutputIndex`（CC 适配器恒为 0）。装配器在有 reasoning 项时按 output_index 跨类排序，否则维持 CC 分桶。
 - 公共选项映射：`WithMaxTokens` → `max_output_tokens`；`WithTemperature` → `temperature`；`WithStop` 在 Responses 中无对应参数——显式返回类型化错误，不静默丢弃。非流式 `Chat` 对 `status != completed`（incomplete/failed）返回错误，不把部分输出当成功。默认 HTTP 客户端带 120s 超时。
 - v1 不支持：内建工具（web_search/file_search/code_interpreter/computer/MCP）、结构化输出（`text.format`）、`previous_response_id`、WebSocket 模式。ToolInfo 只产 function 定义，内建工具无法被请求。
@@ -408,8 +408,8 @@ user 文本/图片映射 input_text/input_image；assistant 文本映射
 output_text，ReasoningItem 原样保留 id/encrypted_content/summary，
 ReasoningBlock 不回传；function_call 的 call_id 使用 ToolUse.ID，
 function_call_output 的 call_id 使用 ToolResult.ToolUseID。多结果逐项
-映射，软错误 Content 原样保留，IsError 仅留本地历史。值与指针形式
-都支持，nil/非法角色组合拒绝。工具使用扁平 function、strict:false，
+映射，软错误 Content 原样保留，IsError 仅留本地历史。仅指针形态（密封接口单一形态，issue #24），
+nil/非法角色组合拒绝；入站 reflect 归一化已随形态统一删除。工具使用扁平 function、strict:false，
 ParameterSchema codec 原样传递递归结构和扩展字段，不修剪 schema。
 
 SSE 按 output_index 跟踪文本、refusal、工具参数与 reasoning。
@@ -508,7 +508,7 @@ TC-first 与 materialization：普通轮的全部 TC 连续宣布后才执行；
 
 `agenttest` 是公开、stdlib-only 的测试替身包；它只 import `llm`、`tool` 与标准库，绝不反向 import `agent`。它提供全局严格有序的 `ScriptedProvider`、`Recorder`/`Replayer` 和最小的 `ToolFunc`。`Request` 深拷贝并严格比较 messages、按名称排序的 tools 与 `llm.ApplyOptions` 后的 options；函数型 option 的身份不是契约。Chat 与 ChatStream 共享一个全局 Exchange 顺序，方法交替也必须匹配。成功的 ChatStream 在调用时保留步骤，迭代自然结束、已交付的 terminal stream error 或 nil-error chunk 后的 early break 才释放；保留期间的任意调用返回 `ErrConcurrentScriptUse`。脚本耗尽返回带方法和一基 step 编号的 `ErrScriptExhausted`；不匹配返回含零基全局 step、expected/actual method 的 `RequestMismatchError`（`ErrScriptMismatch`）；`Verify` 对未消费或 active stream 返回含 Next、Remaining、Active 的 `ScriptVerificationError`（`ErrUnverifiedScript`）。
 
-录制 bytes 的 **v1 grammar** 固定不变：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个值形式 chunk DTO 都有 `type` discriminator，并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。所有 pointer-form chunks（含 typed nil）继续按原动态形式交付下游，但 `Bytes` 返回带动态类型的 `UnsupportedChunkError`/`ErrUnsupportedChunk`；v1 不将其归一化为值形式。
+录制 bytes 的 **v1 grammar** 固定不变：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个 chunk DTO 都有 `type` discriminator（DTO 为形态无关的 JSON；录制编码与回放解码自 issue #24 起在内存中使用指针形态，grammar 字节不变），并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。chunk 一律指针形态（issue #24），照原动态形式交付下游并正常编码进录制；`UnsupportedChunkError`/`ErrUnsupportedChunk` 已随值形态收紧删除。
 
 error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.ErrStreamingNotSupported` 哨兵身份、带 StatusCode/RetryAfter/Body 的 `*llm.APIError`、`llm.IsNetworkError` 所认定的 timeout/temporary `net.Error`、`url.Error` 包装与 ECONNREFUSED/ECONNRESET/EPIPE，以及最后的仅 message generic error。回放必须保留相应 `errors.Is`、`errors.As` 或 `llm.IsNetworkError` 分类。未知 schema version、chunk/error type 或字段、非法 DTO 字段，均以 `ErrIncompatibleRecording` 类型化拒绝；多个 DoneChunk 原样回放；没有 Done 且没有 tool calls 的流按自然 exhaustion 成功。Replayer 同样严格执行全局 exchange 顺序、call-time reservation 和 Verify。
 

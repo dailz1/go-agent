@@ -83,6 +83,14 @@
 **结论**：复制纪律冻结；两家适配器各自的出站转换含跨厂商推理块降级表（见 C16）。
 **出处**：AGENTS「ANTI-PATTERNS」；`docs/kernel/21-llm-transport.md` §4。
 
+### A8 · 数据接口 marker 收紧为指针接收者：ContentBlock/Chunk 单一形态（issue #24）
+
+**决策**：`llm.ContentBlock` 与 `llm.Chunk` 的未导出 marker（`blockType()`/`chunkType()`）自 v0.4.0 起为指针接收者，仅 `*T` 满足接口；仓内构造、解码、合成路径统一产指针形态；type switch 每变体一个 `*T` case。typed-nil（`(*T)(nil)`）仍满足接口，nil 守卫保留。一次性迁移（one-shot）：仓无外部消费者，全仓调用点同一变更内原子更新，不留双发布窗口。JSONL 线程日志、checkpoint、agenttest 录制字节零迁移（`T` 与非 nil `*T` 的 JSON 编码字节相同，读取侧从形态无关 JSON 重构）。随本决策删除 codex 入站 reflect 指针归一化与 agenttest `UnsupportedChunkError`/`ErrUnsupportedChunk`（值形态物理上不再能进接口，录制拒收判定恒假）。`AssistantToolCallMessage` 入参同步改收 `...*ToolUseBlock`（owner 裁决 D1=(b)：全 API 面统一"块一律传指针"）。
+**背景/问题**：marker 原为值接收者（上游 holmes-go 原样带入），`T` 与 `*T` 双形态并存使每个 type switch 成对写 case（非测试代码约 32 处 switch、约 150 行 case、27 处断言），漏列一个形态不报编译错、由 default 静默吞掉：glm/openai 转换漏列 `*ReasoningBlock` 落 default 硬错误，codex 需 reflect 运行时归一化。生态对照（2026-11-23，7 目标实读源码）：双形态零先例；密封变体集的官方基线（go/ast、protobuf oneof）均为指针接收者单形态。
+**被否决的备选**：保持双形态（成本已沉但零生态先例，静默漏分支风险常驻）；union struct 化（生态多数派，但与 A6"非法状态不可表示"的密封动机冲突，推翻级重写）；两阶段发布窗口（仓无外部消费者，弃用窗口无保护对象）。
+**结论**：本条目部分反转 A6 决策字段中"type switch 必须处理 value 与 pointer 双形态"一句与 T13 被否决备选中"pointer-form chunks 归一化为值形式（v1 不做）"的取向——旧条目原文保留作历史。AgentEvent 事件层 marker（`eventType()`）仍为值接收者，不在本次收紧范围（事件面不变承诺不动）。
+**出处**：GitHub issue #24；`.omo-issue24-dualform-design.md`（生态对照与兼容性论证）；`docs/kernel/00-overview.md` §5.3（单一指针形态纪律）。
+
 ## 2. 持久化
 
 ### P1 · 内核侧持久化 + 逐调用 WithThread 三态

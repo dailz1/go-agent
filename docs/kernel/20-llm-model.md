@@ -30,13 +30,13 @@ type Provider interface {
 | `Provider` | **不密封** | 它是扩展点。P2-1 的 Provider 中间件（包装器模式）要求外部包能实现该接口（docs/DESIGN.md P2-1，示例 `examples/middleware`）；密封会把观察/限流包装器挡在门外 |
 | `Option` / `Options` | 不密封 | 选项是数据不是行为 |
 
-密封的收益与 agent 事件层同理（第 10 篇 §3.5 已论证）：新增变体从兼容性问题变成编译问题——消费者 `switch` 少一个分支，编译器或显式 `default` 报错路径立即暴露；变体演化只发生在本包内，由 DESIGN.md 先行（docs-first 约定）。type switch 必须同时处理值与指针两种形态（项目约定；深拷贝历史会产生 `*ReasoningItemBlock` 指针形态，适配器转换代码里随处可见 `case llm.ReasoningItemBlock, *llm.ReasoningItemBlock` 的双分支）。
+密封的收益与 agent 事件层同理（第 10 篇 §3.5 已论证）：新增变体从兼容性问题变成编译问题——消费者 `switch` 少一个分支，编译器或显式 `default` 报错路径立即暴露；变体演化只发生在本包内，由 DESIGN.md 先行（docs-first 约定）。type switch 每个变体写一个 `*T` case 即可——2026-11-23 起（issue #24）marker 为指针接收者，值形态不再满足接口，漏 case 是编译错误而非静默吞掉；typed-nil 仍满足接口，nil 守卫保留。
 
 ### 1.3 Options：公共子集 + 透传策略
 
 `Options`（llm/provider.go:35）只放**四个厂商都至少能表达或能安全忽略**的请求参数：`Model`、`MaxTokens`、`Temperature`、`Stop`，加两个透传开关 `Thinking`（字符串 "enabled"/"disabled"，适配器不支持则忽略——openairesponses 即忽略）与 `JSONMode`（走 `response_format`）。`ApplyOptions`（llm/provider.go:77）折叠函数型选项。
 
-厂商特有的参数**不进**这个结构：GLM 的 `do_sample`/`tool_stream`/`request_id` 是 `glm.ProviderOption` 构造期选项；openai 的 `stream_options.include_usage` 是 adapter 内部 wire 细节（llm/openai/adapter.go:181）。这条分界线是四层选项体系（agent `Option`、per-call `RunOption`、`llm.Option`、各 adapter `ProviderOption`）的一部分：**调用语义的参数走 `llm.Option`（每次调用可变），接入语义的参数走 adapter 构造选项（构造期绑定）**。例外只有一个——glm `WithTopP` 在返回的闭包里就地夹取 [0.01, 1.0]（llm/glm/adapter.go:79-86），是项目里唯一"在选项函数内做值归一"的地方（其余归一化全部在构造函数里）。
+厂商特有的参数**不进**这个结构：GLM 的 `do_sample`/`tool_stream`/`request_id` 是 `glm.ProviderOption` 构造期选项；openai 的 `stream_options.include_usage` 是 adapter 内部 wire 细节（llm/openai/adapter.go:181）。这条分界线是四层选项体系（agent `Option`、per-call `RunOption`、`llm.Option`、各 adapter `ProviderOption`）的一部分：**调用语义的参数走 `llm.Option`（每次调用可变），接入语义的参数走 adapter 构造选项（构造期绑定）**。这条约定无例外——glm `WithTopP` 曾在返回的闭包里就地夹取 [0.01, 1.0]，2026-11-05 已移除，现按原值透传（llm/glm/adapter.go:81，DESIGN.md「Chat Completions 采样与工具参数」冻结契约）；所有取值归一化都在构造函数里完成。
 
 ### 1.4 厂商特有字段的三条去向
 
@@ -75,7 +75,7 @@ OpenAI 的字符串形态在**入站反序列化**时兼容：`Message.Unmarshal
 | `ReasoningItemBlock` | llm/message.go:74 | Responses **条目级**推理项：服务器侧 `ID` + 不透明 `EncryptedContent` + `Summary` 文本。协议要求回放时置于其前导的 function_call 之前、保持声明顺序（docs/DESIGN.md:260）；CC 适配器跳过它，不产出也不出错 |
 | `ToolResultBlock` | llm/message.go:84 | `ToolUseID` 指回配对的 `ToolUseBlock.ID`；`IsError` 镜像 `tool.ToolResult.IsError()`——工具**软失败**回灌 LLM 的通道，绝不上升为 Go error（软/硬错误分界是 tool 契约，见第 11 篇） |
 
-块间不变量由构造器兜底：`SystemMessage`/`UserMessage`/`AssistantMessage`（llm/message.go:93 起）负责把 `Type` 字段填对；`AssistantToolCallMessage` 批量补 `"tool_use"`；`ToolResultMessage`（llm/message.go:126）把 `*tool.ToolResult` 变成 `RoleTool` 消息，**nil result 自动降为一条 error result**（"tool returned nil result"），避免空指针泄漏到协议层。llm/AGENTS.md 的约定：构造历史用构造器，不要手拼结构体字面量——`Type` 字段填错会在跨适配器转换时静默走丢分支。
+块间不变量由构造器兜底：`SystemMessage`/`UserMessage`/`AssistantMessage`（llm/message.go:95 起）负责把 `Type` 字段填对；`AssistantToolCallMessage` 复制入参后批量补 `"tool_use"`；`ToolResultMessage`（llm/message.go:135）把 `*tool.ToolResult` 变成 `RoleTool` 消息，**nil result 自动降为一条 error result**（"tool returned nil result"），避免空指针泄漏到协议层。llm/AGENTS.md 的约定：构造历史用构造器，不要手拼结构体字面量——`Type` 字段填错会在跨适配器转换时静默走丢分支。
 
 ### 2.3 反序列化为什么对未知块类型报错
 
