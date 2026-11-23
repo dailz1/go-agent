@@ -49,7 +49,7 @@ func (p *advertisedToolsProvider) Chat(context.Context, []llm.Message, []tool.To
 }
 
 func textRound(text string) []llm.Chunk {
-	return []llm.Chunk{llm.TextDeltaChunk{Text: text}, llm.DoneChunk{FinishReason: "stop"}}
+	return []llm.Chunk{&llm.TextDeltaChunk{Text: text}, &llm.DoneChunk{FinishReason: "stop"}}
 }
 
 func assertAdvertised(t *testing.T, provider *advertisedToolsProvider, round int, want ...string) {
@@ -288,7 +288,7 @@ func TestDynamicToolsCompactionWithRemovedToolGroup(t *testing.T) {
 	base := []llm.Message{
 		llm.SystemMessage("policy"),
 		llm.UserMessage("first"),
-		llm.AssistantToolCallMessage(llm.ToolUseBlock{
+		llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 			Type: "tool_use", ID: "g1", Name: "gone_tool", Input: json.RawMessage(`{}`),
 		}),
 		llm.ToolResultMessage("g1", tool.NewTextResult(strings.Repeat("payload", 100))),
@@ -317,8 +317,8 @@ func TestPersistedHistoryWithUnregisteredToolReplays(t *testing.T) {
 	reg.MustRegister(mutatorTool("calc", func(context.Context, json.RawMessage) (*tool.ToolResult, error) {
 		return tool.NewTextResult("42"), nil
 	}))
-	firstCall := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "calc", Input: json.RawMessage(`{}`)}
-	secondCall := llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "calc", Input: json.RawMessage(`{}`)}
+	firstCall := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "calc", Input: json.RawMessage(`{}`)}
+	secondCall := &llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "calc", Input: json.RawMessage(`{}`)}
 	agent := New(
 		NewMockProvider(
 			MsgResponse(llm.AssistantToolCallMessage(firstCall)),

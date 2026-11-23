@@ -38,9 +38,13 @@ type toolCallAccum struct {
 }
 
 // feed processes a single streaming chunk, routing it by type.
+// All chunks are pointer-form sealed variants; a typed-nil chunk is ignored.
 func (a *toolCallAccum) feed(chunk llm.Chunk) {
 	switch c := chunk.(type) {
-	case llm.TextDeltaChunk:
+	case *llm.TextDeltaChunk:
+		if c == nil {
+			return
+		}
 		// Indexed protocols (Responses) may interleave multiple message
 		// items: close the current text group when the item index changes.
 		if a.textGroupOpen && c.OutputIndex != a.textIndex {
@@ -51,7 +55,10 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 			a.textIndex = c.OutputIndex
 		}
 		a.textBuilder.WriteString(c.Text)
-	case llm.ToolCallStartChunk:
+	case *llm.ToolCallStartChunk:
+		if c == nil {
+			return
+		}
 		if a.calls == nil {
 			a.calls = make(map[int]*callAccum)
 		}
@@ -63,7 +70,10 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 			return
 		}
 		a.calls[c.Index] = &callAccum{id: c.ID, name: c.Name}
-	case llm.ToolCallArgsChunk:
+	case *llm.ToolCallArgsChunk:
+		if c == nil {
+			return
+		}
 		if acc, ok := a.calls[c.Index]; ok {
 			acc.args.WriteString(c.Delta)
 		} else {
@@ -72,41 +82,26 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 			}
 			a.orphanArgs[c.Index] = true
 		}
-	case llm.ReasoningItemChunk:
+	case *llm.ReasoningItemChunk:
 		// Entry-level reasoning item at its own output position: recorded for
 		// index-ordered assembly (Responses protocol).
+		if c == nil {
+			return
+		}
 		a.hasReasoningItems = true
-		a.ordered = append(a.ordered, indexedBlock{index: c.OutputIndex, block: c.Item})
-	case llm.DoneChunk:
+		a.ordered = append(a.ordered, indexedBlock{index: c.OutputIndex, block: &c.Item})
+	case *llm.DoneChunk:
+		if c == nil {
+			return
+		}
 		if c.Usage != nil {
 			a.lastUsage = c.Usage
 		}
-	case llm.ReasoningDeltaChunk:
-		a.reasoningBuilder.WriteString(c.Text)
-	case *llm.TextDeltaChunk:
-		if c != nil {
-			a.feed(*c)
-		}
 	case *llm.ReasoningDeltaChunk:
-		if c != nil {
-			a.feed(*c)
+		if c == nil {
+			return
 		}
-	case *llm.ToolCallStartChunk:
-		if c != nil {
-			a.feed(*c)
-		}
-	case *llm.ToolCallArgsChunk:
-		if c != nil {
-			a.feed(*c)
-		}
-	case *llm.ReasoningItemChunk:
-		if c != nil {
-			a.feed(*c)
-		}
-	case *llm.DoneChunk:
-		if c != nil {
-			a.feed(*c)
-		}
+		a.reasoningBuilder.WriteString(c.Text)
 	default:
 		// ignore unknown chunk types
 	}
@@ -120,7 +115,7 @@ func (a *toolCallAccum) feed(chunk llm.Chunk) {
 //   - a tool call is missing id or name (StartChunk was lost)
 //   - a ToolCallStartChunk repeats an index already seen in this stream
 //   - ToolCallArgsChunk arrived for an index with no matching ToolCallStartChunk
-func (a *toolCallAccum) assemble() ([]llm.ToolUseBlock, error) {
+func (a *toolCallAccum) assemble() ([]*llm.ToolUseBlock, error) {
 	if len(a.calls) == 0 && len(a.orphanArgs) == 0 {
 		return nil, nil
 	}
@@ -153,14 +148,14 @@ func (a *toolCallAccum) assemble() ([]llm.ToolUseBlock, error) {
 
 	type indexed struct {
 		idx int
-		blk llm.ToolUseBlock
+		blk *llm.ToolUseBlock
 	}
 
 	items := make([]indexed, 0, len(a.calls))
 	for idx, acc := range a.calls {
 		items = append(items, indexed{
 			idx: idx,
-			blk: llm.ToolUseBlock{
+			blk: &llm.ToolUseBlock{
 				Type:  "tool_use",
 				ID:    acc.id,
 				Name:  acc.name,
@@ -171,7 +166,7 @@ func (a *toolCallAccum) assemble() ([]llm.ToolUseBlock, error) {
 
 	slices.SortFunc(items, func(a, b indexed) int { return a.idx - b.idx })
 
-	result := make([]llm.ToolUseBlock, len(items))
+	result := make([]*llm.ToolUseBlock, len(items))
 	for i, it := range items {
 		result[i] = it.blk
 	}
@@ -197,7 +192,7 @@ func (a *toolCallAccum) textBlocks() []llm.ContentBlock {
 		return nil
 	}
 	return []llm.ContentBlock{
-		llm.TextBlock{
+		&llm.TextBlock{
 			Type: "text",
 			Text: a.textBuilder.String(),
 		},
@@ -211,7 +206,7 @@ func (a *toolCallAccum) reasoningBlocks() []llm.ContentBlock {
 		return nil
 	}
 	return []llm.ContentBlock{
-		llm.ReasoningBlock{
+		&llm.ReasoningBlock{
 			Type:    "reasoning",
 			Content: a.reasoningBuilder.String(),
 		},
@@ -238,7 +233,7 @@ func (a *toolCallAccum) flushTextGroup() {
 	if a.textBuilder.Len() > 0 {
 		a.ordered = append(a.ordered, indexedBlock{
 			index: a.textIndex,
-			block: llm.TextBlock{Type: "text", Text: a.textBuilder.String()},
+			block: &llm.TextBlock{Type: "text", Text: a.textBuilder.String()},
 		})
 	}
 	a.textBuilder.Reset()
@@ -250,7 +245,7 @@ func (a *toolCallAccum) flushTextGroup() {
 // the protocol delivered reasoning items, or the legacy bucketed order
 // (reasoning, text, tool calls) otherwise. It returns the full content plus
 // the tool-call blocks.
-func (a *toolCallAccum) assembleContent() ([]llm.ContentBlock, []llm.ToolUseBlock, error) {
+func (a *toolCallAccum) assembleContent() ([]llm.ContentBlock, []*llm.ToolUseBlock, error) {
 	callBlocks, err := a.assemble()
 	if err != nil {
 		return nil, nil, err

@@ -272,7 +272,7 @@ func TestScanResponseEmptyPayloadSkipped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("scanResponse: %v", err)
 		}
-		if _, ok := c.(llm.DoneChunk); ok {
+		if _, ok := c.(*llm.DoneChunk); ok {
 			done = true
 		}
 	}

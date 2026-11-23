@@ -24,9 +24,9 @@ func persistTestAgent(t *testing.T, st store.Store, responses ...mockResponse) *
 }
 
 func toolCallMessage(ids ...string) llm.Message {
-	calls := make([]llm.ToolUseBlock, len(ids))
+	calls := make([]*llm.ToolUseBlock, len(ids))
 	for i, id := range ids {
-		calls[i] = llm.ToolUseBlock{Type: "tool_use", ID: id, Name: "echo", Input: json.RawMessage(`{}`)}
+		calls[i] = &llm.ToolUseBlock{Type: "tool_use", ID: id, Name: "echo", Input: json.RawMessage(`{}`)}
 	}
 	return llm.AssistantToolCallMessage(calls...)
 }
@@ -105,14 +105,14 @@ func jsonNumber(n int) string {
 	return string([]byte{byte('0' + n)})
 }
 
-func resultBlocks(msg llm.Message) []llm.ToolResultBlock {
+func resultBlocks(msg llm.Message) []*llm.ToolResultBlock {
 	return toolResultBlocks(msg)
 }
 
 func messageString(m llm.Message) string {
 	s := ""
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.TextBlock); ok {
+		if tb, ok := blk.(*llm.TextBlock); ok {
 			s += tb.Text
 		}
 	}

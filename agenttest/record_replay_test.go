@@ -16,10 +16,10 @@ import (
 func TestRecordReplayAllChunkVariants(t *testing.T) {
 	request := Request{Messages: []llm.Message{llm.UserMessage("stream")}}
 	chunks := []llm.Chunk{
-		llm.TextDeltaChunk{Text: "text", OutputIndex: 2}, llm.ReasoningDeltaChunk{Text: "think"},
-		llm.ToolCallStartChunk{Index: 1, ID: "call", Name: "tool"}, llm.ToolCallArgsChunk{Index: 1, ID: "call", Delta: `{"x":`},
-		llm.ReasoningItemChunk{OutputIndex: 3, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "reason", EncryptedContent: "encrypted", Summary: []string{"summary"}}},
-		llm.DoneChunk{FinishReason: "tool_calls"}, llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 1, OutputTokens: 2}},
+		&llm.TextDeltaChunk{Text: "text", OutputIndex: 2}, &llm.ReasoningDeltaChunk{Text: "think"},
+		&llm.ToolCallStartChunk{Index: 1, ID: "call", Name: "tool"}, &llm.ToolCallArgsChunk{Index: 1, ID: "call", Delta: `{"x":`},
+		&llm.ReasoningItemChunk{OutputIndex: 3, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "reason", EncryptedContent: "encrypted", Summary: []string{"summary"}}},
+		&llm.DoneChunk{FinishReason: "tool_calls"}, &llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 1, OutputTokens: 2}},
 	}
 	recorder := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: chunks}))
 	sequence, err := recorder.ChatStream(context.Background(), request.Messages, nil)
@@ -82,7 +82,7 @@ func TestReplayerStreamingFallbackWorksWithAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := agent.New(replay, tool.NewRegistry()).Run(context.Background(), "fallback")
-	if err != nil || result.Message.Content[0].(llm.TextBlock).Text != "done" {
+	if err != nil || result.Message.Content[0].(*llm.TextBlock).Text != "done" {
 		t.Fatalf("Run = %#v, %v", result, err)
 	}
 	if err := replay.Verify(); err != nil {
@@ -127,7 +127,7 @@ func TestRecordReplayErrorTaxonomy(t *testing.T) {
 
 func TestRecordReplayStreamCompletionAndInterruption(t *testing.T) {
 	request := Request{Messages: []llm.Message{llm.UserMessage("x")}}
-	complete := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{llm.ToolCallStartChunk{ID: "call", Name: "tool"}, llm.ToolCallArgsChunk{ID: "call", Delta: "{}"}}}))
+	complete := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{&llm.ToolCallStartChunk{ID: "call", Name: "tool"}, &llm.ToolCallArgsChunk{ID: "call", Delta: "{}"}}}))
 	sequence, err := complete.ChatStream(context.Background(), request.Messages, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestRecordReplayStreamCompletionAndInterruption(t *testing.T) {
 		t.Fatalf("natural no-Done recording rejected: %v", err)
 	}
 
-	terminal := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{llm.TextDeltaChunk{Text: "before"}}, StreamErr: context.Canceled}))
+	terminal := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "before"}}, StreamErr: context.Canceled}))
 	sequence, err = terminal.ChatStream(context.Background(), request.Messages, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestRecordReplayStreamCompletionAndInterruption(t *testing.T) {
 		}
 	}
 
-	interrupted := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{llm.TextDeltaChunk{Text: "one"}}}))
+	interrupted := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "one"}}}))
 	sequence, err = interrupted.ChatStream(context.Background(), request.Messages, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestRecordReplayStreamCompletionAndInterruption(t *testing.T) {
 	}
 }
 
-func TestRecorderRejectsPointerAndActiveStream(t *testing.T) {
+func TestRecorderAcceptsPointerChunksAndActiveStream(t *testing.T) {
 	request := Request{Messages: []llm.Message{llm.UserMessage("x")}}
 	chunk := &llm.TextDeltaChunk{Text: "ignored by agent"}
 	recorder := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{chunk}}))
@@ -208,7 +208,7 @@ func TestRecorderRejectsPointerAndActiveStream(t *testing.T) {
 			t.Fatalf("chunk dynamic form changed: %#v", got)
 		}
 	}
-	if _, err := recorder.Bytes(); !errors.Is(err, ErrUnsupportedChunk) {
+	if _, err := recorder.Bytes(); err != nil {
 		t.Fatalf("pointer Bytes = %v", err)
 	}
 }
@@ -240,5 +240,23 @@ func TestReplayerRejectsUnknownVersionAndVerifiesOrder(t *testing.T) {
 	}
 	if err := replay.Verify(); err == nil || !errors.Is(err, ErrUnverifiedScript) {
 		t.Fatalf("Verify = %v", err)
+	}
+}
+
+func TestRecorderTypedNilChunkMarksInterrupted(t *testing.T) {
+	request := Request{Messages: []llm.Message{llm.UserMessage("x")}}
+	recorder := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{(*llm.TextDeltaChunk)(nil)}}))
+	sequence, err := recorder.ChatStream(context.Background(), request.Messages, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range sequence {
+	}
+	data, err := recorder.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes = %v", err)
+	}
+	if _, err := NewReplayer(data); !errors.Is(err, ErrInterruptedRecording) {
+		t.Fatalf("replay = %v, want ErrInterruptedRecording", err)
 	}
 }

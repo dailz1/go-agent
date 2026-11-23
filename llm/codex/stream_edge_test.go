@@ -29,7 +29,7 @@ func TestStreamContentIndicesAndRefusal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c, ok := chunk.(llm.TextDeltaChunk); ok {
+		if c, ok := chunk.(*llm.TextDeltaChunk); ok {
 			text += c.Text
 		}
 	}
@@ -72,7 +72,7 @@ func TestStreamRejectsContradictions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var got error
 			for chunk, err := range scanResponse(t.Context(), strings.NewReader(sse(events...))) {
-				if _, ok := chunk.(llm.DoneChunk); ok {
+				if _, ok := chunk.(*llm.DoneChunk); ok {
 					t.Fatal("fake done")
 				}
 				if err != nil {
@@ -100,9 +100,9 @@ func TestChatFixtureFoldAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []llm.ContentBlock{
-		llm.ReasoningItemBlock{Type: "reasoning_item", ID: "reasoning_a", EncryptedContent: "synthetic-opaque", Summary: []string{"Use both functions."}},
-		llm.ToolUseBlock{Type: "tool_use", ID: "call_a", Name: "first", Input: json.RawMessage(`{"values":[1]}`)},
-		llm.ToolUseBlock{Type: "tool_use", ID: "call_b", Name: "second", Input: json.RawMessage(`{"values":[2]}`)},
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "reasoning_a", EncryptedContent: "synthetic-opaque", Summary: []string{"Use both functions."}},
+		&llm.ToolUseBlock{Type: "tool_use", ID: "call_a", Name: "first", Input: json.RawMessage(`{"values":[1]}`)},
+		&llm.ToolUseBlock{Type: "tool_use", ID: "call_b", Name: "second", Input: json.RawMessage(`{"values":[2]}`)},
 	}
 	if !reflect.DeepEqual(message.Content, want) || !reflect.DeepEqual(usage, &llm.Usage{InputTokens: 20, OutputTokens: 10, ReasoningTokens: 4}) {
 		t.Fatalf("message=%+v usage=%+v", message, usage)
@@ -117,7 +117,7 @@ func TestStreamUsagePresence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				done := chunk.(llm.DoneChunk)
+				done := chunk.(*llm.DoneChunk)
 				if (done.Usage != nil) != (name == "zero") {
 					t.Fatalf("usage=%v", done.Usage)
 				}
@@ -164,7 +164,7 @@ func TestStreamFramingAndImmediateCompletion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := chunk.(llm.DoneChunk); !ok {
+		if _, ok := chunk.(*llm.DoneChunk); !ok {
 			t.Fatal(chunk)
 		}
 		count++

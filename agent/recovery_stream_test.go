@@ -33,15 +33,15 @@ func TestRecoveryStartedStreamDefersUntilResume(t *testing.T) {
 		chunk  llm.Chunk
 		paired bool
 	}{
-		{"text", llm.TextDeltaChunk{Text: "partial"}, false},
-		{"reasoning", llm.ReasoningDeltaChunk{Text: "partial"}, false},
-		{"tool", llm.ToolCallStartChunk{ID: "unexecuted", Name: "missing"}, false},
-		{"reasoning item", llm.ReasoningItemChunk{}, false},
-		{"usage", llm.DoneChunk{Usage: &llm.Usage{InputTokens: 100}}, false},
+		{"text", &llm.TextDeltaChunk{Text: "partial"}, false},
+		{"reasoning", &llm.ReasoningDeltaChunk{Text: "partial"}, false},
+		{"tool", &llm.ToolCallStartChunk{ID: "unexecuted", Name: "missing"}, false},
+		{"reasoning item", &llm.ReasoningItemChunk{}, false},
+		{"usage", &llm.DoneChunk{Usage: &llm.Usage{InputTokens: 100}}, false},
 		{"pointer", &llm.TextDeltaChunk{Text: "partial"}, false},
 		{"typed nil", (*llm.TextDeltaChunk)(nil), true},
-		{"wrapped", struct{ llm.Chunk }{llm.TextDeltaChunk{Text: "wrapped"}}, true},
-		{"same return", llm.TextDeltaChunk{Text: "not separately yielded"}, true},
+		{"wrapped", struct{ llm.Chunk }{&llm.TextDeltaChunk{Text: "wrapped"}}, true},
+		{"same return", &llm.TextDeltaChunk{Text: "not separately yielded"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			history := []llm.Message{llm.UserMessage(strings.Repeat("x", 2000))}
@@ -52,7 +52,7 @@ func TestRecoveryStartedStreamDefersUntilResume(t *testing.T) {
 				first.StreamChunks = nil
 			}
 			script := agenttest.NewScriptedProvider(first,
-				recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}, llm.DoneChunk{}))
+				recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}, &llm.DoneChunk{}))
 			var provider llm.Provider = script
 			if tc.paired {
 				provider = recoveryStreamWrapper{Provider: script, wrap: func(stream iter.Seq2[llm.Chunk, error]) iter.Seq2[llm.Chunk, error] {
@@ -146,8 +146,8 @@ func TestRecoveryIteratorCleanupPrecedesCostlyActions(t *testing.T) {
 				exchanges = append(exchanges, agenttest.Exchange{
 					Method:       agenttest.MethodChat,
 					Request:      agenttest.Request{Messages: short, Tools: []tool.ToolInfo{}, Options: llm.ApplyOptions(nil)},
-					ChatResponse: &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: "summary"}}},
-				}, recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+					ChatResponse: &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.TextBlock{Text: "summary"}}},
+				}, recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			}
 			script := agenttest.NewScriptedProvider(exchanges...)
 			provider := &recoveryPermitProvider{Provider: script}
@@ -200,7 +200,7 @@ func TestRecoveryIteratorCleanupPrecedesCostlyActions(t *testing.T) {
 func TestRecoveryEphemeralStartedReturnsOriginalError(t *testing.T) {
 	history := []llm.Message{llm.UserMessage("input")}
 	overflow := overflowTestError()
-	p := agenttest.NewScriptedProvider(recoveryExchange(history, nil, overflow, llm.TextDeltaChunk{Text: "partial"}))
+	p := agenttest.NewScriptedProvider(recoveryExchange(history, nil, overflow, &llm.TextDeltaChunk{Text: "partial"}))
 	a := New(p, tool.NewRegistry(), WithLogger(discardLogger()), WithCompactor(recoveryCompactor()))
 	_, err := a.Run(t.Context(), "input")
 	if !errors.Is(err, overflow) || errors.Is(err, ErrContextRecoveryFailed) {

@@ -18,7 +18,7 @@ func newImageResultAgent(t *testing.T, st store.Store) *Agent {
 		result: tool.NewImageResult("screenshot taken", tool.Image{URL: "https://example.com/a.png"}, tool.Image{MIMEType: "image/png", Data: []byte("png-bytes")}),
 	})
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "call-1", Name: "screenshot", Input: []byte(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "call-1", Name: "screenshot", Input: []byte(`{}`)})),
 		MsgResponse(llm.AssistantMessage("done")),
 	)
 	options := []Option{WithLogger(discardLogger())}
@@ -41,7 +41,7 @@ func TestAgentToolResultImagesEndToEnd(t *testing.T) {
 	var images []llm.ImageBlock
 	for _, message := range result.History {
 		for _, block := range message.Content {
-			if tr, ok := block.(llm.ToolResultBlock); ok {
+			if tr, ok := block.(*llm.ToolResultBlock); ok {
 				images = tr.Images
 			}
 		}
@@ -57,17 +57,17 @@ func TestAgentToolResultImagesEndToEnd(t *testing.T) {
 // cannot leak into the copied history (T7).
 func TestDeepCopyClonesToolResultImages(t *testing.T) {
 	src := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
-		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "v",
+		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "v",
 			Images: []llm.ImageBlock{{Type: "image", URL: "https://example.com/v.png"}}},
 		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_2", Content: "p",
 			Images: []llm.ImageBlock{{Type: "image", MIMEType: "image/png", Data: []byte("png")}}},
 	}}}
 	dst := deepCopyMessages(src)
 	// Mutate the originals after the copy.
-	src[0].Content[0].(llm.ToolResultBlock).Images[0].URL = "mutated"
+	src[0].Content[0].(*llm.ToolResultBlock).Images[0].URL = "mutated"
 	src[0].Content[1].(*llm.ToolResultBlock).Images[0].Data[0] = 'X'
 
-	vb := dst[0].Content[0].(llm.ToolResultBlock)
+	vb := dst[0].Content[0].(*llm.ToolResultBlock)
 	if vb.Images[0].URL != "https://example.com/v.png" {
 		t.Errorf("value-form Images leaked: %q", vb.Images[0].URL)
 	}
@@ -100,7 +100,7 @@ func TestImageResultPersistsAndReplays(t *testing.T) {
 	var images []llm.ImageBlock
 	for _, message := range decoded {
 		for _, block := range message.Content {
-			if tr, ok := block.(llm.ToolResultBlock); ok {
+			if tr, ok := block.(*llm.ToolResultBlock); ok {
 				images = tr.Images
 			}
 		}

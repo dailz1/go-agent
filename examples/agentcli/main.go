@@ -251,7 +251,7 @@ func compactJSON(raw json.RawMessage) string {
 func messageText(m llm.Message) string {
 	var b strings.Builder
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.TextBlock); ok {
+		if tb, ok := blk.(*llm.TextBlock); ok {
 			b.WriteString(tb.Text)
 		}
 	}

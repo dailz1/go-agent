@@ -45,11 +45,11 @@ func TestMaxIterTerminalOrderAndCounts(t *testing.T) {
 		{
 			name: "assembled declaration order wins over arrival order",
 			rounds: [][]llm.Chunk{{
-				llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "echo"},
-				llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-				llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-				llm.DoneChunk{FinishReason: "tool_calls"},
+				&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "echo"},
+				&llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+				&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+				&llm.DoneChunk{FinishReason: "tool_calls"},
 			}},
 			maxIter:    1,
 			wantCalls:  []string{"c1", "c2"},
@@ -60,16 +60,16 @@ func TestMaxIterTerminalOrderAndCounts(t *testing.T) {
 			name: "prior normal calls plus terminal skips",
 			rounds: [][]llm.Chunk{
 				{
-					llm.ToolCallStartChunk{Index: 0, ID: "c0", Name: "echo"},
-					llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-					llm.DoneChunk{FinishReason: "tool_calls"},
+					&llm.ToolCallStartChunk{Index: 0, ID: "c0", Name: "echo"},
+					&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+					&llm.DoneChunk{FinishReason: "tool_calls"},
 				},
 				{
-					llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-					llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-					llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "echo"},
-					llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
-					llm.DoneChunk{FinishReason: "tool_calls"},
+					&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+					&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+					&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "echo"},
+					&llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
+					&llm.DoneChunk{FinishReason: "tool_calls"},
 				},
 			},
 			maxIter:    2,
@@ -127,8 +127,8 @@ func TestMaxIterTerminalOrderAndCounts(t *testing.T) {
 func TestMaxIterTerminalTextOnlyAndNormalization(t *testing.T) {
 	t.Run("terminal text only is a normal completion", func(t *testing.T) {
 		agent := New(NewMockStreamingProvider([][]llm.Chunk{{
-			llm.TextDeltaChunk{Text: "complete"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "complete"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		}}), tool.NewRegistry(), WithMaxIter(1), WithLogger(discardLogger()))
 		seq, err := agent.RunStream(context.Background(), "go")
 		events, errs := collectEvents(t, seq, err)
@@ -157,7 +157,7 @@ func TestMaxIterTerminalTextOnlyAndNormalization(t *testing.T) {
 			})
 			rounds := make([][]llm.Chunk, 10)
 			for index := range rounds {
-				rounds[index] = parallelToolRound([]llm.ToolUseBlock{{
+				rounds[index] = parallelToolRound([]*llm.ToolUseBlock{{
 					Type: "tool_use", ID: string(rune('a' + index)), Name: "echo", Input: json.RawMessage(`{}`),
 				}})
 			}

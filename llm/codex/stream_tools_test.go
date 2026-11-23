@@ -34,14 +34,14 @@ func TestStreamFullArgumentsWithoutDeltas(t *testing.T) {
 						t.Fatal(err)
 					}
 					switch c := chunk.(type) {
-					case llm.ToolCallStartChunk:
+					case *llm.ToolCallStartChunk:
 						starts++
 						if c.ID != "call" {
 							t.Fatal(c)
 						}
-					case llm.ToolCallArgsChunk:
+					case *llm.ToolCallArgsChunk:
 						got += c.Delta
-					case llm.DoneChunk:
+					case *llm.DoneChunk:
 						dones++
 					}
 				}
@@ -61,7 +61,7 @@ func TestStreamArgumentConflictDoesNotComplete(t *testing.T) {
 	}
 	var failed bool
 	for chunk, err := range scanResponse(t.Context(), strings.NewReader(sse(events...))) {
-		if _, ok := chunk.(llm.DoneChunk); ok {
+		if _, ok := chunk.(*llm.DoneChunk); ok {
 			t.Fatal("fake done")
 		}
 		if err != nil {

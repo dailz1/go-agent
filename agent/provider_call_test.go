@@ -94,16 +94,16 @@ func (p *scriptedProvider) Chat(_ context.Context, history []llm.Message, _ []to
 
 func probeToolCallChunks() []llm.Chunk {
 	return []llm.Chunk{
-		llm.ToolCallStartChunk{Index: 0, ID: "n1", Name: "probe"},
-		llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-		llm.DoneChunk{FinishReason: "tool_calls"},
+		&llm.ToolCallStartChunk{Index: 0, ID: "n1", Name: "probe"},
+		&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+		&llm.DoneChunk{FinishReason: "tool_calls"},
 	}
 }
 
 func probeTextChunks() []llm.Chunk {
 	return []llm.Chunk{
-		llm.TextDeltaChunk{Text: "final answer"},
-		llm.DoneChunk{FinishReason: "stop"},
+		&llm.TextDeltaChunk{Text: "final answer"},
+		&llm.DoneChunk{FinishReason: "stop"},
 	}
 }
 
@@ -168,10 +168,10 @@ func TestProviderInvocationHistoryIsolation(t *testing.T) {
 				return []llm.Message{llm.SystemMessage("system policy"), llm.UserMessage("user question")}
 			},
 			mutate: func(h []llm.Message) {
-				h[1].Content[0] = llm.TextBlock{Type: "text", Text: "MUTATED"}
+				h[1].Content[0] = &llm.TextBlock{Type: "text", Text: "MUTATED"}
 			},
 			verify: func(t *testing.T, label string, h []llm.Message) {
-				tb, ok := h[1].Content[0].(llm.TextBlock)
+				tb, ok := h[1].Content[0].(*llm.TextBlock)
 				if !ok || tb.Text != "user question" {
 					t.Errorf("%s: user text = %#v, want untouched %q", label, h[1].Content[0], "user question")
 				}
@@ -214,15 +214,15 @@ func TestProviderInvocationHistoryIsolation(t *testing.T) {
 				return []llm.Message{
 					llm.SystemMessage("system policy"),
 					llm.UserMessage("user question"),
-					llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "seed1", Name: "probe", Input: json.RawMessage(`{"k":"v"}`)}),
+					llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "seed1", Name: "probe", Input: json.RawMessage(`{"k":"v"}`)}),
 				}
 			},
 			mutate: func(h []llm.Message) {
-				tb := h[2].Content[0].(llm.ToolUseBlock)
+				tb := h[2].Content[0].(*llm.ToolUseBlock)
 				tb.Input[0] = 'Z'
 			},
 			verify: func(t *testing.T, label string, h []llm.Message) {
-				tb := h[2].Content[0].(llm.ToolUseBlock)
+				tb := h[2].Content[0].(*llm.ToolUseBlock)
 				if len(tb.Input) == 0 || tb.Input[0] != '{' {
 					t.Errorf("%s: tool use input = %q, want untouched JSON", label, string(tb.Input))
 				}
@@ -255,16 +255,16 @@ func TestProviderInvocationHistoryIsolation(t *testing.T) {
 					llm.SystemMessage("system policy"),
 					llm.UserMessage("user question"),
 					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.ReasoningItemBlock{Type: "reasoning_item", Summary: []string{"keep reasoning"}},
+						&llm.ReasoningItemBlock{Type: "reasoning_item", Summary: []string{"keep reasoning"}},
 					}},
 				}
 			},
 			mutate: func(h []llm.Message) {
-				ri := h[2].Content[0].(llm.ReasoningItemBlock)
+				ri := h[2].Content[0].(*llm.ReasoningItemBlock)
 				ri.Summary[0] = "MUTATED"
 			},
 			verify: func(t *testing.T, label string, h []llm.Message) {
-				ri := h[2].Content[0].(llm.ReasoningItemBlock)
+				ri := h[2].Content[0].(*llm.ReasoningItemBlock)
 				if len(ri.Summary) != 1 || ri.Summary[0] != "keep reasoning" {
 					t.Errorf("%s: reasoning summary = %#v, want untouched", label, ri.Summary)
 				}
@@ -276,16 +276,16 @@ func TestProviderInvocationHistoryIsolation(t *testing.T) {
 				return []llm.Message{
 					llm.SystemMessage("system policy"),
 					{Role: llm.RoleUser, Content: []llm.ContentBlock{
-						llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("PNGDATA")},
+						&llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("PNGDATA")},
 					}},
 				}
 			},
 			mutate: func(h []llm.Message) {
-				ib := h[1].Content[0].(llm.ImageBlock)
+				ib := h[1].Content[0].(*llm.ImageBlock)
 				ib.Data[0] = 'Z'
 			},
 			verify: func(t *testing.T, label string, h []llm.Message) {
-				ib := h[1].Content[0].(llm.ImageBlock)
+				ib := h[1].Content[0].(*llm.ImageBlock)
 				if len(ib.Data) == 0 || ib.Data[0] != 'P' {
 					t.Errorf("%s: image data = %q, want untouched", label, string(ib.Data))
 				}
@@ -297,19 +297,19 @@ func TestProviderInvocationHistoryIsolation(t *testing.T) {
 				return []llm.Message{
 					llm.SystemMessage("system policy"),
 					llm.UserMessage("user question"),
-					llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "seed1", Name: "probe", Input: json.RawMessage(`{}`)}),
+					llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "seed1", Name: "probe", Input: json.RawMessage(`{}`)}),
 					{Role: llm.RoleTool, Content: []llm.ContentBlock{
-						llm.ToolResultBlock{Type: "tool_result", ToolUseID: "seed1", Content: "out",
+						&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "seed1", Content: "out",
 							Images: []llm.ImageBlock{{Type: "image", Data: []byte("IMGDATA")}}},
 					}},
 				}
 			},
 			mutate: func(h []llm.Message) {
-				tr := h[3].Content[0].(llm.ToolResultBlock)
+				tr := h[3].Content[0].(*llm.ToolResultBlock)
 				tr.Images[0].Data[0] = 'Z'
 			},
 			verify: func(t *testing.T, label string, h []llm.Message) {
-				tr := h[3].Content[0].(llm.ToolResultBlock)
+				tr := h[3].Content[0].(*llm.ToolResultBlock)
 				if len(tr.Images) != 1 || len(tr.Images[0].Data) == 0 || tr.Images[0].Data[0] != 'I' {
 					t.Errorf("%s: tool result image data = %#v, want untouched", label, tr.Images)
 				}
@@ -338,11 +338,11 @@ func retentionSeed() []llm.Message {
 		{Role: llm.RoleSystem, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "system policy"}}},
 		llm.UserMessage("user question"),
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			llm.ReasoningItemBlock{Type: "reasoning_item", Summary: []string{"keep reasoning"}},
+			&llm.ReasoningItemBlock{Type: "reasoning_item", Summary: []string{"keep reasoning"}},
 			&llm.ToolUseBlock{Type: "tool_use", ID: "seed1", Name: "probe", Input: json.RawMessage(`{"k":"v"}`)},
 		}},
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
-			llm.ToolResultBlock{Type: "tool_result", ToolUseID: "seed1", Content: "out",
+			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "seed1", Content: "out",
 				Images: []llm.ImageBlock{{Type: "image", Data: []byte("IMGDATA")}}},
 		}},
 	}
@@ -353,10 +353,10 @@ func verifyRetentionSeed(t *testing.T, label string, h []llm.Message) {
 	if got := h[0].Content[0].(*llm.TextBlock).Text; got != "system policy" {
 		t.Errorf("%s: system text = %q, want %q", label, got, "system policy")
 	}
-	if got := h[1].Content[0].(llm.TextBlock).Text; got != "user question" {
+	if got := h[1].Content[0].(*llm.TextBlock).Text; got != "user question" {
 		t.Errorf("%s: user text = %q, want %q", label, got, "user question")
 	}
-	ri := h[2].Content[0].(llm.ReasoningItemBlock)
+	ri := h[2].Content[0].(*llm.ReasoningItemBlock)
 	if len(ri.Summary) != 1 || ri.Summary[0] != "keep reasoning" {
 		t.Errorf("%s: reasoning summary = %#v, want untouched", label, ri.Summary)
 	}
@@ -364,7 +364,7 @@ func verifyRetentionSeed(t *testing.T, label string, h []llm.Message) {
 	if len(tu.Input) == 0 || tu.Input[0] != '{' {
 		t.Errorf("%s: tool use input = %q, want untouched", label, string(tu.Input))
 	}
-	tr := h[3].Content[0].(llm.ToolResultBlock)
+	tr := h[3].Content[0].(*llm.ToolResultBlock)
 	if len(tr.Images) != 1 || len(tr.Images[0].Data) == 0 || tr.Images[0].Data[0] != 'I' {
 		t.Errorf("%s: tool result image = %#v, want untouched", label, tr.Images)
 	}
@@ -372,12 +372,12 @@ func verifyRetentionSeed(t *testing.T, label string, h []llm.Message) {
 
 func retentionMutation(h []llm.Message) {
 	h[0].Content[0].(*llm.TextBlock).Text = "MUTATED-SYSTEM"
-	h[1].Content[0] = llm.TextBlock{Type: "text", Text: "MUTATED-USER"}
-	ri := h[2].Content[0].(llm.ReasoningItemBlock)
+	h[1].Content[0] = &llm.TextBlock{Type: "text", Text: "MUTATED-USER"}
+	ri := h[2].Content[0].(*llm.ReasoningItemBlock)
 	ri.Summary[0] = "MUTATED-SUMMARY"
 	tu := h[2].Content[1].(*llm.ToolUseBlock)
 	tu.Input[0] = 'Z'
-	tr := h[3].Content[0].(llm.ToolResultBlock)
+	tr := h[3].Content[0].(*llm.ToolResultBlock)
 	tr.Images[0].Data[0] = 'Z'
 }
 
@@ -515,12 +515,12 @@ func TestSynthesizeChunksPointerForms(t *testing.T) {
 	}
 	chunks := synthesizeChunks(blocks, usage)
 	want := []llm.Chunk{
-		llm.ReasoningDeltaChunk{Text: "thinking"},
-		llm.TextDeltaChunk{Text: "answer", OutputIndex: 2},
-		llm.ToolCallStartChunk{Index: 3, ID: "n1", Name: "probe"},
-		llm.ToolCallArgsChunk{Index: 3, Delta: "{}"},
-		llm.ReasoningItemChunk{OutputIndex: 5, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "r1"}},
-		llm.DoneChunk{FinishReason: "tool_calls", Usage: usage},
+		&llm.ReasoningDeltaChunk{Text: "thinking"},
+		&llm.TextDeltaChunk{Text: "answer", OutputIndex: 2},
+		&llm.ToolCallStartChunk{Index: 3, ID: "n1", Name: "probe"},
+		&llm.ToolCallArgsChunk{Index: 3, Delta: "{}"},
+		&llm.ReasoningItemChunk{OutputIndex: 5, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "r1"}},
+		&llm.DoneChunk{FinishReason: "tool_calls", Usage: usage},
 	}
 	if len(chunks) != len(want) {
 		t.Fatalf("chunks = %#v (%d), want %d", chunks, len(chunks), len(want))
@@ -786,7 +786,7 @@ func TestProviderForeignBlockCompatibility(t *testing.T) {
 		t.Errorf("foreign block pointee was cloned; want shared reference through to the provider")
 	}
 
-	recv[1].Content[0] = llm.TextBlock{Type: "text", Text: "replaced"}
+	recv[1].Content[0] = &llm.TextBlock{Type: "text", Text: "replaced"}
 	if _, ok := seed[1].Content[0].(wrappedTextBlock); !ok {
 		t.Errorf("original Content slice shares backing: wrapped block replaced")
 	}

@@ -116,8 +116,8 @@ type contentOut struct {
 
 // reasoningItemOf converts a reasoning output item into the library block,
 // preserving the server-side ID, encrypted content, and summary texts.
-func reasoningItemOf(item outputItem) llm.ReasoningItemBlock {
-	b := llm.ReasoningItemBlock{Type: "reasoning_item", ID: item.ID, EncryptedContent: item.EncryptedContent}
+func reasoningItemOf(item outputItem) *llm.ReasoningItemBlock {
+	b := &llm.ReasoningItemBlock{Type: "reasoning_item", ID: item.ID, EncryptedContent: item.EncryptedContent}
 	for _, s := range item.Summary {
 		b.Summary = append(b.Summary, s.Text)
 	}
@@ -134,19 +134,15 @@ func outputToMessage(logger logger, output []outputItem) llm.Message {
 	for _, item := range output {
 		switch item.Type {
 		case "reasoning":
-			b := llm.ReasoningItemBlock{Type: "reasoning_item", ID: item.ID, EncryptedContent: item.EncryptedContent}
-			for _, s := range item.Summary {
-				b.Summary = append(b.Summary, s.Text)
-			}
-			content = append(content, b)
+			content = append(content, reasoningItemOf(item))
 		case "message":
 			for _, part := range item.Content {
 				if part.Type == "output_text" {
-					content = append(content, llm.TextBlock{Type: "text", Text: part.Text})
+					content = append(content, &llm.TextBlock{Type: "text", Text: part.Text})
 				}
 			}
 		case "function_call":
-			content = append(content, llm.ToolUseBlock{
+			content = append(content, &llm.ToolUseBlock{
 				Type:  "tool_use",
 				ID:    item.CallID,
 				Name:  item.Name,

@@ -240,7 +240,7 @@ func TestGuardDelegatesCallsWithoutConsumingStream(t *testing.T) {
 			return func(yield func(llm.Chunk, error) bool) {
 				for range 3 {
 					consumed++
-					if !yield(llm.TextDeltaChunk{Text: "part"}, nil) {
+					if !yield(&llm.TextDeltaChunk{Text: "part"}, nil) {
 						return
 					}
 				}

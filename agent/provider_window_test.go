@@ -65,14 +65,14 @@ func (p *windowedProvider) ChatStream(_ context.Context, messages []llm.Message,
 }
 
 func windowedText(text string) []llm.Chunk {
-	return []llm.Chunk{llm.TextDeltaChunk{Text: text}, llm.DoneChunk{FinishReason: "stop"}}
+	return []llm.Chunk{&llm.TextDeltaChunk{Text: text}, &llm.DoneChunk{FinishReason: "stop"}}
 }
 
 func requestRunes(messages []llm.Message) int {
 	total := 0
 	for _, m := range messages {
 		for _, b := range m.Content {
-			if tb, ok := b.(llm.TextBlock); ok {
+			if tb, ok := b.(*llm.TextBlock); ok {
 				total += utf8.RuneCountInString(tb.Text)
 			}
 		}

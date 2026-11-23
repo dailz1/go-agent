@@ -115,7 +115,7 @@ func decodeRunCancelled(r store.Record) (runCancelledPayload, error) {
 		if res.Role != llm.RoleTool || len(res.Content) != 1 {
 			return runCancelledPayload{}, incompatible(r, "cancellation results must be single tool-result messages")
 		}
-		p.Results = append(p.Results, llm.Message{Role: res.Role, Content: []llm.ContentBlock{res.Content[0]}})
+		p.Results = append(p.Results, llm.Message{Role: res.Role, Content: []llm.ContentBlock{&res.Content[0]}})
 	}
 	return p, nil
 }
@@ -434,11 +434,12 @@ func decodeRoundResult(r store.Record) (roundResultPayload, error) {
 	if wire.Result.Content[0].Type != "tool_result" {
 		return roundResultPayload{}, fmt.Errorf("%w: round_result seq %d: block type must be tool_result", ErrIncompatibleLog, r.Seq)
 	}
+	cb := canonicalResultBlock(wire.Result.Content[0])
 	return roundResultPayload{
 		RunID:  wire.RunID,
 		Round:  *wire.Round,
 		Index:  *wire.Index,
-		Result: llm.Message{Role: wire.Result.Role, Content: []llm.ContentBlock{canonicalResultBlock(wire.Result.Content[0])}},
+		Result: llm.Message{Role: wire.Result.Role, Content: []llm.ContentBlock{&cb}},
 	}, nil
 }
 
@@ -462,8 +463,9 @@ func canonicalResultBlock(b llm.ToolResultBlock) llm.ToolResultBlock {
 func canonicalResultMessage(m llm.Message) llm.Message {
 	out := m
 	for i, block := range out.Content {
-		if rb, ok := block.(llm.ToolResultBlock); ok {
-			out.Content[i] = canonicalResultBlock(rb)
+		if rb, ok := block.(*llm.ToolResultBlock); ok && rb != nil {
+			c := canonicalResultBlock(*rb)
+			out.Content[i] = &c
 		}
 	}
 	return out

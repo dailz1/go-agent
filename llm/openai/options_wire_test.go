@@ -221,8 +221,8 @@ func TestProvider_CachedTokensStreamFinalBlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("consume stream: %v", err)
 		}
-		if d, ok := chunk.(llm.DoneChunk); ok {
-			done = &d
+		if d, ok := chunk.(*llm.DoneChunk); ok {
+			done = d
 		}
 	}
 	if done == nil || done.Usage == nil || done.Usage.CachedTokens != 64 {

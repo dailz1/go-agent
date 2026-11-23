@@ -23,7 +23,7 @@ func (p *oneToolProvider) Chat(_ context.Context, messages []llm.Message, _ []to
 	p.messages = append(p.messages, messages)
 	p.calls++
 	if p.calls == 1 {
-		message := llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "1", Name: "remote__large", Input: json.RawMessage(`{}`)})
+		message := llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "1", Name: "remote__large", Input: json.RawMessage(`{}`)})
 		return &message, nil, nil
 	}
 	message := llm.AssistantMessage("done")
@@ -64,7 +64,7 @@ func TestAgentTruncatesContentButKeepsLiveData(t *testing.T) {
 	if len(provider.messages) != 2 {
 		t.Fatalf("provider calls=%d", len(provider.messages))
 	}
-	last := provider.messages[1][len(provider.messages[1])-1].Content[0].(llm.ToolResultBlock).Content
+	last := provider.messages[1][len(provider.messages[1])-1].Content[0].(*llm.ToolResultBlock).Content
 	if !strings.Contains(last, "[tool result truncated:") || len([]rune(last)) != 300 {
 		t.Fatalf("history content was not truncated: %q", last)
 	}

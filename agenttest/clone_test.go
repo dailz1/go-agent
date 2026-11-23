@@ -11,12 +11,12 @@ import (
 
 func TestScriptedProviderClonesWithoutNormalization(t *testing.T) {
 	invalid := json.RawMessage{'{'}
-	input := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolUseBlock{Input: invalid}}}}
+	input := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.ToolUseBlock{Input: invalid}}}}
 	tools := []tool.ToolInfo{{Name: "tool", Parameters: tool.ParameterSchema{Properties: map[string]tool.Property{"p": {Enum: []string{}}}, Required: []string{}}}}
 	provider := NewScriptedProvider(Exchange{Method: MethodChat, Request: Request{Messages: input, Tools: tools}})
-	input[0].Content[0] = llm.TextBlock{Text: "mutated"}
+	input[0].Content[0] = &llm.TextBlock{Text: "mutated"}
 	tools[0].Parameters.Properties["p"] = tool.Property{Enum: []string{"mutated"}}
-	original := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolUseBlock{Input: invalid}}}}
+	original := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.ToolUseBlock{Input: invalid}}}}
 	originalTools := []tool.ToolInfo{{Name: "tool", Parameters: tool.ParameterSchema{Properties: map[string]tool.Property{"p": {Enum: []string{}}}, Required: []string{}}}}
 	if _, _, err := provider.Chat(t.Context(), original, originalTools); err != nil {
 		t.Fatal(err)
@@ -46,9 +46,9 @@ func TestScriptedProviderClonesPointerValues(t *testing.T) {
 }
 
 func TestStrictRequestPreservesNilAndEmptyValues(t *testing.T) {
-	request := Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ImageBlock{Data: []byte{}}}}}, Tools: []tool.ToolInfo{}}
+	request := Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.ImageBlock{Data: []byte{}}}}}, Tools: []tool.ToolInfo{}}
 	provider := NewScriptedProvider(Exchange{Method: MethodChat, Request: request})
-	actual := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ImageBlock{Data: nil}}}}
+	actual := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.ImageBlock{Data: nil}}}}
 	_, _, err := provider.Chat(t.Context(), actual, nil)
 	if !errors.Is(err, ErrScriptMismatch) {
 		t.Fatalf("nil/empty request matched: %v", err)
@@ -57,13 +57,13 @@ func TestStrictRequestPreservesNilAndEmptyValues(t *testing.T) {
 
 func TestCloneToolResultBlockValueImages(t *testing.T) {
 	src := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
-		llm.ToolResultBlock{ToolUseID: "call_1", Content: "shot",
+		&llm.ToolResultBlock{ToolUseID: "call_1", Content: "shot",
 			Images: []llm.ImageBlock{{URL: "https://example.com/a.png", Data: []byte("png")}}},
 	}}}
 	cloned := cloneMessages(src)
-	src[0].Content[0].(llm.ToolResultBlock).Images[0].URL = "mutated"
-	src[0].Content[0].(llm.ToolResultBlock).Images[0].Data[0] = 'X'
-	got := cloned[0].Content[0].(llm.ToolResultBlock)
+	src[0].Content[0].(*llm.ToolResultBlock).Images[0].URL = "mutated"
+	src[0].Content[0].(*llm.ToolResultBlock).Images[0].Data[0] = 'X'
+	got := cloned[0].Content[0].(*llm.ToolResultBlock)
 	if got.Images[0].URL != "https://example.com/a.png" || string(got.Images[0].Data) != "png" {
 		t.Errorf("clone leaked source mutation: %+v", got.Images)
 	}

@@ -194,8 +194,6 @@ func assistantToolUseIDs(message llm.Message) (map[string]struct{}, bool, error)
 	for _, block := range message.Content {
 		var id string
 		switch typed := block.(type) {
-		case llm.ToolUseBlock:
-			id = typed.ID
 		case *llm.ToolUseBlock:
 			if typed == nil {
 				continue
@@ -224,8 +222,6 @@ func validateToolResults(messages []llm.Message, expected map[string]struct{}) e
 		for _, block := range message.Content {
 			var id string
 			switch typed := block.(type) {
-			case llm.ToolResultBlock:
-				id = typed.ToolUseID
 			case *llm.ToolResultBlock:
 				if typed == nil {
 					continue
@@ -308,36 +304,23 @@ func jsonSizeLowerBound(messages []llm.Message) int {
 	for _, message := range messages {
 		for _, block := range message.Content {
 			switch typed := block.(type) {
-			case llm.TextBlock:
-				total += utf8.RuneCountInString(typed.Text)
 			case *llm.TextBlock:
 				if typed != nil {
 					total += utf8.RuneCountInString(typed.Text)
 				}
-			case llm.ToolUseBlock:
 			case *llm.ToolUseBlock:
 				// Input is json.RawMessage: MarshalJSON compacts its
 				// insignificant whitespace, so raw runes can only overcount
 				// the delta. Omitted from the bound on purpose.
-			case llm.ToolResultBlock:
-				total += utf8.RuneCountInString(typed.Content)
-				total += imageBase64Runes(typed.Images)
 			case *llm.ToolResultBlock:
 				if typed != nil {
 					total += utf8.RuneCountInString(typed.Content)
 					total += imageBase64Runes(typed.Images)
 				}
-			case llm.ReasoningBlock:
-				total += utf8.RuneCountInString(typed.Content)
 			case *llm.ReasoningBlock:
 				if typed != nil {
 					total += utf8.RuneCountInString(typed.Content)
 				}
-			case llm.ReasoningItemBlock:
-				for _, summary := range typed.Summary {
-					total += utf8.RuneCountInString(summary)
-				}
-				total += utf8.RuneCountInString(typed.EncryptedContent)
 			case *llm.ReasoningItemBlock:
 				if typed != nil {
 					for _, summary := range typed.Summary {
@@ -345,8 +328,6 @@ func jsonSizeLowerBound(messages []llm.Message) int {
 					}
 					total += utf8.RuneCountInString(typed.EncryptedContent)
 				}
-			case llm.ImageBlock:
-				total += len(typed.Data) * 4 / 3
 			case *llm.ImageBlock:
 				if typed != nil {
 					total += len(typed.Data) * 4 / 3
@@ -369,7 +350,7 @@ func imageBase64Runes(images []llm.ImageBlock) int {
 // types. Known types are plain structs with deterministic JSON encodings —
 // the incremental accounting relies on a group encoding identically inside
 // the whole history and alone. An embedding wrapper (e.g. a struct
-// embedding llm.TextBlock) satisfies the sealed interface and the whole
+// embedding *llm.TextBlock) satisfies the sealed interface and the whole
 // history can still marshal, but its custom MarshalJSON may encode
 // differently across calls, so such histories must keep the full-recount
 // path.
@@ -400,24 +381,14 @@ func dropDelta(size int, jsonMode bool) int {
 
 func fallbackBlockSize(block llm.ContentBlock) int {
 	switch typed := block.(type) {
-	case llm.TextBlock:
-		return len(typed.Text)
 	case *llm.TextBlock:
 		if typed != nil {
 			return len(typed.Text)
 		}
-	case llm.ToolUseBlock:
-		return len(typed.Name) + len(typed.Input)
 	case *llm.ToolUseBlock:
 		if typed != nil {
 			return len(typed.Name) + len(typed.Input)
 		}
-	case llm.ToolResultBlock:
-		n := len(typed.Content)
-		for _, img := range typed.Images {
-			n += len(img.Data)
-		}
-		return n
 	case *llm.ToolResultBlock:
 		if typed != nil {
 			n := len(typed.Content)
@@ -426,14 +397,10 @@ func fallbackBlockSize(block llm.ContentBlock) int {
 			}
 			return n
 		}
-	case llm.ReasoningBlock:
-		return len(typed.Content)
 	case *llm.ReasoningBlock:
 		if typed != nil {
 			return len(typed.Content)
 		}
-	case llm.ImageBlock:
-		return len(typed.Data)
 	case *llm.ImageBlock:
 		if typed != nil {
 			return len(typed.Data)
@@ -652,8 +619,6 @@ func collapseToolGroup(group historyGroup) llm.Message {
 	for _, message := range group.messages[1:] {
 		for _, block := range message.Content {
 			switch typed := block.(type) {
-			case llm.ToolResultBlock:
-				results[typed.ToolUseID] = firstLine(typed.Content)
 			case *llm.ToolResultBlock:
 				if typed != nil {
 					results[typed.ToolUseID] = firstLine(typed.Content)
@@ -665,8 +630,6 @@ func collapseToolGroup(group historyGroup) llm.Message {
 	lines := []string{}
 	for _, block := range group.messages[0].Content {
 		switch typed := block.(type) {
-		case llm.ToolUseBlock:
-			lines = append(lines, typed.Name+": "+results[typed.ID])
 		case *llm.ToolUseBlock:
 			if typed != nil {
 				lines = append(lines, typed.Name+": "+results[typed.ID])
@@ -982,20 +945,14 @@ func summarizationTranscript(history []llm.Message) string {
 		parts := []string{}
 		for _, block := range message.Content {
 			switch typed := block.(type) {
-			case llm.TextBlock:
-				parts = append(parts, typed.Text)
 			case *llm.TextBlock:
 				if typed != nil {
 					parts = append(parts, typed.Text)
 				}
-			case llm.ToolUseBlock:
-				parts = append(parts, typed.Name+": "+string(typed.Input))
 			case *llm.ToolUseBlock:
 				if typed != nil {
 					parts = append(parts, typed.Name+": "+string(typed.Input))
 				}
-			case llm.ToolResultBlock:
-				parts = append(parts, typed.Content)
 			case *llm.ToolResultBlock:
 				if typed != nil {
 					parts = append(parts, typed.Content)
@@ -1046,8 +1003,6 @@ func joinedText(message llm.Message) string {
 	texts := []string{}
 	for _, block := range message.Content {
 		switch typed := block.(type) {
-		case llm.TextBlock:
-			texts = append(texts, typed.Text)
 		case *llm.TextBlock:
 			if typed != nil {
 				texts = append(texts, typed.Text)

@@ -128,11 +128,11 @@ func TestProviderCancellationClosesBlockedStream(t *testing.T) {
 			got = err
 			continue
 		}
-		if _, ok := chunk.(llm.TextDeltaChunk); ok {
+		if _, ok := chunk.(*llm.TextDeltaChunk); ok {
 			<-started
 			cancel()
 		}
-		if _, ok := chunk.(llm.DoneChunk); ok {
+		if _, ok := chunk.(*llm.DoneChunk); ok {
 			t.Fatal("done after cancellation")
 		}
 	}

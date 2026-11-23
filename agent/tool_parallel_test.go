@@ -28,29 +28,29 @@ func (t *parallelTestTool) Execute(ctx context.Context, args json.RawMessage) (*
 	return t.execute(ctx, args)
 }
 
-func parallelToolCalls(names ...string) []llm.ToolUseBlock {
-	calls := make([]llm.ToolUseBlock, len(names))
+func parallelToolCalls(names ...string) []*llm.ToolUseBlock {
+	calls := make([]*llm.ToolUseBlock, len(names))
 	for index, name := range names {
-		calls[index] = llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", index+1), Name: name, Input: json.RawMessage(`{}`)}
+		calls[index] = &llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", index+1), Name: name, Input: json.RawMessage(`{}`)}
 	}
 	return calls
 }
 
-func parallelProvider(calls []llm.ToolUseBlock) *MockStreamingProvider {
+func parallelProvider(calls []*llm.ToolUseBlock) *MockStreamingProvider {
 	return NewMockStreamingProvider([][]llm.Chunk{parallelToolRound(calls), {
-		llm.TextDeltaChunk{Text: "done"}, llm.DoneChunk{FinishReason: "stop"},
+		&llm.TextDeltaChunk{Text: "done"}, &llm.DoneChunk{FinishReason: "stop"},
 	}})
 }
 
-func parallelToolRound(calls []llm.ToolUseBlock) []llm.Chunk {
+func parallelToolRound(calls []*llm.ToolUseBlock) []llm.Chunk {
 	chunks := make([]llm.Chunk, 0, len(calls)*2+1)
 	for index, call := range calls {
 		chunks = append(chunks,
-			llm.ToolCallStartChunk{Index: index, ID: call.ID, Name: call.Name},
-			llm.ToolCallArgsChunk{Index: index, Delta: string(call.Input)},
+			&llm.ToolCallStartChunk{Index: index, ID: call.ID, Name: call.Name},
+			&llm.ToolCallArgsChunk{Index: index, Delta: string(call.Input)},
 		)
 	}
-	return append(chunks, llm.DoneChunk{FinishReason: "tool_calls"})
+	return append(chunks, &llm.DoneChunk{FinishReason: "tool_calls"})
 }
 
 func waitParallelSignal(t *testing.T, signal <-chan struct{}) {
@@ -229,8 +229,8 @@ func containsAll(s string, terms ...string) bool {
 	return true
 }
 
-func historyResultBlocks(history []llm.Message) []llm.ToolResultBlock {
-	var results []llm.ToolResultBlock
+func historyResultBlocks(history []llm.Message) []*llm.ToolResultBlock {
+	var results []*llm.ToolResultBlock
 	for _, message := range history {
 		results = append(results, resultBlocks(message)...)
 	}

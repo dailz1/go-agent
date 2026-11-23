@@ -49,7 +49,7 @@ func TestE2EChatAndStream(t *testing.T) {
 	first, _ := chat(ctx, []llm.Message{llm.UserMessage("Use the echo tool to echo the word hello.")})
 	var called bool
 	for _, blk := range first.Content {
-		if _, ok := blk.(llm.ToolUseBlock); ok {
+		if _, ok := blk.(*llm.ToolUseBlock); ok {
 			called = true
 		}
 	}
@@ -84,9 +84,9 @@ func TestE2EChatAndStream(t *testing.T) {
 			t.Fatalf("stream error: %v", err)
 		}
 		switch e := c.(type) {
-		case llm.TextDeltaChunk:
+		case *llm.TextDeltaChunk:
 			text += e.Text
-		case llm.DoneChunk:
+		case *llm.DoneChunk:
 			sawDone = true
 			if e.Usage == nil {
 				t.Error("DoneChunk has no usage")
@@ -136,7 +136,7 @@ func (echoToolT) Execute(_ context.Context, args json.RawMessage) (*tool.ToolRes
 
 func toolCallID(m *llm.Message) string {
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.ToolUseBlock); ok {
+		if tb, ok := blk.(*llm.ToolUseBlock); ok {
 			return tb.ID
 		}
 	}
@@ -146,7 +146,7 @@ func toolCallID(m *llm.Message) string {
 func msgText(m *llm.Message) string {
 	s := ""
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.TextBlock); ok {
+		if tb, ok := blk.(*llm.TextBlock); ok {
 			s += tb.Text
 		}
 	}

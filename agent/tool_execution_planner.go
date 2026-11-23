@@ -9,7 +9,7 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
-func (a *Agent) executeToolRoundParallel(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
+func (a *Agent) executeToolRoundParallel(ctx context.Context, iteration int, calls []*llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
 	round := newToolRound(ctx, context.WithoutCancel(ctx), iteration, calls, history, sess, yield, w)
 	if !a.planParallelToolRound(ctx, calls, round.slots, w) {
 		round.markPendingMissing()
@@ -29,7 +29,7 @@ func (a *Agent) executeToolRoundParallel(ctx context.Context, iteration int, cal
 
 // planParallelToolRound freezes execution handles and Info, then runs every
 // approval callback in declaration order before any Execute can start.
-func (a *Agent) planParallelToolRound(ctx context.Context, calls []llm.ToolUseBlock, slots []toolSlot, w int) bool {
+func (a *Agent) planParallelToolRound(ctx context.Context, calls []*llm.ToolUseBlock, slots []toolSlot, w int) bool {
 	for index, call := range calls {
 		if ctx.Err() != nil {
 			return false
@@ -84,7 +84,7 @@ func (a *Agent) approveAtPlannerBoundary(info tool.ToolInfo, args []byte) (appro
 	return a.approvalFn(info, args), nil
 }
 
-func (a *Agent) dispatchParallelToolRound(ctx context.Context, calls []llm.ToolUseBlock, slots []toolSlot, workers int, w int) {
+func (a *Agent) dispatchParallelToolRound(ctx context.Context, calls []*llm.ToolUseBlock, slots []toolSlot, workers int, w int) {
 	jobs := make(chan int)
 	var workersDone sync.WaitGroup
 	workersDone.Add(workers)
@@ -120,7 +120,7 @@ func (a *Agent) dispatchParallelToolRound(ctx context.Context, calls []llm.ToolU
 	workersDone.Wait()
 }
 
-func (a *Agent) executeToolHandle(ctx context.Context, call llm.ToolUseBlock, t tool.Tool) (result *tool.ToolResult, err error) {
+func (a *Agent) executeToolHandle(ctx context.Context, call *llm.ToolUseBlock, t tool.Tool) (result *tool.ToolResult, err error) {
 	a.logger.Info("tool call executing", "tool_name", call.Name, "tool_call_id", call.ID)
 	a.logger.Debug("tool call input", "tool_name", call.Name, "tool_call_id", call.ID, "input", llm.Truncate(string(call.Input), 500))
 	defer func() {
@@ -141,6 +141,6 @@ func (a *Agent) executeToolHandle(ctx context.Context, call llm.ToolUseBlock, t 
 	return result, nil
 }
 
-func (a *Agent) limitedToolError(w int, call llm.ToolUseBlock, format string, args ...any) *tool.ToolResult {
+func (a *Agent) limitedToolError(w int, call *llm.ToolUseBlock, format string, args ...any) *tool.ToolResult {
 	return a.applyToolResultLimit(call, tool.NewErrorResult(format, args...), w)
 }

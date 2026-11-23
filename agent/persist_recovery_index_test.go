@@ -134,8 +134,8 @@ func replacementIndexLog(t *testing.T, n int) []store.Record {
 	for i := range n {
 		id := fmt.Sprintf("operation-%d", i)
 		history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: id},
-			llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: bytes.Repeat([]byte{1}, 128)},
+			&llm.TextBlock{Type: "text", Text: id},
+			&llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: bytes.Repeat([]byte{1}, 128)},
 		}}}
 		r := recoveryRecord(t, store.KindHistoryReplaced, historyReplacedPayload{
 			RunID: "r", OperationID: id, Reason: "proactive_compaction", History: history,

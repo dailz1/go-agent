@@ -37,7 +37,7 @@ type TextBlock struct {
 	Text string `json:"text"`
 }
 
-func (TextBlock) blockType() string { return "text" }
+func (*TextBlock) blockType() string { return "text" }
 
 // ReasoningBlock represents model reasoning/thinking content.
 type ReasoningBlock struct {
@@ -45,7 +45,7 @@ type ReasoningBlock struct {
 	Content string `json:"content"`
 }
 
-func (ReasoningBlock) blockType() string { return "reasoning" }
+func (*ReasoningBlock) blockType() string { return "reasoning" }
 
 // ImageBlock represents an image, either by URL or inline base64 data.
 type ImageBlock struct {
@@ -55,7 +55,7 @@ type ImageBlock struct {
 	Data     []byte `json:"data,omitempty"`
 }
 
-func (ImageBlock) blockType() string { return "image" }
+func (*ImageBlock) blockType() string { return "image" }
 
 // ToolUseBlock represents an LLM's request to invoke a tool.
 type ToolUseBlock struct {
@@ -65,7 +65,7 @@ type ToolUseBlock struct {
 	Input json.RawMessage `json:"input"`
 }
 
-func (ToolUseBlock) blockType() string { return "tool_use" }
+func (*ToolUseBlock) blockType() string { return "tool_use" }
 
 // ReasoningItemBlock is an entry-level reasoning item from the Responses
 // protocol: the model's reasoning tokens as a distinct, addressable item
@@ -79,7 +79,7 @@ type ReasoningItemBlock struct {
 	Summary          []string `json:"summary,omitempty"`
 }
 
-func (ReasoningItemBlock) blockType() string { return "reasoning_item" }
+func (*ReasoningItemBlock) blockType() string { return "reasoning_item" }
 
 // ToolResultBlock represents the result of a tool execution, fed back to the LLM.
 type ToolResultBlock struct {
@@ -90,34 +90,35 @@ type ToolResultBlock struct {
 	IsError   bool         `json:"is_error,omitempty"`
 }
 
-func (ToolResultBlock) blockType() string { return "tool_result" }
+func (*ToolResultBlock) blockType() string { return "tool_result" }
 
 func SystemMessage(text string) Message {
 	return Message{
 		Role:    RoleSystem,
-		Content: []ContentBlock{TextBlock{Type: "text", Text: text}},
+		Content: []ContentBlock{&TextBlock{Type: "text", Text: text}},
 	}
 }
 
 func UserMessage(text string) Message {
 	return Message{
 		Role:    RoleUser,
-		Content: []ContentBlock{TextBlock{Type: "text", Text: text}},
+		Content: []ContentBlock{&TextBlock{Type: "text", Text: text}},
 	}
 }
 
 func AssistantMessage(text string) Message {
 	return Message{
 		Role:    RoleAssistant,
-		Content: []ContentBlock{TextBlock{Type: "text", Text: text}},
+		Content: []ContentBlock{&TextBlock{Type: "text", Text: text}},
 	}
 }
 
-func AssistantToolCallMessage(calls ...ToolUseBlock) Message {
+func AssistantToolCallMessage(calls ...*ToolUseBlock) Message {
 	blocks := make([]ContentBlock, len(calls))
 	for i, call := range calls {
-		call.Type = "tool_use"
-		blocks[i] = call
+		c := *call
+		c.Type = "tool_use"
+		blocks[i] = &c
 	}
 	return Message{
 		Role:    RoleAssistant,
@@ -145,7 +146,7 @@ func ToolResultMessage(toolUseID string, result *tool.ToolResult) Message {
 	return Message{
 		Role: RoleTool,
 		Content: []ContentBlock{
-			ToolResultBlock{
+			&ToolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: toolUseID,
 				Content:   result.Content,
@@ -183,7 +184,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(raw.Content, &s); err != nil {
 			return fmt.Errorf("unmarshal content string: %w", err)
 		}
-		m.Content = []ContentBlock{TextBlock{Type: "text", Text: s}}
+		m.Content = []ContentBlock{&TextBlock{Type: "text", Text: s}}
 		return nil
 	case '[':
 		var rawBlocks []json.RawMessage
@@ -215,23 +216,23 @@ func unmarshalContentBlock(data []byte) (ContentBlock, error) {
 
 	switch disc.Type {
 	case "text":
-		var b TextBlock
-		return b, json.Unmarshal(data, &b)
+		b := &TextBlock{}
+		return b, json.Unmarshal(data, b)
 	case "reasoning":
-		var b ReasoningBlock
-		return b, json.Unmarshal(data, &b)
+		b := &ReasoningBlock{}
+		return b, json.Unmarshal(data, b)
 	case "reasoning_item":
-		var b ReasoningItemBlock
-		return b, json.Unmarshal(data, &b)
+		b := &ReasoningItemBlock{}
+		return b, json.Unmarshal(data, b)
 	case "image":
-		var b ImageBlock
-		return b, json.Unmarshal(data, &b)
+		b := &ImageBlock{}
+		return b, json.Unmarshal(data, b)
 	case "tool_use":
-		var b ToolUseBlock
-		return b, json.Unmarshal(data, &b)
+		b := &ToolUseBlock{}
+		return b, json.Unmarshal(data, b)
 	case "tool_result":
-		var b ToolResultBlock
-		return b, json.Unmarshal(data, &b)
+		b := &ToolResultBlock{}
+		return b, json.Unmarshal(data, b)
 	default:
 		return nil, fmt.Errorf("unknown content block type: %q", disc.Type)
 	}

@@ -88,7 +88,7 @@ func TestRecoveryZeroChunkShrinksBeforeResend(t *testing.T) {
 				first = recoveryExchange(history, nil, overflow)
 			}
 			provider := agenttest.NewScriptedProvider(first,
-				recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}, llm.DoneChunk{}))
+				recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}, &llm.DoneChunk{}))
 			compactions := 0
 			compactor := CompactFunc(func(_ context.Context, input []llm.Message, b CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 				compactions++

@@ -30,32 +30,16 @@ func cloneBlocks(in []llm.ContentBlock) []llm.ContentBlock {
 	out := make([]llm.ContentBlock, len(in))
 	for i, block := range in {
 		switch value := block.(type) {
-		case llm.TextBlock:
-			out[i] = value
 		case *llm.TextBlock:
 			out[i] = cloneTextBlock(value)
-		case llm.ReasoningBlock:
-			out[i] = value
 		case *llm.ReasoningBlock:
 			out[i] = cloneReasoningBlock(value)
-		case llm.ImageBlock:
-			value.Data = cloneBytes(value.Data)
-			out[i] = value
 		case *llm.ImageBlock:
 			out[i] = cloneImageBlock(value)
-		case llm.ToolUseBlock:
-			value.Input = cloneRaw(value.Input)
-			out[i] = value
 		case *llm.ToolUseBlock:
 			out[i] = cloneToolUseBlock(value)
-		case llm.ReasoningItemBlock:
-			value.Summary = cloneStrings(value.Summary)
-			out[i] = value
 		case *llm.ReasoningItemBlock:
 			out[i] = cloneReasoningItemBlock(value)
-		case llm.ToolResultBlock:
-			value.Images = cloneImageBlocks(value.Images)
-			out[i] = value
 		case *llm.ToolResultBlock:
 			out[i] = cloneToolResultBlock(value)
 		default:
@@ -241,30 +225,16 @@ func cloneChunks(in []llm.Chunk) []llm.Chunk {
 }
 func cloneChunk(chunk llm.Chunk) llm.Chunk {
 	switch value := chunk.(type) {
-	case llm.TextDeltaChunk:
-		return value
 	case *llm.TextDeltaChunk:
 		return cloneTextDeltaChunk(value)
-	case llm.ReasoningDeltaChunk:
-		return value
 	case *llm.ReasoningDeltaChunk:
 		return cloneReasoningDeltaChunk(value)
-	case llm.ToolCallStartChunk:
-		return value
 	case *llm.ToolCallStartChunk:
 		return cloneToolCallStartChunk(value)
-	case llm.ToolCallArgsChunk:
-		return value
 	case *llm.ToolCallArgsChunk:
 		return cloneToolCallArgsChunk(value)
-	case llm.ReasoningItemChunk:
-		value.Item.Summary = cloneStrings(value.Item.Summary)
-		return value
 	case *llm.ReasoningItemChunk:
 		return cloneReasoningItemChunk(value)
-	case llm.DoneChunk:
-		value.Usage = cloneUsage(value.Usage)
-		return value
 	case *llm.DoneChunk:
 		return cloneDoneChunk(value)
 	default:

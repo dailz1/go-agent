@@ -29,7 +29,7 @@ type toolSlot struct {
 type toolRound struct {
 	ctx, commitCtx          context.Context
 	iteration               int
-	calls                   []llm.ToolUseBlock
+	calls                   []*llm.ToolUseBlock
 	slots                   []toolSlot
 	history                 *[]llm.Message
 	sess                    *persistence
@@ -39,7 +39,7 @@ type toolRound struct {
 	window                  int
 }
 
-func newToolRound(ctx, commitCtx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, window int) *toolRound {
+func newToolRound(ctx, commitCtx context.Context, iteration int, calls []*llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, window int) *toolRound {
 	return &toolRound{
 		ctx: ctx, commitCtx: commitCtx, iteration: iteration, calls: calls,
 		slots: make([]toolSlot, len(calls)), history: history, sess: sess, yield: yield,
@@ -77,14 +77,14 @@ func (r *toolRound) observeAll() {
 
 // executeToolRound keeps the default lazy serial path separate from the
 // opt-in planner while both paths share ordered settlement.
-func (a *Agent) executeToolRound(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
+func (a *Agent) executeToolRound(ctx context.Context, iteration int, calls []*llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
 	if a.toolConcurrency == 1 {
 		return a.executeToolRoundSerial(ctx, iteration, calls, history, sess, yield, w)
 	}
 	return a.executeToolRoundParallel(ctx, iteration, calls, history, sess, yield, w)
 }
 
-func (a *Agent) executeToolRoundSerial(ctx context.Context, iteration int, calls []llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
+func (a *Agent) executeToolRoundSerial(ctx context.Context, iteration int, calls []*llm.ToolUseBlock, history *[]llm.Message, sess *persistence, yield func(AgentEvent, error) bool, w int) bool {
 	round := newToolRound(ctx, ctx, iteration, calls, history, sess, yield, w)
 	for index, call := range calls {
 		if ctx.Err() != nil {
@@ -198,7 +198,7 @@ func cloneToolResult(r *tool.ToolResult) *tool.ToolResult {
 func normalizeResultStrings(msg llm.Message, event *tool.ToolResult) {
 	const replacement = "\uFFFD"
 	for i, block := range msg.Content {
-		rb, ok := block.(llm.ToolResultBlock)
+		rb, ok := block.(*llm.ToolResultBlock)
 		if !ok {
 			continue
 		}

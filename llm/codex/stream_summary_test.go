@@ -24,9 +24,9 @@ func TestStreamReasoningSummaryLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch c := chunk.(type) {
-		case llm.ReasoningDeltaChunk:
+		case *llm.ReasoningDeltaChunk:
 			text += c.Text
-		case llm.ReasoningItemChunk:
+		case *llm.ReasoningItemChunk:
 			reasoning++
 		}
 	}
@@ -51,7 +51,7 @@ func TestStreamCompletedPayloadAtLimit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := chunk.(llm.DoneChunk); ok {
+		if _, ok := chunk.(*llm.DoneChunk); ok {
 			done = true
 		}
 	}

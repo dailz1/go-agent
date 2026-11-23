@@ -42,7 +42,7 @@ func TestRecoveryDynamicOptionsFreezeAtRoundEntrance(t *testing.T) {
 	original := []llm.Message{llm.UserMessage(strings.Repeat("x", 2000))}
 	short := []llm.Message{llm.UserMessage("summary")}
 	first := recoveryExchange(original, overflowTestError(), nil)
-	second := recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"})
+	second := recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"})
 	first.Request.Options.Model, second.Request.Options.Model = "A", "A"
 	script := agenttest.NewScriptedProvider(first, second)
 	model, evaluations := "A", 0
@@ -120,7 +120,7 @@ func TestRecoveryBlockedConfigurationRequiresExplicitRepair(t *testing.T) {
 				if err := SetThreadConfig(t.Context(), st, "recovery", ConfigChange{Thinking: strptr("high")}); err != nil {
 					t.Fatal(err)
 				}
-				success := recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"})
+				success := recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"})
 				success.Request.Options = llm.ApplyOptions([]llm.Option{llm.WithModel("B"), llm.WithThinking("high")})
 				next = agenttest.NewScriptedProvider(success)
 				options = append(options, WithProviders(recoveryNamedProvider{Provider: next, name: "new"}))
@@ -179,8 +179,8 @@ func TestRecoveryFreezesRoundAndDefersSteering(t *testing.T) {
 	short := []llm.Message{llm.UserMessage("summary")}
 	nextHistory := append(deepCopyMessages(short), llm.AssistantMessage("continue"), llm.UserMessage("queued"))
 	first := recoveryExchange(original, overflowTestError(), nil)
-	retry := recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "continue"})
-	success := recoveryExchange(nextHistory, nil, nil, llm.TextDeltaChunk{Text: "done"})
+	retry := recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "continue"})
+	success := recoveryExchange(nextHistory, nil, nil, &llm.TextDeltaChunk{Text: "done"})
 	first.Request.Options = llm.ApplyOptions([]llm.Option{llm.WithModel("A")})
 	retry.Request.Options = first.Request.Options
 	success.Request.Options = llm.ApplyOptions([]llm.Option{llm.WithModel("B")})

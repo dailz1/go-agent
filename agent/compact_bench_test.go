@@ -20,12 +20,12 @@ func benchCompactionHistory(b *testing.B, toolGroups, payloadRunes, imageBytes i
 		llm.UserMessage("first"),
 	}
 	for i := range toolGroups {
-		toolUse := llm.ToolUseBlock{
+		toolUse := &llm.ToolUseBlock{
 			ID:    fmt.Sprintf("call-%d", i),
 			Name:  "read",
 			Input: []byte(`{"path":"main.go"}`),
 		}
-		result := llm.ToolResultBlock{
+		result := &llm.ToolResultBlock{
 			Type:      "tool_result",
 			ToolUseID: fmt.Sprintf("call-%d", i),
 			Content:   strings.Repeat("result line\n", payloadRunes/12),
@@ -110,7 +110,7 @@ func benchmarkUnevenSlidingWindow(b *testing.B, textGroups, imageBytes int) {
 		ids = append(ids, fmt.Sprintf("call-%d", i))
 	}
 	for i, id := range ids {
-		result := llm.ToolResultBlock{
+		result := &llm.ToolResultBlock{
 			Type:      "tool_result",
 			ToolUseID: id,
 			Content:   strings.Repeat("result line\n", 340),
@@ -123,7 +123,7 @@ func benchmarkUnevenSlidingWindow(b *testing.B, textGroups, imageBytes int) {
 				Data:     make([]byte, imageBytes),
 			}}
 		}
-		toolUse := llm.ToolUseBlock{ID: id, Name: "read", Input: []byte(`{"path":"main.go"}`)}
+		toolUse := &llm.ToolUseBlock{ID: id, Name: "read", Input: []byte(`{"path":"main.go"}`)}
 		history = append(history,
 			llm.AssistantToolCallMessage(toolUse),
 			llm.Message{Role: llm.RoleTool, Content: []llm.ContentBlock{result}},

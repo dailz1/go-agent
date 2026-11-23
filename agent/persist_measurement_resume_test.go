@@ -25,7 +25,7 @@ func TestMeasurementMissingUsageResumeParity(t *testing.T) {
 			t.Run(backend+"/"+tc.name, func(t *testing.T) {
 				steps := [][]llm.Chunk{
 					contextChunks("measured", &llm.Usage{InputTokens: 2000, OutputTokens: 200}),
-					{llm.DoneChunk{Usage: tc.usage}}, // nil Content on the live empty assistant
+					{&llm.DoneChunk{Usage: tc.usage}}, // nil Content on the live empty assistant
 					textChunks("done"),
 				}
 				var control bytes.Buffer

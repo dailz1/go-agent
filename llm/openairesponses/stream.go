@@ -128,7 +128,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 				return
 			}
 			for _, c := range chunks {
-				if _, ok := c.(llm.DoneChunk); ok {
+				if _, ok := c.(*llm.DoneChunk); ok {
 					yieldedDone = true
 				}
 				if !yield(c, nil) {
@@ -170,19 +170,19 @@ func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) (
 		if ev.Delta == "" {
 			return nil, nil
 		}
-		return []llm.Chunk{llm.TextDeltaChunk{Text: ev.Delta, OutputIndex: ev.OutputIndex}}, nil
+		return []llm.Chunk{&llm.TextDeltaChunk{Text: ev.Delta, OutputIndex: ev.OutputIndex}}, nil
 
 	case "response.reasoning_summary_text.delta":
 		if ev.Delta == "" {
 			return nil, nil
 		}
-		return []llm.Chunk{llm.ReasoningDeltaChunk{Text: ev.Delta}}, nil
+		return []llm.Chunk{&llm.ReasoningDeltaChunk{Text: ev.Delta}}, nil
 
 	case "response.output_item.added":
 		if ev.Item == nil || ev.Item.Type != "function_call" {
 			return nil, nil
 		}
-		return []llm.Chunk{llm.ToolCallStartChunk{
+		return []llm.Chunk{&llm.ToolCallStartChunk{
 			Index: int(ev.OutputIndex),
 			ID:    ev.Item.CallID,
 			Name:  ev.Item.Name,
@@ -192,7 +192,7 @@ func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) (
 		if ev.Delta == "" {
 			return nil, nil
 		}
-		return []llm.Chunk{llm.ToolCallArgsChunk{Index: int(ev.OutputIndex), Delta: ev.Delta}}, nil
+		return []llm.Chunk{&llm.ToolCallArgsChunk{Index: int(ev.OutputIndex), Delta: ev.Delta}}, nil
 
 	case "response.output_item.done":
 		// A finished reasoning item carries its encrypted content; deliver it
@@ -201,9 +201,9 @@ func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) (
 			return nil, nil
 		}
 		delivered[ev.Item.ID] = true
-		return []llm.Chunk{llm.ReasoningItemChunk{
+		return []llm.Chunk{&llm.ReasoningItemChunk{
 			OutputIndex: ev.OutputIndex,
-			Item:        reasoningItemOf(*ev.Item),
+			Item:        *reasoningItemOf(*ev.Item),
 		}}, nil
 
 	case "response.completed":
@@ -217,14 +217,14 @@ func (p *Provider) parseStreamEvent(payload string, delivered map[string]bool) (
 		for i, item := range resp.Output {
 			if item.Type == "reasoning" && !delivered[item.ID] {
 				delivered[item.ID] = true
-				chunks = append(chunks, llm.ReasoningItemChunk{
+				chunks = append(chunks, &llm.ReasoningItemChunk{
 					OutputIndex: int64(i),
-					Item:        reasoningItemOf(item),
+					Item:        *reasoningItemOf(item),
 				})
 			}
 		}
 		usage := resp.Usage.toUsage()
-		chunks = append(chunks, llm.DoneChunk{FinishReason: "stop", Usage: &usage})
+		chunks = append(chunks, &llm.DoneChunk{FinishReason: "stop", Usage: &usage})
 		return chunks, nil
 
 	case "response.failed":

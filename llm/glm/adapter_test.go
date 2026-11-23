@@ -115,8 +115,8 @@ func TestConvertMessages_UserWithImage(t *testing.T) {
 		{
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{
-				llm.TextBlock{Type: "text", Text: "describe this"},
-				llm.ImageBlock{Type: "image", URL: "https://example.com/img.png"},
+				&llm.TextBlock{Type: "text", Text: "describe this"},
+				&llm.ImageBlock{Type: "image", URL: "https://example.com/img.png"},
 			},
 		},
 	}
@@ -148,7 +148,7 @@ func TestConvertMessages_UserWithInlineImage(t *testing.T) {
 		{
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{
-				llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("fake-png-data")},
+				&llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("fake-png-data")},
 			},
 		},
 	}
@@ -172,7 +172,7 @@ func TestConvertMessages_UserWithInlineImage(t *testing.T) {
 func TestConvertMessages_AssistantWithToolCalls(t *testing.T) {
 	msgs := []llm.Message{
 		llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{
+			&llm.ToolUseBlock{
 				Type:  "tool_use",
 				ID:    "call_123",
 				Name:  "get_weather",
@@ -234,7 +234,7 @@ func TestConvertMessages_ToolResultMissing(t *testing.T) {
 	msgs := []llm.Message{
 		{
 			Role:    llm.RoleTool,
-			Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "oops"}},
+			Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "oops"}},
 		},
 	}
 	_, err := convertMessages(msgs)
@@ -325,7 +325,7 @@ func TestConvertResponseMessage_TextContent(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(llm.TextBlock)
+	tb, ok := msg.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -356,7 +356,7 @@ func TestConvertResponseMessage_ToolCalls(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block (tool_use only), got %d", len(msg.Content))
 	}
-	tu, ok := msg.Content[0].(llm.ToolUseBlock)
+	tu, ok := msg.Content[0].(*llm.ToolUseBlock)
 	if !ok {
 		t.Fatalf("expected ToolUseBlock, got %T", msg.Content[0])
 	}
@@ -393,7 +393,7 @@ func TestConvertResponseMessage_ToolCallsWithContent(t *testing.T) {
 	if len(msg.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(llm.TextBlock)
+	tb, ok := msg.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock at [0], got %T", msg.Content[0])
 	}
@@ -451,7 +451,7 @@ func TestParseStreamPayload_ContentDelta(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	td, ok := chunks[0].(llm.TextDeltaChunk)
+	td, ok := chunks[0].(*llm.TextDeltaChunk)
 	if !ok {
 		t.Fatalf("expected TextDeltaChunk, got %T", chunks[0])
 	}
@@ -466,7 +466,7 @@ func TestParseStreamPayload_ReasoningDelta(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	rd, ok := chunks[0].(llm.ReasoningDeltaChunk)
+	rd, ok := chunks[0].(*llm.ReasoningDeltaChunk)
 	if !ok {
 		t.Fatalf("expected ReasoningDeltaChunk, got %T", chunks[0])
 	}
@@ -481,7 +481,7 @@ func TestParseStreamPayload_ToolCallStart(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	tcs, ok := chunks[0].(llm.ToolCallStartChunk)
+	tcs, ok := chunks[0].(*llm.ToolCallStartChunk)
 	if !ok {
 		t.Fatalf("expected ToolCallStartChunk, got %T", chunks[0])
 	}
@@ -502,11 +502,11 @@ func TestParseStreamPayload_ToolCallArgs(t *testing.T) {
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
-	_, okStart := chunks[0].(llm.ToolCallStartChunk)
+	_, okStart := chunks[0].(*llm.ToolCallStartChunk)
 	if !okStart {
 		t.Fatalf("expected ToolCallStartChunk at [0], got %T", chunks[0])
 	}
-	tca, okArgs := chunks[1].(llm.ToolCallArgsChunk)
+	tca, okArgs := chunks[1].(*llm.ToolCallArgsChunk)
 	if !okArgs {
 		t.Fatalf("expected ToolCallArgsChunk at [1], got %T", chunks[1])
 	}
@@ -521,7 +521,7 @@ func TestParseStreamPayload_ToolCallArgsOnly(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	tca, ok := chunks[0].(llm.ToolCallArgsChunk)
+	tca, ok := chunks[0].(*llm.ToolCallArgsChunk)
 	if !ok {
 		t.Fatalf("expected ToolCallArgsChunk, got %T", chunks[0])
 	}
@@ -536,7 +536,7 @@ func TestParseStreamPayload_FinishReason(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	dc, ok := chunks[0].(llm.DoneChunk)
+	dc, ok := chunks[0].(*llm.DoneChunk)
 	if !ok {
 		t.Fatalf("expected DoneChunk, got %T", chunks[0])
 	}
@@ -554,7 +554,7 @@ func TestParseStreamPayload_WithUsage(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	dc, ok := chunks[0].(llm.DoneChunk)
+	dc, ok := chunks[0].(*llm.DoneChunk)
 	if !ok {
 		t.Fatalf("expected DoneChunk, got %T", chunks[0])
 	}
@@ -578,7 +578,7 @@ func TestParseStreamPayload_UsageOnlyFrame(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
 	}
-	done, ok := chunks[0].(llm.DoneChunk)
+	done, ok := chunks[0].(*llm.DoneChunk)
 	if !ok {
 		t.Fatalf("expected DoneChunk, got %T", chunks[0])
 	}
@@ -627,13 +627,13 @@ func TestParseStreamPayload_MultipleChunks(t *testing.T) {
 	if len(chunks) != 3 {
 		t.Fatalf("expected 3 chunks, got %d", len(chunks))
 	}
-	if _, ok := chunks[0].(llm.ReasoningDeltaChunk); !ok {
+	if _, ok := chunks[0].(*llm.ReasoningDeltaChunk); !ok {
 		t.Errorf("chunk[0] = %T, want ReasoningDeltaChunk", chunks[0])
 	}
-	if _, ok := chunks[1].(llm.TextDeltaChunk); !ok {
+	if _, ok := chunks[1].(*llm.TextDeltaChunk); !ok {
 		t.Errorf("chunk[1] = %T, want TextDeltaChunk", chunks[1])
 	}
-	if _, ok := chunks[2].(llm.DoneChunk); !ok {
+	if _, ok := chunks[2].(*llm.DoneChunk); !ok {
 		t.Errorf("chunk[2] = %T, want DoneChunk", chunks[2])
 	}
 }
@@ -1093,7 +1093,7 @@ func TestConvertResponseMessage_ReasoningBlock(t *testing.T) {
 	if len(msg.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
 	}
-	rb, ok := msg.Content[0].(llm.ReasoningBlock)
+	rb, ok := msg.Content[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("expected ReasoningBlock at [0], got %T", msg.Content[0])
 	}
@@ -1103,7 +1103,7 @@ func TestConvertResponseMessage_ReasoningBlock(t *testing.T) {
 	if rb.Content != reasoning {
 		t.Errorf("ReasoningBlock.Content = %q, want %q", rb.Content, reasoning)
 	}
-	tb, ok := msg.Content[1].(llm.TextBlock)
+	tb, ok := msg.Content[1].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock at [1], got %T", msg.Content[1])
 	}
@@ -1124,7 +1124,7 @@ func TestConvertResponseMessage_NoReasoningBlock(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	if _, ok := msg.Content[0].(llm.ReasoningBlock); ok {
+	if _, ok := msg.Content[0].(*llm.ReasoningBlock); ok {
 		t.Error("should not have ReasoningBlock when no reasoning_content")
 	}
 }
@@ -1144,7 +1144,7 @@ func TestConvertResponseMessage_EmptyReasoningContent(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block (reasoning was empty), got %d", len(msg.Content))
 	}
-	if _, ok := msg.Content[0].(llm.ReasoningBlock); ok {
+	if _, ok := msg.Content[0].(*llm.ReasoningBlock); ok {
 		t.Error("empty reasoning_content should not produce ReasoningBlock")
 	}
 }
@@ -1172,10 +1172,10 @@ func TestConvertResponseMessage_ReasoningWithToolCalls(t *testing.T) {
 	if len(msg.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
 	}
-	if _, ok := msg.Content[0].(llm.ReasoningBlock); !ok {
+	if _, ok := msg.Content[0].(*llm.ReasoningBlock); !ok {
 		t.Errorf("expected ReasoningBlock at [0], got %T", msg.Content[0])
 	}
-	if _, ok := msg.Content[1].(llm.ToolUseBlock); !ok {
+	if _, ok := msg.Content[1].(*llm.ToolUseBlock); !ok {
 		t.Errorf("expected ToolUseBlock at [1], got %T", msg.Content[1])
 	}
 }
@@ -1193,7 +1193,7 @@ func TestConvertResponseMessage_NilContentWithReasoning(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block (reasoning only), got %d", len(msg.Content))
 	}
-	rb, ok := msg.Content[0].(llm.ReasoningBlock)
+	rb, ok := msg.Content[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("expected ReasoningBlock, got %T", msg.Content[0])
 	}
@@ -1221,7 +1221,7 @@ func TestChat_ReasoningOnlyResponse(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block (reasoning only), got %d", len(msg.Content))
 	}
-	rb, ok := msg.Content[0].(llm.ReasoningBlock)
+	rb, ok := msg.Content[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("expected ReasoningBlock, got %T", msg.Content[0])
 	}
@@ -1313,7 +1313,7 @@ func TestChatStream_FailureFinishReasonReturnsError(t *testing.T) {
 
 			var streamErr error
 			for chunk, err := range stream {
-				if _, ok := chunk.(llm.DoneChunk); ok {
+				if _, ok := chunk.(*llm.DoneChunk); ok {
 					t.Error("ChatStream() yielded DoneChunk for failure finish reason")
 				}
 				if err != nil {
@@ -1339,8 +1339,8 @@ func TestConvertAssistant_ReasoningBlockStripped(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.ReasoningBlock{Type: "reasoning", Content: "I'm thinking..."},
-			llm.TextBlock{Type: "text", Text: "Here's the answer"},
+			&llm.ReasoningBlock{Type: "reasoning", Content: "I'm thinking..."},
+			&llm.TextBlock{Type: "text", Text: "Here's the answer"},
 		},
 	}
 	cm, err := convertAssistant(msg)
@@ -1361,8 +1361,8 @@ func TestConvertStandard_ReasoningBlockStripped(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.ReasoningBlock{Type: "reasoning", Content: "should be stripped"},
-			llm.TextBlock{Type: "text", Text: "actual user text"},
+			&llm.ReasoningBlock{Type: "reasoning", Content: "should be stripped"},
+			&llm.TextBlock{Type: "text", Text: "actual user text"},
 		},
 	}
 	cm, err := convertStandardMessage(msg)

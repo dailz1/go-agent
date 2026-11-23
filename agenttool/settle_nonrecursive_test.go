@@ -84,7 +84,7 @@ func TestSettleE55ParentOnly(t *testing.T) {
 			if done == nil || len(done.History) != len(want)+3 {
 				t.Fatalf("new parent run did not finish with paired history: %+v", done)
 			}
-			call := llm.ToolUseBlock{ID: "new-call", Name: "child", Input: []byte(`{"input":"child work"}`)}
+			call := &llm.ToolUseBlock{ID: "new-call", Name: "child", Input: []byte(`{"input":"child work"}`)}
 			wantDone := append(want, llm.AssistantToolCallMessage(call),
 				llm.ToolResultMessage("new-call", tool.NewTextResult("finished")), llm.AssistantMessage("finished"))
 			if !reflect.DeepEqual(done.History, wantDone) {

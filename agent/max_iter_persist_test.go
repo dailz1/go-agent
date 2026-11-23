@@ -192,9 +192,9 @@ func (p *cancelAfterTerminalProvider) Chat(context.Context, []llm.Message, []too
 
 func (p *cancelAfterTerminalProvider) ChatStream(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return func(yield func(llm.Chunk, error) bool) {
-		if !yield(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"}, nil) ||
-			!yield(llm.ToolCallArgsChunk{Index: 0, Delta: `{}`}, nil) ||
-			!yield(llm.DoneChunk{FinishReason: "tool_calls"}, nil) {
+		if !yield(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"}, nil) ||
+			!yield(&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`}, nil) ||
+			!yield(&llm.DoneChunk{FinishReason: "tool_calls"}, nil) {
 			return
 		}
 		p.cancel()

@@ -25,13 +25,13 @@ func TestStreamLifecycleBarriers(t *testing.T) {
 	})
 	agent := New(NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	}), reg, WithStore(st), WithLogger(discardLogger()))
 

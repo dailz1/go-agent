@@ -22,18 +22,18 @@ func TestRecoveryDoesNotReexecutePersistedTools(t *testing.T) {
 	}))
 	input := strings.Repeat("x", 2000)
 	start := []llm.Message{llm.UserMessage(input)}
-	oldCall := llm.ToolUseBlock{Type: "tool_use", ID: "old", Name: "work", Input: json.RawMessage(`{}`)}
-	newCall := llm.ToolUseBlock{Type: "tool_use", ID: "new", Name: "work", Input: json.RawMessage(`{}`)}
+	oldCall := &llm.ToolUseBlock{Type: "tool_use", ID: "old", Name: "work", Input: json.RawMessage(`{}`)}
+	newCall := &llm.ToolUseBlock{Type: "tool_use", ID: "new", Name: "work", Input: json.RawMessage(`{}`)}
 	oldResult := llm.ToolResultMessage("old", tool.NewTextResult("saved"))
 	newResult := llm.ToolResultMessage("new", tool.NewTextResult("saved"))
 	before := append(deepCopyMessages(start), llm.AssistantToolCallMessage(oldCall), oldResult)
 	after := []llm.Message{llm.UserMessage("summary"), llm.AssistantToolCallMessage(oldCall), oldResult}
 	final := append(deepCopyMessages(after), llm.AssistantToolCallMessage(newCall), newResult)
 	exchanges := []agenttest.Exchange{
-		recoveryExchange(start, nil, nil, llm.ToolCallStartChunk{ID: "old", Name: "work"}, llm.ToolCallArgsChunk{Delta: `{}`}),
+		recoveryExchange(start, nil, nil, &llm.ToolCallStartChunk{ID: "old", Name: "work"}, &llm.ToolCallArgsChunk{Delta: `{}`}),
 		recoveryExchange(before, overflowTestError(), nil),
-		recoveryExchange(after, nil, nil, llm.ToolCallStartChunk{ID: "new", Name: "work"}, llm.ToolCallArgsChunk{Delta: `{}`}),
-		recoveryExchange(final, nil, nil, llm.TextDeltaChunk{Text: "done"}),
+		recoveryExchange(after, nil, nil, &llm.ToolCallStartChunk{ID: "new", Name: "work"}, &llm.ToolCallArgsChunk{Delta: `{}`}),
+		recoveryExchange(final, nil, nil, &llm.TextDeltaChunk{Text: "done"}),
 	}
 	for i := range exchanges {
 		exchanges[i].Request.Tools = reg.List()
@@ -77,9 +77,9 @@ func TestRecoveryCanonicalHistoryDoesNotDependOnCheckpoint(t *testing.T) {
 					t.Fatal(err)
 				}
 				p = agenttest.NewScriptedProvider(recoveryExchange(legacyHistory, overflowTestError(), nil),
-					recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+					recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			} else {
-				p = agenttest.NewScriptedProvider(recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+				p = agenttest.NewScriptedProvider(recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			}
 			a := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()), WithCompactor(recoveryCompactor(short)))
 			var result *RunResult

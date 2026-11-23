@@ -100,8 +100,8 @@ func TestSettleCodecDetachedSnapshot(t *testing.T) {
 			}
 			want := deepCopyMessages(first.History)
 			first.History[0] = llm.UserMessage("mutated")
-			first.History[2].Content[0].(llm.ReasoningItemBlock).Summary[0] = "mutated"
-			first.History[2].Content[1].(llm.ToolUseBlock).Input[0] = '!'
+			first.History[2].Content[0].(*llm.ReasoningItemBlock).Summary[0] = "mutated"
+			first.History[2].Content[1].(*llm.ToolUseBlock).Input[0] = '!'
 			second, err := a.ResumeThread(t.Context(), "t")
 			if err != nil || second == nil || !reflect.DeepEqual(second.History, want) {
 				t.Fatalf("snapshot aliases previous result: %+v, %v", second, err)

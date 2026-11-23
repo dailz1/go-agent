@@ -21,7 +21,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("approval=%v: %s\n", allow, result.Message.Content[0].(llm.TextBlock).Text)
+		fmt.Printf("approval=%v: %s\n", allow, result.Message.Content[0].(*llm.TextBlock).Text)
 	}
 }
 
@@ -49,9 +49,9 @@ func (*approvalProvider) Name() string { return "approval-demo" }
 func (p *approvalProvider) Chat(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (*llm.Message, *llm.Usage, error) {
 	p.round++
 	if p.round == 1 {
-		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.ToolUseBlock{Type: "tool_use", ID: "write", Name: "write_note", Input: json.RawMessage(`{}`)}}}, nil, nil
+		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.ToolUseBlock{Type: "tool_use", ID: "write", Name: "write_note", Input: json.RawMessage(`{}`)}}}, nil, nil
 	}
-	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "approval handled"}}}, nil, nil
+	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "approval handled"}}}, nil, nil
 }
 func (p *approvalProvider) ChatStream(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return nil, llm.ErrStreamingNotSupported

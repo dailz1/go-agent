@@ -31,7 +31,7 @@ func threadName(i int) string {
 func messageText(msg *llm.Message) string {
 	text := ""
 	for _, block := range msg.Content {
-		if tb, ok := block.(llm.TextBlock); ok {
+		if tb, ok := block.(*llm.TextBlock); ok {
 			text += tb.Text
 		}
 	}

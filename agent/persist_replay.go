@@ -603,7 +603,7 @@ func checkpointSystemMatches(cp *agentCheckpoint) bool {
 	if prefix != 1 || len(cp.History[0].Content) != 1 {
 		return false
 	}
-	tb, ok := cp.History[0].Content[0].(llm.TextBlock)
+	tb, ok := cp.History[0].Content[0].(*llm.TextBlock)
 	return ok && tb.Text == cp.System
 }
 
@@ -625,10 +625,10 @@ func validateResultBatch(declared llm.Message, results []llm.Message) error {
 }
 
 // toolResultBlocks extracts the tool result blocks of a message.
-func toolResultBlocks(m llm.Message) []llm.ToolResultBlock {
-	var out []llm.ToolResultBlock
+func toolResultBlocks(m llm.Message) []*llm.ToolResultBlock {
+	var out []*llm.ToolResultBlock
 	for _, blk := range m.Content {
-		if rb, ok := blk.(llm.ToolResultBlock); ok {
+		if rb, ok := blk.(*llm.ToolResultBlock); ok {
 			out = append(out, rb)
 		}
 	}

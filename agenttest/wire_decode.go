@@ -189,15 +189,15 @@ func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
 	}
 	switch typ {
 	case "text":
-		value := llm.TextBlock{Type: typ}
+		value := &llm.TextBlock{Type: typ}
 		err = wireValue(object, "text", &value.Text)
 		return value, err
 	case "reasoning":
-		value := llm.ReasoningBlock{Type: typ}
+		value := &llm.ReasoningBlock{Type: typ}
 		err = wireValue(object, "content", &value.Content)
 		return value, err
 	case "image":
-		value := llm.ImageBlock{Type: typ}
+		value := &llm.ImageBlock{Type: typ}
 		if err = wireOptional(object, "url", &value.URL); err == nil {
 			err = wireOptional(object, "mime_type", &value.MIMEType)
 		}
@@ -206,7 +206,7 @@ func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
 		}
 		return value, err
 	case "tool_use":
-		value := llm.ToolUseBlock{Type: typ}
+		value := &llm.ToolUseBlock{Type: typ}
 		if err = wireValue(object, "id", &value.ID); err == nil {
 			err = wireValue(object, "name", &value.Name)
 		}
@@ -218,7 +218,7 @@ func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
 		value, err := decodeWireReasoningItem(raw)
 		return value, err
 	case "tool_result":
-		value := llm.ToolResultBlock{Type: typ}
+		value := &llm.ToolResultBlock{Type: typ}
 		if err = wireValue(object, "tool_use_id", &value.ToolUseID); err == nil {
 			err = wireValue(object, "content", &value.Content)
 		}
@@ -232,8 +232,8 @@ func decodeWireBlock(raw json.RawMessage) (llm.ContentBlock, error) {
 	}
 	return nil, incompatiblef("unknown content block type %q", typ)
 }
-func decodeWireReasoningItem(raw json.RawMessage) (llm.ReasoningItemBlock, error) {
-	var value llm.ReasoningItemBlock
+func decodeWireReasoningItem(raw json.RawMessage) (*llm.ReasoningItemBlock, error) {
+	value := &llm.ReasoningItemBlock{}
 	object, err := wireObject(raw, "type", "id", "encrypted_content", "summary")
 	if err != nil {
 		return value, err

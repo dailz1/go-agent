@@ -140,7 +140,7 @@ func TestEstimateContextTokens(t *testing.T) {
 			(*h)[0] = llm.UserMessage("replacement")
 		}},
 		{"marshal_mode_flip", func(_ *usageAnchor, h *[]llm.Message, _ *uint64) {
-			*h = append(*h, llm.AssistantToolCallMessage(llm.ToolUseBlock{Input: json.RawMessage(`{`)}))
+			*h = append(*h, llm.AssistantToolCallMessage(&llm.ToolUseBlock{Input: json.RawMessage(`{`)}))
 		}},
 		{"custom_marshaler_mode_flip", func(_ *usageAnchor, h *[]llm.Message, _ *uint64) {
 			*h = append(*h, llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{&anchorCustomBlock{fail: true}}})
@@ -171,7 +171,7 @@ func TestEstimateContextTokens(t *testing.T) {
 		}
 	})
 	t.Run("fallback_boundary_adds_fallback_suffix", func(t *testing.T) {
-		history := []llm.Message{llm.AssistantToolCallMessage(llm.ToolUseBlock{Input: json.RawMessage(`{`)})}
+		history := []llm.Message{llm.AssistantToolCallMessage(&llm.ToolUseBlock{Input: json.RawMessage(`{`)})}
 		prefixRunes := estimateRunes(history)
 		generation := uint64(0)
 		a := newUsageAnchor(anchorMeasurement(1), history, &generation)
@@ -237,7 +237,7 @@ func anchorMeasurement(prefix int) contextMeasurement {
 }
 
 type anchorCustomBlock struct {
-	llm.TextBlock
+	*llm.TextBlock
 	fail bool
 }
 
@@ -260,7 +260,7 @@ func TestAppendRunesDelta(t *testing.T) {
 			}
 		})
 	}
-	malformed := []llm.Message{llm.AssistantToolCallMessage(llm.ToolUseBlock{Input: json.RawMessage(`{`)})}
+	malformed := []llm.Message{llm.AssistantToolCallMessage(&llm.ToolUseBlock{Input: json.RawMessage(`{`)})}
 	tests := []struct {
 		name     string
 		prev     []llm.Message
@@ -273,7 +273,7 @@ func TestAppendRunesDelta(t *testing.T) {
 		{"fallback_prefix", malformed, prefix},
 		{"fallback_append", prefix, malformed},
 		{"both_fallback", malformed, malformed},
-		{"empty_raw_input", []llm.Message{llm.AssistantToolCallMessage(llm.ToolUseBlock{Input: json.RawMessage{}})}, prefix},
+		{"empty_raw_input", []llm.Message{llm.AssistantToolCallMessage(&llm.ToolUseBlock{Input: json.RawMessage{}})}, prefix},
 		{"custom_prefix", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&anchorCustomBlock{}}}}, prefix},
 		{"custom_failing_append", prefix, []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&anchorCustomBlock{fail: true}}}}},
 	}
@@ -296,17 +296,17 @@ func anchorMessages() []struct {
 		value llm.ContentBlock
 		ptr   llm.ContentBlock
 	}{
-		{"text", llm.TextBlock{Type: "text", Text: "中文 😀 \"\\\n\t<>&"},
+		{"text", &llm.TextBlock{Type: "text", Text: "中文 😀 \"\\\n\t<>&"},
 			&llm.TextBlock{Type: "text", Text: "中文 😀 \"\\\n\t<>&"}},
-		{"image", llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte{0, 1, 2, 255}},
+		{"image", &llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte{0, 1, 2, 255}},
 			&llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte{0, 1, 2, 255}}},
-		{"reasoning", llm.ReasoningBlock{Type: "reasoning", Content: "思考 😀"},
+		{"reasoning", &llm.ReasoningBlock{Type: "reasoning", Content: "思考 😀"},
 			&llm.ReasoningBlock{Type: "reasoning", Content: "思考 😀"}},
-		{"reasoning_item", llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", Summary: []string{"摘要"}, EncryptedContent: "opaque+/="},
+		{"reasoning_item", &llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", Summary: []string{"摘要"}, EncryptedContent: "opaque+/="},
 			&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", Summary: []string{"摘要"}, EncryptedContent: "opaque+/="}},
-		{"tool_use", llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "read", Input: json.RawMessage(" { \"path\": \"中文\", \"n\": 1 } ")},
+		{"tool_use", &llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "read", Input: json.RawMessage(" { \"path\": \"中文\", \"n\": 1 } ")},
 			&llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "read", Input: json.RawMessage(" { \"path\": \"中文\", \"n\": 1 } ")}},
-		{"tool_result", llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call", Content: "结果\n", Images: []llm.ImageBlock{{Data: []byte{1, 2, 3}}}},
+		{"tool_result", &llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call", Content: "结果\n", Images: []llm.ImageBlock{{Data: []byte{1, 2, 3}}}},
 			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call", Content: "结果\n", Images: []llm.ImageBlock{{Data: []byte{1, 2, 3}}}}},
 	}
 	var result []struct {

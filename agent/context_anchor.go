@@ -151,8 +151,6 @@ func knownHistoryJSON(history []llm.Message) bool {
 		for _, block := range message.Content {
 			var input json.RawMessage
 			switch typed := block.(type) {
-			case llm.ToolUseBlock:
-				input = typed.Input
 			case *llm.ToolUseBlock:
 				if typed != nil {
 					input = typed.Input

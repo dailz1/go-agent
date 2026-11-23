@@ -23,7 +23,7 @@ func TestRecordReplayNewOptionFields(t *testing.T) {
 	want := llm.ApplyOptions(newOpts)
 	request := Request{Messages: []llm.Message{llm.UserMessage("stream")}, Options: cloneOptions(want)}
 	chunks := []llm.Chunk{
-		llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 1, OutputTokens: 2, CachedTokens: 1}},
+		&llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 1, OutputTokens: 2, CachedTokens: 1}},
 	}
 	recorder := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: chunks}))
 	sequence, err := recorder.ChatStream(context.Background(), request.Messages, nil, newOpts...)

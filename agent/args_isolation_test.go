@@ -40,7 +40,7 @@ func assistantToolInput(history []llm.Message) (json.RawMessage, bool) {
 			continue
 		}
 		for _, block := range msg.Content {
-			if tb, ok := block.(llm.ToolUseBlock); ok {
+			if tb, ok := block.(*llm.ToolUseBlock); ok {
 				return tb.Input, true
 			}
 		}
@@ -62,13 +62,13 @@ func TestRunStream_ToolCallEventArgsIsolated(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{"n":1}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{"n":1}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -121,9 +121,9 @@ func TestRunStream_MaxIterEventArgsIsolated(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{"n":1}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{"n":1}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 
@@ -175,13 +175,13 @@ func TestRunStream_ApprovalSeesOriginalArgs(t *testing.T) {
 	var approvedWith []json.RawMessage
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "sensitive"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{"n":1}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "sensitive"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{"n":1}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -228,12 +228,12 @@ func TestRunStream_ZeroArgsEventPreservesNilness(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 

@@ -69,7 +69,7 @@ func TestDecodeWireBlockToolResultImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode with images: %v", err)
 	}
-	tr := block.(llm.ToolResultBlock)
+	tr := block.(*llm.ToolResultBlock)
 	if len(tr.Images) != 1 || tr.Images[0].URL != "https://example.com/a.png" {
 		t.Errorf("images = %+v", tr.Images)
 	}
@@ -79,8 +79,8 @@ func TestDecodeWireBlockToolResultImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode without images: %v", err)
 	}
-	if block.(llm.ToolResultBlock).Images != nil {
-		t.Errorf("images = %+v, want nil", block.(llm.ToolResultBlock).Images)
+	if block.(*llm.ToolResultBlock).Images != nil {
+		t.Errorf("images = %+v, want nil", block.(*llm.ToolResultBlock).Images)
 	}
 
 	unknown := `{"type":"tool_result","tool_use_id":"call_1","content":"shot","bogus":1}`

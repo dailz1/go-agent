@@ -38,11 +38,11 @@ func measurementBackend(t *testing.T, backend string) (store.Store, func() store
 }
 
 func measurementToolChunks(usage *llm.Usage) []llm.Chunk {
-	chunks := parallelToolRound([]llm.ToolUseBlock{
+	chunks := parallelToolRound([]*llm.ToolUseBlock{
 		{Type: "tool_use", ID: "one", Name: "echo", Input: json.RawMessage(`{}`)},
 		{Type: "tool_use", ID: "two", Name: "echo", Input: json.RawMessage(`{}`)},
 	})
-	chunks[len(chunks)-1] = llm.DoneChunk{Usage: usage}
+	chunks[len(chunks)-1] = &llm.DoneChunk{Usage: usage}
 	return chunks
 }
 
@@ -55,7 +55,7 @@ func measurementRegistry(realPrefix int) *tool.Registry {
 			return tool.NewTextResult("recorded result"), nil
 		}
 		unknown := unknownResults(toolCallMessage("unused"))
-		block := unknown[0].Content[0].(llm.ToolResultBlock)
+		block := unknown[0].Content[0].(*llm.ToolResultBlock)
 		return tool.NewErrorResult("%s", block.Content), nil
 	}))
 	return reg

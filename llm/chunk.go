@@ -7,15 +7,15 @@ package llm
 // [Provider.ChatStream]. Only the six types defined in this package
 // (TextDeltaChunk, ReasoningDeltaChunk, ToolCallStartChunk, ToolCallArgsChunk,
 // ReasoningItemChunk, DoneChunk) can implement it. Consumers should use a type switch to handle
-// each variant:
+// each variant (all chunks are pointer-form sealed variants):
 //
 //	switch c := chunk.(type) {
-//	case llm.TextDeltaChunk:      // append c.Text to output buffer
-//	case llm.ReasoningDeltaChunk: // model's thinking/reasoning fragment
-//	case llm.ToolCallStartChunk:  // begin a new tool call accumulator
-//	case llm.ToolCallArgsChunk:   // append c.Delta to arguments buffer
-//	case llm.ReasoningItemChunk:  // Responses-protocol reasoning item
-//	case llm.DoneChunk:           // stream finished (c.FinishReason)
+//	case *llm.TextDeltaChunk:      // append c.Text to output buffer
+//	case *llm.ReasoningDeltaChunk: // model's thinking/reasoning fragment
+//	case *llm.ToolCallStartChunk:  // begin a new tool call accumulator
+//	case *llm.ToolCallArgsChunk:   // append c.Delta to arguments buffer
+//	case *llm.ReasoningItemChunk:  // Responses-protocol reasoning item
+//	case *llm.DoneChunk:           // stream finished (c.FinishReason)
 //	}
 type Chunk interface {
 	chunkType() string
@@ -32,7 +32,7 @@ type TextDeltaChunk struct {
 	OutputIndex int64
 }
 
-func (TextDeltaChunk) chunkType() string { return "text_delta" }
+func (*TextDeltaChunk) chunkType() string { return "text_delta" }
 
 // ReasoningDeltaChunk carries an incremental reasoning/thinking fragment from
 // models that support extended thinking (e.g. DeepSeek Reasoner). These chunks
@@ -42,7 +42,7 @@ type ReasoningDeltaChunk struct {
 	Text string
 }
 
-func (ReasoningDeltaChunk) chunkType() string { return "reasoning_delta" }
+func (*ReasoningDeltaChunk) chunkType() string { return "reasoning_delta" }
 
 // ToolCallStartChunk signals the beginning of a tool call. It is emitted once
 // per tool call when the model decides to invoke a tool, carrying the call ID
@@ -58,7 +58,7 @@ type ToolCallStartChunk struct {
 	Name string
 }
 
-func (ToolCallStartChunk) chunkType() string { return "tool_call_start" }
+func (*ToolCallStartChunk) chunkType() string { return "tool_call_start" }
 
 // ToolCallArgsChunk carries an incremental fragment of the tool call's JSON
 // arguments. Consumers accumulate Delta values (keyed by ID) to reconstruct
@@ -74,7 +74,7 @@ type ToolCallArgsChunk struct {
 	Delta string
 }
 
-func (ToolCallArgsChunk) chunkType() string { return "tool_call_args" }
+func (*ToolCallArgsChunk) chunkType() string { return "tool_call_args" }
 
 // ReasoningItemChunk delivers one entry-level reasoning item (Responses
 // protocol) during streaming, tagged with its output index so the assembled
@@ -87,7 +87,7 @@ type ReasoningItemChunk struct {
 	Item ReasoningItemBlock
 }
 
-func (ReasoningItemChunk) chunkType() string { return "reasoning_item" }
+func (*ReasoningItemChunk) chunkType() string { return "reasoning_item" }
 
 // DoneChunk signals that the stream has completed. No more chunks will follow.
 type DoneChunk struct {
@@ -100,4 +100,4 @@ type DoneChunk struct {
 	Usage *Usage
 }
 
-func (DoneChunk) chunkType() string { return "done" }
+func (*DoneChunk) chunkType() string { return "done" }

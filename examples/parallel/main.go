@@ -20,7 +20,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(result.Message.Content[0].(llm.TextBlock).Text)
+	fmt.Println(result.Message.Content[0].(*llm.TextBlock).Text)
 }
 
 func run(first, second tool.Tool) (*agent.RunResult, error) {
@@ -56,11 +56,11 @@ func (p *parallelProvider) Chat(context.Context, []llm.Message, []tool.ToolInfo,
 	p.round++
 	if p.round == 1 {
 		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			llm.ToolUseBlock{Type: "tool_use", ID: "first", Name: "one", Input: json.RawMessage(`{}`)},
-			llm.ToolUseBlock{Type: "tool_use", ID: "second", Name: "two", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "first", Name: "one", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "second", Name: "two", Input: json.RawMessage(`{}`)},
 		}}, nil, nil
 	}
-	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "parallel work complete"}}}, nil, nil
+	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "parallel work complete"}}}, nil, nil
 }
 func (*parallelProvider) ChatStream(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return nil, llm.ErrStreamingNotSupported

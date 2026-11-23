@@ -21,7 +21,7 @@ func TestRoundContextCompactionAndCancellation(t *testing.T) {
 			compactedInput = deepCopyMessages(history)
 			return CompactionResult{History: []llm.Message{history[len(history)-1]}, Changed: true}, nil
 		})
-		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}}}}
+		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}}}}
 		ag := New(p, tool.NewRegistry(),
 			WithCompactor(compactor),
 			WithCompactionThresholdPercent(100),

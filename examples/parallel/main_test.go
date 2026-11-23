@@ -43,10 +43,10 @@ func TestParallelToolsStartTogetherAndResultsStayOrdered(t *testing.T) {
 		text := ""
 		var resultIDs []string
 		if err == nil {
-			text = result.Message.Content[0].(llm.TextBlock).Text
+			text = result.Message.Content[0].(*llm.TextBlock).Text
 			for _, message := range result.History {
 				for _, block := range message.Content {
-					if block, ok := block.(llm.ToolResultBlock); ok {
+					if block, ok := block.(*llm.ToolResultBlock); ok {
 						resultIDs = append(resultIDs, block.ToolUseID)
 					}
 				}

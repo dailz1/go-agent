@@ -33,7 +33,7 @@ func toolImageFromHistory(history []llm.Message) []byte {
 			continue
 		}
 		for _, block := range msg.Content {
-			if rb, ok := block.(llm.ToolResultBlock); ok && len(rb.Images) > 0 {
+			if rb, ok := block.(*llm.ToolResultBlock); ok && len(rb.Images) > 0 {
 				return rb.Images[0].Data
 			}
 		}
@@ -47,7 +47,7 @@ func roundRequestToolImage(provider *MockStreamingProvider, round int) []byte {
 			continue
 		}
 		for _, block := range msg.Content {
-			if rb, ok := block.(llm.ToolResultBlock); ok && len(rb.Images) > 0 {
+			if rb, ok := block.(*llm.ToolResultBlock); ok && len(rb.Images) > 0 {
 				return rb.Images[0].Data
 			}
 		}
@@ -65,13 +65,13 @@ func runImageCapture(t *testing.T, buf []byte, during func(ToolResultEvent)) (*D
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "capture"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 

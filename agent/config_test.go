@@ -24,14 +24,14 @@ func strptr(s string) *string { return &s }
 
 func toolCallChunks(id, name string) []llm.Chunk {
 	return []llm.Chunk{
-		llm.ToolCallStartChunk{Index: 0, ID: id, Name: name},
-		llm.ToolCallArgsChunk{Index: 0, Delta: "{}"},
-		llm.DoneChunk{FinishReason: "tool_calls"},
+		&llm.ToolCallStartChunk{Index: 0, ID: id, Name: name},
+		&llm.ToolCallArgsChunk{Index: 0, Delta: "{}"},
+		&llm.DoneChunk{FinishReason: "tool_calls"},
 	}
 }
 
 func textChunks(text string) []llm.Chunk {
-	return []llm.Chunk{llm.TextDeltaChunk{Text: text}, llm.DoneChunk{FinishReason: "stop"}}
+	return []llm.Chunk{&llm.TextDeltaChunk{Text: text}, &llm.DoneChunk{FinishReason: "stop"}}
 }
 
 func TestSetThreadConfigAppliesBeforeRun(t *testing.T) {

@@ -42,7 +42,7 @@ func TestSettleE59ParallelChildrenCollectedByCallbacks(t *testing.T) {
 				registry.MustRegister(agenttool.New(children[index], agenttool.Config{Name: toolName,
 					RunOptions: []agent.RunOption{agent.WithThread("")}}))
 			}
-			provider := &roundContextSequenceProvider{steps: [][]llm.Chunk{toolCallChunks([]llm.ToolUseBlock{
+			provider := &roundContextSequenceProvider{steps: [][]llm.Chunk{toolCallChunks([]*llm.ToolUseBlock{
 				{ID: "first-call", Name: "first", Input: json.RawMessage(`{"input":"one"}`)},
 				{ID: "second-call", Name: "second", Input: json.RawMessage(`{"input":"two"}`)},
 			})}}

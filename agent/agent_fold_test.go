@@ -32,7 +32,7 @@ type eventFold struct {
 	history   []llm.Message
 	reasoning strings.Builder
 	text      strings.Builder
-	calls     []llm.ToolUseBlock
+	calls     []*llm.ToolUseBlock
 }
 
 func newEventFold(seed []llm.Message) *eventFold {
@@ -47,7 +47,7 @@ func (f *eventFold) apply(t *testing.T, event AgentEvent) {
 	case ThinkingDeltaEvent:
 		f.reasoning.WriteString(e.Text)
 	case ToolCallEvent:
-		f.calls = append(f.calls, llm.ToolUseBlock{
+		f.calls = append(f.calls, &llm.ToolUseBlock{
 			Type:  "tool_use",
 			ID:    e.ID,
 			Name:  e.Name,
@@ -95,10 +95,10 @@ func (f *eventFold) full() []llm.Message {
 func (f *eventFold) flushAssistant() {
 	var blocks []llm.ContentBlock
 	if f.reasoning.Len() > 0 {
-		blocks = append(blocks, llm.ReasoningBlock{Type: "reasoning", Content: f.reasoning.String()})
+		blocks = append(blocks, &llm.ReasoningBlock{Type: "reasoning", Content: f.reasoning.String()})
 	}
 	if f.text.Len() > 0 {
-		blocks = append(blocks, llm.TextBlock{Type: "text", Text: f.text.String()})
+		blocks = append(blocks, &llm.TextBlock{Type: "text", Text: f.text.String()})
 	}
 	for _, call := range f.calls {
 		blocks = append(blocks, call)
@@ -122,7 +122,7 @@ func TestEventFoldDoneSnapshotReplacesPreviewAndDeepCopies(t *testing.T) {
 	history := []llm.Message{
 		llm.UserMessage("go"),
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{"x":1}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{"x":1}`)},
 		}},
 		llm.ToolResultMessage("c1", tool.NewErrorResult("not executed: the run reached its iteration limit")),
 	}
@@ -130,8 +130,8 @@ func TestEventFoldDoneSnapshotReplacesPreviewAndDeepCopies(t *testing.T) {
 	if !reflect.DeepEqual(fold.full(), history) {
 		t.Fatalf("Done snapshot did not replace preview: %#v", fold.full())
 	}
-	history[1].Content[0].(llm.ToolUseBlock).Input[2] = 'z'
-	got := fold.full()[1].Content[0].(llm.ToolUseBlock).Input
+	history[1].Content[0].(*llm.ToolUseBlock).Input[2] = 'z'
+	got := fold.full()[1].Content[0].(*llm.ToolUseBlock).Input
 	if string(got) != `{"x":1}` {
 		t.Errorf("fold retained DoneEvent mutable input: %q", got)
 	}
@@ -175,25 +175,25 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 		{
 			name: "consecutive tool-only rounds are distinguishable",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
-				call1 := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
-				call2 := llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
+				call1 := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
+				call2 := &llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t1"}, result: tool.NewTextResult("r1")})
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t2"}, result: tool.NewTextResult("r2")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.ToolCallStartChunk{Index: 0, ID: "c2", Name: "t2"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c2", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c2", Name: "t2"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c2", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "done"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "done"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, registry, WithLogger(discardLogger()))
@@ -204,7 +204,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{call2}},
 					llm.ToolResultMessage("c2", tool.NewTextResult("r2")),
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.TextBlock{Type: "text", Text: "done"},
+						&llm.TextBlock{Type: "text", Text: "done"},
 					}},
 				)
 				return ag, "go", seed, want, nil
@@ -214,14 +214,14 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 			name: "text only round with system prompt",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
 				p := NewMockStreamingProvider([][]llm.Chunk{{
-					llm.TextDeltaChunk{Text: "Hello"},
-					llm.TextDeltaChunk{Text: "!"},
-					llm.DoneChunk{FinishReason: "stop"},
+					&llm.TextDeltaChunk{Text: "Hello"},
+					&llm.TextDeltaChunk{Text: "!"},
+					&llm.DoneChunk{FinishReason: "stop"},
 				}})
 				ag := New(p, tool.NewRegistry(), WithSystemPrompt("be brief"), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.SystemMessage("be brief"), llm.UserMessage("hi")}
 				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.TextBlock{Type: "text", Text: "Hello!"},
+					&llm.TextBlock{Type: "text", Text: "Hello!"},
 				}})
 				return ag, "hi", seed, want, nil
 			},
@@ -230,16 +230,16 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 			name: "reasoning deltas then text",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
 				p := NewMockStreamingProvider([][]llm.Chunk{{
-					llm.ReasoningDeltaChunk{Text: "step1 "},
-					llm.ReasoningDeltaChunk{Text: "step2 "},
-					llm.TextDeltaChunk{Text: "Answer: 4"},
-					llm.DoneChunk{FinishReason: "stop"},
+					&llm.ReasoningDeltaChunk{Text: "step1 "},
+					&llm.ReasoningDeltaChunk{Text: "step2 "},
+					&llm.TextDeltaChunk{Text: "Answer: 4"},
+					&llm.DoneChunk{FinishReason: "stop"},
 				}})
 				ag := New(p, tool.NewRegistry(), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("2+2")}
 				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.ReasoningBlock{Type: "reasoning", Content: "step1 step2 "},
-					llm.TextBlock{Type: "text", Text: "Answer: 4"},
+					&llm.ReasoningBlock{Type: "reasoning", Content: "step1 step2 "},
+					&llm.TextBlock{Type: "text", Text: "Answer: 4"},
 				}})
 				return ag, "2+2", seed, want, nil
 			},
@@ -247,31 +247,31 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 		{
 			name: "single tool call round then final text",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
-				call := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
+				call := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("hi echo")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.TextDeltaChunk{Text: "calling "},
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.TextDeltaChunk{Text: "calling "},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "done: hi echo"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "done: hi echo"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, registry, WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("hi")}
 				want := append(seed,
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.TextBlock{Type: "text", Text: "calling "},
+						&llm.TextBlock{Type: "text", Text: "calling "},
 						call,
 					}},
 					llm.ToolResultMessage("c1", tool.NewTextResult("hi echo")),
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.TextBlock{Type: "text", Text: "done: hi echo"},
+						&llm.TextBlock{Type: "text", Text: "done: hi echo"},
 					}},
 				)
 				return ag, "hi", seed, want, nil
@@ -280,37 +280,37 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 		{
 			name: "two announced calls keep round order across results",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
-				call1 := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
-				call2 := llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
+				call1 := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
+				call2 := &llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t1"}, result: tool.NewTextResult("r1")})
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t2"}, result: tool.NewTextResult("r2")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.TextDeltaChunk{Text: "two calls"},
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
-						llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.TextDeltaChunk{Text: "two calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
+						&llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "ok"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "ok"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, registry, WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
 				want := append(seed,
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.TextBlock{Type: "text", Text: "two calls"},
+						&llm.TextBlock{Type: "text", Text: "two calls"},
 						call1,
 						call2,
 					}},
 					llm.ToolResultMessage("c1", tool.NewTextResult("r1")),
 					llm.ToolResultMessage("c2", tool.NewTextResult("r2")),
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.TextBlock{Type: "text", Text: "ok"},
+						&llm.TextBlock{Type: "text", Text: "ok"},
 					}},
 				)
 				return ag, "go", seed, want, nil
@@ -323,13 +323,13 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "guarded", RequiresApproval: true}, result: tool.NewTextResult("secret")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.ToolCallStartChunk{Index: 0, ID: "g1", Name: "guarded"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "g1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "g1", Name: "guarded"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "g1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "fine"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "fine"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, registry, WithApprovalFn(func(tool.ToolInfo, json.RawMessage) bool { return false }), WithLogger(discardLogger()))
@@ -337,7 +337,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				check := func(t *testing.T, _ []AgentEvent, done DoneEvent) {
 					t.Helper()
 					resultMsg := done.History[2]
-					block, ok := resultMsg.Content[0].(llm.ToolResultBlock)
+					block, ok := resultMsg.Content[0].(*llm.ToolResultBlock)
 					if !ok || !block.IsError {
 						t.Errorf("rejection result = %#v, want error ToolResultBlock", resultMsg.Content[0])
 					}
@@ -350,20 +350,20 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.ToolCallStartChunk{Index: 0, ID: "g1", Name: "ghost"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "g1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "g1", Name: "ghost"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "g1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "recovered"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "recovered"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, tool.NewRegistry(), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
 				check := func(t *testing.T, _ []AgentEvent, done DoneEvent) {
 					t.Helper()
-					block, ok := done.History[2].Content[0].(llm.ToolResultBlock)
+					block, ok := done.History[2].Content[0].(*llm.ToolResultBlock)
 					if !ok || !block.IsError {
 						t.Errorf("unknown-tool result = %#v, want error ToolResultBlock", done.History[2].Content[0])
 					}
@@ -378,13 +378,13 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "big"}, result: tool.NewTextResult(strings.Repeat("x", 1000))})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "big"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "big"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "short"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "short"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, registry, WithContextWindowTokens(1000), WithLogger(discardLogger()))
@@ -403,7 +403,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 					if seen != 1 {
 						t.Fatalf("ToolResultEvent count = %d, want 1", seen)
 					}
-					block := done.History[2].Content[0].(llm.ToolResultBlock)
+					block := done.History[2].Content[0].(*llm.ToolResultBlock)
 					if got := utf8.RuneCountInString(block.Content); got != 300 {
 						t.Errorf("history result content = %d runes, want 300", got)
 					}
@@ -414,25 +414,25 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 		{
 			name: "finish-only round after a tool round has an empty final message",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
-				call := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
+				call := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("hi")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.TextDeltaChunk{Text: "working "},
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.TextDeltaChunk{Text: "working "},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				ag := New(p, registry, WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
 				want := append(seed,
 					llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.TextBlock{Type: "text", Text: "working "},
+						&llm.TextBlock{Type: "text", Text: "working "},
 						call,
 					}},
 					llm.ToolResultMessage("c1", tool.NewTextResult("hi")),
@@ -448,17 +448,17 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("hi")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.TextDeltaChunk{Text: "partial thought "},
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.TextDeltaChunk{Text: "partial thought "},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 				})
 				ag := New(p, registry, WithMaxIter(1), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
 				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.TextBlock{Type: "text", Text: "partial thought "},
-					llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)},
+					&llm.TextBlock{Type: "text", Text: "partial thought "},
+					&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)},
 				}}, llm.ToolResultMessage("c1", tool.NewErrorResult("not executed: the run reached its iteration limit")))
 				check := func(t *testing.T, _ []AgentEvent, done DoneEvent) {
 					t.Helper()
@@ -472,14 +472,14 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 		{
 			name: "maxIter stop pairs terminal call with result",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
-				call := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
+				call := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("hi")})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 				})
 				ag := New(p, registry, WithMaxIter(1), WithLogger(discardLogger()))
@@ -504,14 +504,14 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult(strings.Repeat("z", 150))})
 				p := NewMockStreamingProvider([][]llm.Chunk{
 					{
-						llm.TextDeltaChunk{Text: strings.Repeat("y", 150)},
-						llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-						llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-						llm.DoneChunk{FinishReason: "tool_calls"},
+						&llm.TextDeltaChunk{Text: strings.Repeat("y", 150)},
+						&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+						&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+						&llm.DoneChunk{FinishReason: "tool_calls"},
 					},
 					{
-						llm.TextDeltaChunk{Text: "final"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "final"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					},
 				})
 				compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
@@ -520,7 +520,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				ag := New(p, registry, WithContextWindowTokens(200), WithCompactor(compactor), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
 				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.TextBlock{Type: "text", Text: "final"},
+					&llm.TextBlock{Type: "text", Text: "final"},
 				}})
 				check := func(t *testing.T, events []AgentEvent, _ DoneEvent) {
 					t.Helper()
@@ -547,8 +547,8 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 					&llm.APIError{StatusCode: 429, Body: "rate limited"},
 					1,
 					[][]llm.Chunk{{
-						llm.TextDeltaChunk{Text: "ok"},
-						llm.DoneChunk{FinishReason: "stop"},
+						&llm.TextDeltaChunk{Text: "ok"},
+						&llm.DoneChunk{FinishReason: "stop"},
 					}},
 				)
 				ag := New(p, tool.NewRegistry(), WithRetryConfig(AgentRetryConfig{
@@ -558,7 +558,7 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 				}), WithLogger(discardLogger()))
 				seed := []llm.Message{llm.UserMessage("go")}
 				want := append(seed, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.TextBlock{Type: "text", Text: "ok"},
+					&llm.TextBlock{Type: "text", Text: "ok"},
 				}})
 				check := func(t *testing.T, events []AgentEvent, _ DoneEvent) {
 					t.Helper()
@@ -578,11 +578,11 @@ func TestAgentEventFoldRebuildsHistory(t *testing.T) {
 		{
 			name: "non-streaming fallback synthesizes foldable events",
 			setup: func(t *testing.T) (*Agent, string, []llm.Message, []llm.Message, func(t *testing.T, events []AgentEvent, done DoneEvent)) {
-				call := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
+				call := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}
 				registry := tool.NewRegistry()
 				registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("hi echo")})
 				toolRound := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.TextBlock{Type: "text", Text: "calling "},
+					&llm.TextBlock{Type: "text", Text: "calling "},
 					call,
 				}}
 				p := NewMockProvider(

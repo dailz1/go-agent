@@ -98,7 +98,7 @@ func TestContextOverflowLengthIsNotOverflow(t *testing.T) {
 			if err != nil || len(chunks) == 0 || errors.Is(err, llm.ErrContextOverflow) {
 				t.Fatalf("length changed: chunks=%v err=%v", chunks, err)
 			}
-			done, ok := chunks[len(chunks)-1].(llm.DoneChunk)
+			done, ok := chunks[len(chunks)-1].(*llm.DoneChunk)
 			if !ok || done.FinishReason != "length" {
 				t.Fatalf("length completion lost: %v", chunks)
 			}

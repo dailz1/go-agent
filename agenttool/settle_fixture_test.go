@@ -50,11 +50,11 @@ func (g *settleGate) Execute(ctx context.Context, _ json.RawMessage) (*tool.Tool
 }
 
 func settleCall(id, name string) []llm.Chunk {
-	return toolCallChunks([]llm.ToolUseBlock{{ID: id, Name: name, Input: json.RawMessage(`{"input":"child work"}`)}})
+	return toolCallChunks([]*llm.ToolUseBlock{{ID: id, Name: name, Input: json.RawMessage(`{"input":"child work"}`)}})
 }
 
 func settleText() []llm.Chunk {
-	return []llm.Chunk{llm.TextDeltaChunk{Text: "finished"}, llm.DoneChunk{FinishReason: "stop"}}
+	return []llm.Chunk{&llm.TextDeltaChunk{Text: "finished"}, &llm.DoneChunk{FinishReason: "stop"}}
 }
 
 type settleFixture struct {

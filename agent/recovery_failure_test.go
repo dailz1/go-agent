@@ -194,7 +194,7 @@ func TestRecoveryProviderOutcomeWriteFailurePreservesBothErrors(t *testing.T) {
 	providerErr, disk := &llm.APIError{StatusCode: 503}, errors.New("outcome write failed")
 	st := &recoveryFailStore{Store: store.NewMemory(), phase: "provider_error", err: disk}
 	p := agenttest.NewScriptedProvider(recoveryExchange(history, overflowTestError(), nil),
-		recoveryExchange(short, providerErr, nil), recoveryExchange(after, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+		recoveryExchange(short, providerErr, nil), recoveryExchange(after, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 	a := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()), WithRetryConfig(AgentRetryConfig{MaxRetries: -1}),
 		WithCompactor(recoveryCompactor(short, after)))
 	_, err := a.Run(t.Context(), messageString(history[0]), WithThread("recovery"))

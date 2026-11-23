@@ -5,7 +5,7 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
-func iterationLimitResults(calls []llm.ToolUseBlock) []llm.Message {
+func iterationLimitResults(calls []*llm.ToolUseBlock) []llm.Message {
 	results := make([]llm.Message, 0, len(calls))
 	for _, call := range calls {
 		results = append(results, llm.ToolResultMessage(

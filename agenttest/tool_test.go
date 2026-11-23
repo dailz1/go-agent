@@ -133,14 +133,14 @@ func (p *parallelToolProvider) ChatStream(context.Context, []llm.Message, []tool
 	p.mu.Unlock()
 	if call == 1 {
 		return func(yield func(llm.Chunk, error) bool) {
-			for _, chunk := range []llm.Chunk{llm.ToolCallStartChunk{Index: 0, ID: "one", Name: "one"}, llm.ToolCallStartChunk{Index: 1, ID: "two", Name: "two"}, llm.ToolCallArgsChunk{Index: 0, ID: "one", Delta: "{}"}, llm.ToolCallArgsChunk{Index: 1, ID: "two", Delta: "{}"}} {
+			for _, chunk := range []llm.Chunk{&llm.ToolCallStartChunk{Index: 0, ID: "one", Name: "one"}, &llm.ToolCallStartChunk{Index: 1, ID: "two", Name: "two"}, &llm.ToolCallArgsChunk{Index: 0, ID: "one", Delta: "{}"}, &llm.ToolCallArgsChunk{Index: 1, ID: "two", Delta: "{}"}} {
 				if !yield(chunk, nil) {
 					return
 				}
 			}
 		}, nil
 	}
-	return func(yield func(llm.Chunk, error) bool) { yield(llm.TextDeltaChunk{Text: "done"}, nil) }, nil
+	return func(yield func(llm.Chunk, error) bool) { yield(&llm.TextDeltaChunk{Text: "done"}, nil) }, nil
 }
 func (p *parallelToolProvider) Calls() []int {
 	p.mu.Lock()

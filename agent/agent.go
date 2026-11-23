@@ -49,36 +49,24 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 					cloned := *typed
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
-			case llm.ReasoningItemBlock:
-				typed.Summary = append([]string(nil), typed.Summary...)
-				dst[messageIndex].Content[blockIndex] = typed
 			case *llm.ReasoningItemBlock:
 				if typed != nil {
 					cloned := *typed
 					cloned.Summary = append([]string(nil), cloned.Summary...)
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
-			case llm.ToolResultBlock:
-				typed.Images = cloneImageBlocks(typed.Images)
-				dst[messageIndex].Content[blockIndex] = typed
 			case *llm.ToolResultBlock:
 				if typed != nil {
 					cloned := *typed
 					cloned.Images = cloneImageBlocks(cloned.Images)
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
-			case llm.ToolUseBlock:
-				typed.Input = bytes.Clone(typed.Input)
-				dst[messageIndex].Content[blockIndex] = typed
 			case *llm.ToolUseBlock:
 				if typed != nil {
 					cloned := *typed
 					cloned.Input = bytes.Clone(typed.Input)
 					dst[messageIndex].Content[blockIndex] = &cloned
 				}
-			case llm.ImageBlock:
-				typed.Data = bytes.Clone(typed.Data)
-				dst[messageIndex].Content[blockIndex] = typed
 			case *llm.ImageBlock:
 				if typed != nil {
 					cloned := *typed
@@ -97,12 +85,8 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 // whitelist in sync with the deepCopyMessages switch.
 func clonableBlock(block llm.ContentBlock) bool {
 	switch block.(type) {
-	case llm.TextBlock, *llm.TextBlock,
-		llm.ReasoningBlock, *llm.ReasoningBlock,
-		llm.ReasoningItemBlock, *llm.ReasoningItemBlock,
-		llm.ToolResultBlock, *llm.ToolResultBlock,
-		llm.ToolUseBlock, *llm.ToolUseBlock,
-		llm.ImageBlock, *llm.ImageBlock:
+	case *llm.TextBlock, *llm.ReasoningBlock, *llm.ReasoningItemBlock,
+		*llm.ToolResultBlock, *llm.ToolUseBlock, *llm.ImageBlock:
 		return true
 	default:
 		return false
@@ -717,7 +701,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 					}
 				}
 				for index, call := range toolBlocks {
-					block := skipped[index].Content[0].(llm.ToolResultBlock)
+					block := skipped[index].Content[0].(*llm.ToolResultBlock)
 					result := &tool.ToolResult{Content: block.Content}
 					if block.IsError {
 						result.Status = tool.ResultError
@@ -1066,7 +1050,7 @@ func (a *Agent) assembleAssistantMessage(
 	accum *toolCallAccum,
 	iteration int,
 	yield func(AgentEvent, error) bool,
-) (llm.Message, []llm.ToolUseBlock, bool) {
+) (llm.Message, []*llm.ToolUseBlock, bool) {
 	// Reconstruct the assistant message from accumulated content. We build
 	// it manually (combining textBlocks + toolUseBlocks) rather than using
 	// llm.AssistantToolCallMessage(), which discards text blocks when tool
@@ -1150,7 +1134,7 @@ func (a *Agent) toolResultRunes() int {
 	return a.toolResultRunesFor(a.contextWindowTokens)
 }
 
-func (a *Agent) applyToolResultLimit(call llm.ToolUseBlock, result *tool.ToolResult, w int) *tool.ToolResult {
+func (a *Agent) applyToolResultLimit(call *llm.ToolUseBlock, result *tool.ToolResult, w int) *tool.ToolResult {
 	totalRunes := utf8.RuneCountInString(result.Content)
 	capRunes := a.toolResultRunesFor(w)
 	limitedResult, omittedRunes := truncateToolResult(result, capRunes)
@@ -1166,7 +1150,7 @@ func (a *Agent) applyToolResultLimit(call llm.ToolUseBlock, result *tool.ToolRes
 	return limitedResult
 }
 
-func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result *tool.ToolResult, err error) {
+func (a *Agent) executeTool(ctx context.Context, call *llm.ToolUseBlock) (result *tool.ToolResult, err error) {
 	t, ok := a.registry.Get(call.Name)
 	if !ok {
 		return tool.NewErrorResult("tool %q not found", call.Name), nil
@@ -1195,7 +1179,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolUseBlock) (result 
 func messageText(msg *llm.Message) string {
 	var text string
 	for _, block := range msg.Content {
-		if tb, ok := block.(llm.TextBlock); ok {
+		if tb, ok := block.(*llm.TextBlock); ok {
 			text += tb.Text
 		}
 	}

@@ -17,8 +17,8 @@ func TestNaturalAndTerminalStreamsMatchReplayInAgent(t *testing.T) {
 		chunks    []llm.Chunk
 		streamErr error
 	}{
-		{"natural", []llm.Chunk{llm.TextDeltaChunk{Text: "done"}}, nil},
-		{"terminal", []llm.Chunk{llm.TextDeltaChunk{Text: "before"}}, context.Canceled},
+		{"natural", []llm.Chunk{&llm.TextDeltaChunk{Text: "done"}}, nil},
+		{"terminal", []llm.Chunk{&llm.TextDeltaChunk{Text: "before"}}, context.Canceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := agentRequest("x")
@@ -43,25 +43,23 @@ func TestNaturalAndTerminalStreamsMatchReplayInAgent(t *testing.T) {
 	}
 }
 
-func TestPointerChunksPreserveAgentBehaviorAndRejectExport(t *testing.T) {
-	for _, chunk := range []llm.Chunk{&llm.TextDeltaChunk{Text: "ignored"}, (*llm.TextDeltaChunk)(nil)} {
-		request := agentRequest("x")
-		baseline := NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{chunk}})
-		direct, err := agent.New(baseline, tool.NewRegistry()).Run(context.Background(), "x")
-		if err != nil {
-			t.Fatal(err)
-		}
-		recorder := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{chunk}}))
-		wrapped, err := agent.New(recorder, tool.NewRegistry()).Run(context.Background(), "x")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(direct.Message, wrapped.Message) {
-			t.Fatalf("pointer changed agent behavior: %#v %#v", direct.Message, wrapped.Message)
-		}
-		if _, err := recorder.Bytes(); !errors.Is(err, ErrUnsupportedChunk) {
-			t.Fatalf("pointer Bytes = %v", err)
-		}
+func TestPointerChunksPreserveAgentBehaviorAndExport(t *testing.T) {
+	request := agentRequest("x")
+	baseline := NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "ignored"}}})
+	direct, err := agent.New(baseline, tool.NewRegistry()).Run(context.Background(), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := NewRecorder(NewScriptedProvider(Exchange{Method: MethodChatStream, Request: request, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "ignored"}}}))
+	wrapped, err := agent.New(recorder, tool.NewRegistry()).Run(context.Background(), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(direct.Message, wrapped.Message) {
+		t.Fatalf("pointer changed agent behavior: %#v %#v", direct.Message, wrapped.Message)
+	}
+	if _, err := recorder.Bytes(); err != nil {
+		t.Fatalf("pointer Bytes = %v", err)
 	}
 }
 

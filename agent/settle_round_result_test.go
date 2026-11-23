@@ -126,7 +126,7 @@ func TestSettleThreadPreservesRoundResults(t *testing.T) {
 	}
 }
 
-func checkWant(t *testing.T, label string, got llm.ToolResultBlock, want wantResult) {
+func checkWant(t *testing.T, label string, got *llm.ToolResultBlock, want wantResult) {
 	t.Helper()
 	if want.unknown {
 		if !got.IsError || !strings.Contains(got.Content, "outcome unknown") {

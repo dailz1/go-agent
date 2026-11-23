@@ -27,7 +27,7 @@ func TestRecoveryOverflowPrecedesRetryAndFallback(t *testing.T) {
 			short := []llm.Message{llm.UserMessage("summary")}
 			p := agenttest.NewScriptedProvider(
 				recoveryExchange(history, errors.Join(overflowTestError(), extra.err), nil),
-				recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+				recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			a := New(p, tool.NewRegistry(), WithLogger(discardLogger()), WithCompactor(recoveryCompactor(short)))
 			result, err := a.Run(t.Context(), messageString(history[0]))
 			if err != nil {
@@ -104,7 +104,7 @@ func TestRecoverySecondRejectionClearsOptionalCode(t *testing.T) {
 	history := []llm.Message{llm.UserMessage(strings.Repeat("x", 2000))}
 	short := []llm.Message{llm.UserMessage(strings.Repeat("s", 800))}
 	p := agenttest.NewScriptedProvider(recoveryExchange(history, overflowTestError(), nil),
-		recoveryExchange(short, nil, llm.ErrContextOverflow, llm.TextDeltaChunk{Text: "partial"}))
+		recoveryExchange(short, nil, llm.ErrContextOverflow, &llm.TextDeltaChunk{Text: "partial"}))
 	a := New(p, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()),
 		WithCompactor(recoveryCompactor(short)))
 	if _, err := a.Run(t.Context(), messageString(history[0]), WithThread("recovery")); !errors.Is(err, llm.ErrContextOverflow) {
@@ -123,9 +123,9 @@ func TestRecoveryResumeSkipsProactiveCompactionAndDrain(t *testing.T) {
 	history := []llm.Message{llm.UserMessage(strings.Repeat("x", 2000))}
 	short := []llm.Message{llm.UserMessage("summary")}
 	after := append(deepCopyMessages(short), llm.AssistantMessage("continue"), llm.UserMessage("queued"))
-	p := agenttest.NewScriptedProvider(recoveryExchange(history, nil, overflowTestError(), llm.TextDeltaChunk{Text: "partial"}),
-		recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "continue"}),
-		recoveryExchange(after, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+	p := agenttest.NewScriptedProvider(recoveryExchange(history, nil, overflowTestError(), &llm.TextDeltaChunk{Text: "partial"}),
+		recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "continue"}),
+		recoveryExchange(after, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 	st := store.NewMemory()
 	budgets := []int{}
 	a := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()),

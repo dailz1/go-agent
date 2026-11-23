@@ -55,7 +55,7 @@ func TestRecoveryBreakKeepsReadyForResume(t *testing.T) {
 			}
 			exchanges := []agenttest.Exchange{}
 			if tc.reason == "" {
-				exchanges = append(exchanges, recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+				exchanges = append(exchanges, recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			}
 			next := agenttest.NewScriptedProvider(exchanges...)
 			a = New(next, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()), WithCompactor(nil),
@@ -100,7 +100,7 @@ func TestRecoveryPendingSwitchesDoNotOccupySlot(t *testing.T) {
 				t.Fatal(err)
 			}
 			short := []llm.Message{llm.UserMessage("summary")}
-			next := agenttest.NewScriptedProvider(recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+			next := agenttest.NewScriptedProvider(recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			a = New(next, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()),
 				WithCompactor(recoveryCompactor(short)))
 			if _, err := a.ResumeThread(t.Context(), "recovery"); err != nil {
@@ -122,7 +122,7 @@ func TestRecoveryProviderFailureUsesRemainingSlotOnlyOnResume(t *testing.T) {
 		recoveryExchange(history, overflowTestError(), nil),
 		recoveryExchange(one, unavailable, nil),
 		recoveryExchange(one, unavailable, nil),
-		recoveryExchange(two, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+		recoveryExchange(two, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 	var budgets []int
 	var attempts []int
 	a := New(p, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()),
@@ -206,7 +206,7 @@ func TestRecoveryResidualSlotsAreNotReused(t *testing.T) {
 				t.Fatal(err)
 			}
 			short := []llm.Message{llm.UserMessage("summary")}
-			p := agenttest.NewScriptedProvider(recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+			p := agenttest.NewScriptedProvider(recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 			calls := 0
 			a := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()),
 				WithCompactor(CompactFunc(func(_ context.Context, _ []llm.Message, b CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
@@ -234,9 +234,9 @@ func TestRecoveryEmptyContinuedTurnResumesAfterOverflow(t *testing.T) {
 	continued := append(deepCopyMessages(original), llm.Message{Role: llm.RoleAssistant})
 	short := []llm.Message{llm.UserMessage("summary")}
 	p := agenttest.NewScriptedProvider(
-		recoveryExchange(original, nil, nil, llm.DoneChunk{}),
-		recoveryExchange(continued, nil, overflowTestError(), llm.TextDeltaChunk{Text: "partial"}),
-		recoveryExchange(short, nil, nil, llm.TextDeltaChunk{Text: "done"}))
+		recoveryExchange(original, nil, nil, &llm.DoneChunk{}),
+		recoveryExchange(continued, nil, overflowTestError(), &llm.TextDeltaChunk{Text: "partial"}),
+		recoveryExchange(short, nil, nil, &llm.TextDeltaChunk{Text: "done"}))
 	a := New(p, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()),
 		WithCompactor(recoveryCompactor(short)),
 		WithFinishRound(func(context.Context, FinishRoundContext) (FinishRoundDecision, error) {

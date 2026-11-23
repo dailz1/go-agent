@@ -223,7 +223,7 @@ func (r *Reducer) CompleteWith(result *agent.RunResult) {
 func messageText(msg llm.Message) string {
 	text := ""
 	for _, block := range msg.Content {
-		if tb, ok := block.(llm.TextBlock); ok {
+		if tb, ok := block.(*llm.TextBlock); ok {
 			text += tb.Text
 		}
 	}
@@ -239,11 +239,17 @@ func reasoningFromHistory(history []llm.Message) []ReasoningItem {
 	for _, msg := range history {
 		for _, block := range msg.Content {
 			switch b := block.(type) {
-			case llm.ReasoningItemBlock:
+			case *llm.ReasoningItemBlock:
+				if b == nil {
+					continue
+				}
 				items = append(items, ReasoningItem{
 					ID: b.ID, Summary: b.Summary, Readable: len(b.Summary) > 0,
 				})
-			case llm.ReasoningBlock:
+			case *llm.ReasoningBlock:
+				if b == nil {
+					continue
+				}
 				items = append(items, ReasoningItem{
 					Summary: []string{b.Content}, Readable: b.Content != "",
 				})

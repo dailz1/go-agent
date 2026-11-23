@@ -315,7 +315,7 @@ func (*parallelProvider) Name() string { return "parallel" }
 func (p *parallelProvider) Chat(_ context.Context, _ []llm.Message, _ []tool.ToolInfo, _ ...llm.Option) (*llm.Message, *llm.Usage, error) {
 	p.n++
 	if p.n == 1 {
-		message := llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "1", Name: "remote__echo", Input: json.RawMessage(`{}`)}, llm.ToolUseBlock{ID: "2", Name: "remote__echo", Input: json.RawMessage(`{}`)})
+		message := llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "1", Name: "remote__echo", Input: json.RawMessage(`{}`)}, &llm.ToolUseBlock{ID: "2", Name: "remote__echo", Input: json.RawMessage(`{}`)})
 		return &message, nil, nil
 	}
 	message := llm.AssistantMessage("done")
@@ -331,7 +331,7 @@ func (*roundTripProvider) Name() string { return "round-trip" }
 func (p *roundTripProvider) Chat(_ context.Context, _ []llm.Message, _ []tool.ToolInfo, _ ...llm.Option) (*llm.Message, *llm.Usage, error) {
 	p.n++
 	if p.n == 1 {
-		message := llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "1", Name: "remote__echo", Input: json.RawMessage(`{}`)})
+		message := llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "1", Name: "remote__echo", Input: json.RawMessage(`{}`)})
 		return &message, nil, nil
 	}
 	message := llm.AssistantMessage("done")

@@ -35,17 +35,17 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 			return nil, nil, err
 		}
 		switch c := chunk.(type) {
-		case llm.TextDeltaChunk:
+		case *llm.TextDeltaChunk:
 			get(int(c.OutputIndex)).text.WriteString(c.Text)
-		case llm.ToolCallStartChunk:
+		case *llm.ToolCallStartChunk:
 			get(c.Index).call = &llm.ToolUseBlock{Type: "tool_use", ID: c.ID, Name: c.Name}
-		case llm.ToolCallArgsChunk:
+		case *llm.ToolCallArgsChunk:
 			get(c.Index).args.WriteString(c.Delta)
-		case llm.ReasoningItemChunk:
+		case *llm.ReasoningItemChunk:
 			get(int(c.OutputIndex)).reasoning = &c.Item
-		case llm.ReasoningDeltaChunk:
+		case *llm.ReasoningDeltaChunk:
 			// Summaries are carried by the complete reasoning item.
-		case llm.DoneChunk:
+		case *llm.DoneChunk:
 			usage = c.Usage
 		}
 	}
@@ -59,12 +59,12 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, tools []too
 		item := items[index]
 		switch {
 		case item.reasoning != nil:
-			message.Content = append(message.Content, *item.reasoning)
+			message.Content = append(message.Content, item.reasoning)
 		case item.call != nil:
 			item.call.Input = json.RawMessage(item.args.String())
-			message.Content = append(message.Content, *item.call)
+			message.Content = append(message.Content, item.call)
 		default:
-			message.Content = append(message.Content, llm.TextBlock{Type: "text", Text: item.text.String()})
+			message.Content = append(message.Content, &llm.TextBlock{Type: "text", Text: item.text.String()})
 		}
 	}
 	return message, usage, nil

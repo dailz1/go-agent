@@ -27,9 +27,9 @@ func asCapability(t *testing.T, err error, code string) {
 // tool_use capability error rather than being silently mangled.
 func TestConvertMessagesCrossProviderDegrade(t *testing.T) {
 	assistant := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningBlock{Type: "reasoning", Content: "foreign chain of thought"},
-		llm.ReasoningItemBlock{ID: "rs_1", EncryptedContent: "enc"},
-		llm.ToolUseBlock{ID: "call_1", Name: "f", Input: json.RawMessage(`{}`)},
+		&llm.ReasoningBlock{Type: "reasoning", Content: "foreign chain of thought"},
+		&llm.ReasoningItemBlock{ID: "rs_1", EncryptedContent: "enc"},
+		&llm.ToolUseBlock{ID: "call_1", Name: "f", Input: json.RawMessage(`{}`)},
 	}}
 	items, _, err := convertMessages([]llm.Message{llm.UserMessage("go"), assistant})
 	if err != nil {
@@ -50,7 +50,7 @@ func TestConvertMessagesCrossProviderDegrade(t *testing.T) {
 	// legal history that codex rejects at conversion, every round, until
 	// compaction drops the group.
 	zeroArg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ToolUseBlock{ID: "call_zero", Name: "ping", Input: json.RawMessage("")},
+		&llm.ToolUseBlock{ID: "call_zero", Name: "ping", Input: json.RawMessage("")},
 	}}
 	if _, _, err := convertMessages([]llm.Message{llm.UserMessage("go"), zeroArg}); err == nil {
 		t.Fatal("zero-argument tool call accepted, want capability error")
@@ -61,7 +61,7 @@ func TestConvertMessagesCrossProviderDegrade(t *testing.T) {
 	// The missing-ID strictness on native reasoning items is existing
 	// fail-loud behavior, not a foreign-block rejection.
 	missingID := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningItemBlock{EncryptedContent: "enc"},
+		&llm.ReasoningItemBlock{EncryptedContent: "enc"},
 	}}
 	if _, _, err := convertMessages([]llm.Message{llm.UserMessage("go"), missingID}); err == nil {
 		t.Fatal("reasoning item without ID accepted, want capability error")

@@ -21,7 +21,7 @@ func (s *streamState) event(ev streamEvent) ([]llm.Chunk, bool, error) {
 		if u := ev.Response.Usage; u != nil {
 			usage = &llm.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, ReasoningTokens: u.Details.ReasoningTokens}
 		}
-		return append(chunks, llm.DoneChunk{FinishReason: finish, Usage: usage}), true, nil
+		return append(chunks, &llm.DoneChunk{FinishReason: finish, Usage: usage}), true, nil
 	case "response.incomplete", "response.failed", "error":
 		server := ev.Error
 		if ev.Response != nil && ev.Response.Error != nil {
@@ -191,7 +191,7 @@ func (s *streamState) argumentEvent(ev streamEvent) ([]llm.Chunk, error) {
 	item.size += len(*ev.Delta)
 	item.argsDelta = true
 	item.args.WriteString(*ev.Delta)
-	return []llm.Chunk{llm.ToolCallArgsChunk{Index: *ev.OutputIndex, ID: item.item.CallID, Delta: *ev.Delta}}, nil
+	return []llm.Chunk{&llm.ToolCallArgsChunk{Index: *ev.OutputIndex, ID: item.item.CallID, Delta: *ev.Delta}}, nil
 }
 
 func (s *streamState) summaryEvent(ev streamEvent) ([]llm.Chunk, error) {
@@ -219,7 +219,7 @@ func (s *streamState) summaryEvent(ev streamEvent) ([]llm.Chunk, error) {
 			return nil, err
 		}
 		part.delivered = part.text.Len()
-		return []llm.Chunk{llm.ReasoningDeltaChunk{Text: *ev.Delta}}, nil
+		return []llm.Chunk{&llm.ReasoningDeltaChunk{Text: *ev.Delta}}, nil
 	}
 	if ev.Text == nil {
 		return nil, protocolError("missing complete summary")
@@ -232,5 +232,5 @@ func (s *streamState) summaryEvent(ev streamEvent) ([]llm.Chunk, error) {
 	if text == "" {
 		return nil, nil
 	}
-	return []llm.Chunk{llm.ReasoningDeltaChunk{Text: text}}, nil
+	return []llm.Chunk{&llm.ReasoningDeltaChunk{Text: text}}, nil
 }

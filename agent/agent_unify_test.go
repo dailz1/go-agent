@@ -13,13 +13,13 @@ import (
 
 func TestUnifiedRunStreamEquivalence(t *testing.T) {
 	// Given: equivalent streaming and non-streaming scripts for a two-round tool call.
-	call := llm.ToolUseBlock{Type: "tool_use", ID: "call-1", Name: "echo", Input: json.RawMessage(`{"text":"hello"}`)}
+	call := &llm.ToolUseBlock{Type: "tool_use", ID: "call-1", Name: "echo", Input: json.RawMessage(`{"text":"hello"}`)}
 	firstUsage := llm.Usage{InputTokens: 11, OutputTokens: 3, ReasoningTokens: 2}
 	finalUsage := llm.Usage{InputTokens: 17, OutputTokens: 5, ReasoningTokens: 1}
 	toolResponse := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: "I'll echo. "},
+			&llm.TextBlock{Type: "text", Text: "I'll echo. "},
 			call,
 		},
 	}
@@ -31,17 +31,17 @@ func TestUnifiedRunStreamEquivalence(t *testing.T) {
 	})
 	streamingProvider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.TextDeltaChunk{Text: "I'll "},
-			llm.TextDeltaChunk{Text: "echo. "},
-			llm.ToolCallStartChunk{Index: 0, ID: call.ID, Name: call.Name},
-			llm.ToolCallArgsChunk{Index: 0, ID: call.ID, Delta: `{"text":`},
-			llm.ToolCallArgsChunk{Index: 0, ID: call.ID, Delta: `"hello"}`},
-			llm.DoneChunk{FinishReason: "tool_calls", Usage: &firstUsage},
+			&llm.TextDeltaChunk{Text: "I'll "},
+			&llm.TextDeltaChunk{Text: "echo. "},
+			&llm.ToolCallStartChunk{Index: 0, ID: call.ID, Name: call.Name},
+			&llm.ToolCallArgsChunk{Index: 0, ID: call.ID, Delta: `{"text":`},
+			&llm.ToolCallArgsChunk{Index: 0, ID: call.ID, Delta: `"hello"}`},
+			&llm.DoneChunk{FinishReason: "tool_calls", Usage: &firstUsage},
 		},
 		{
-			llm.TextDeltaChunk{Text: "Echoed: "},
-			llm.TextDeltaChunk{Text: "hello"},
-			llm.DoneChunk{FinishReason: "stop", Usage: &finalUsage},
+			&llm.TextDeltaChunk{Text: "Echoed: "},
+			&llm.TextDeltaChunk{Text: "hello"},
+			&llm.DoneChunk{FinishReason: "stop", Usage: &finalUsage},
 		},
 	})
 	nonStreamingProvider := NewMockProvider(
@@ -103,8 +103,8 @@ func TestFallbackSynthesizesEvents(t *testing.T) {
 	toolResponse := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: "Using echo. "},
-			llm.ToolUseBlock{Type: "tool_use", ID: "call-fallback", Name: "echo", Input: args},
+			&llm.TextBlock{Type: "text", Text: "Using echo. "},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "call-fallback", Name: "echo", Input: args},
 		},
 	}
 	finalResponse := llm.AssistantMessage("Echo complete.")
@@ -165,7 +165,7 @@ func TestFallbackSynthesizesEvents(t *testing.T) {
 }
 
 func TestUnifiedRunStreamTerminalMaxIterEquivalence(t *testing.T) {
-	calls := []llm.ToolUseBlock{
+	calls := []*llm.ToolUseBlock{
 		{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{"n":1}`)},
 		{Type: "tool_use", ID: "c2", Name: "echo", Input: json.RawMessage(`{"n":2}`)},
 	}

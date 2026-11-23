@@ -29,8 +29,8 @@ func TestRecoveryStatelessHistoryNeedsNoDurableDiscriminator(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := openai.NewProvider("key", "model", openai.WithBaseURL(srv.URL))
-	original := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: strings.Repeat("x", 2000)}}}}
-	short := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "summary"}}}}
+	original := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.TextBlock{Text: strings.Repeat("x", 2000)}}}}
+	short := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.TextBlock{Text: "summary"}}}}
 	a := New(p, tool.NewRegistry(), WithCompactor(recoveryCompactor(short)), WithLogger(discardLogger()))
 	seq, err := a.RunStreamWithHistory(t.Context(), original, "continue")
 	if err != nil {
@@ -132,7 +132,7 @@ func TestRecoveryPointerCompactionAdoptsFoldedHistory(t *testing.T) {
 				switch e := event.(type) {
 				case CompactionEvent:
 					sawCompaction = true
-					if _, ok := e.History[0].Content[0].(llm.TextBlock); !ok {
+					if _, ok := e.History[0].Content[0].(*llm.TextBlock); !ok {
 						t.Fatalf("compaction event kept pre-encoding pointer: %T", e.History[0].Content[0])
 					}
 				case DoneEvent:

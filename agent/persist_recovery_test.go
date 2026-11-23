@@ -150,8 +150,8 @@ func TestCheckpointSystemPrefixMismatchFallsBack(t *testing.T) {
 			name: "multi-block first system message",
 			history: []llm.Message{
 				{Role: llm.RoleSystem, Content: []llm.ContentBlock{
-					llm.TextBlock{Type: "text", Text: "frozen"},
-					llm.TextBlock{Type: "text", Text: " tail"},
+					&llm.TextBlock{Type: "text", Text: "frozen"},
+					&llm.TextBlock{Type: "text", Text: " tail"},
 				}},
 			},
 		},

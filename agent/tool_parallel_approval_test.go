@@ -84,7 +84,7 @@ func TestParallelPlanFreezesRegistryAndRunToolsSnapshot(t *testing.T) {
 		return tool.NewTextResult("registered"), nil
 	}}
 	reg.MustRegister(register)
-	provider := NewMockStreamingProvider([][]llm.Chunk{parallelToolRound(parallelToolCalls("register")), parallelToolRound(parallelToolCalls("late")), {llm.TextDeltaChunk{Text: "done"}, llm.DoneChunk{FinishReason: "stop"}}})
+	provider := NewMockStreamingProvider([][]llm.Chunk{parallelToolRound(parallelToolCalls("register")), parallelToolRound(parallelToolCalls("late")), {&llm.TextDeltaChunk{Text: "done"}, &llm.DoneChunk{FinishReason: "stop"}}})
 	result, err := New(provider, reg, WithToolConcurrency(2), WithLogger(discardLogger())).Run(context.Background(), "go")
 	if err != nil {
 		t.Fatalf("Run: %v", err)

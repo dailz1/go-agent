@@ -162,44 +162,32 @@ func synthesizeChunks(blocks []llm.ContentBlock, usage *llm.Usage) []llm.Chunk {
 	hasToolUse := false
 	for outputIndex, block := range blocks {
 		switch b := block.(type) {
-		case llm.ReasoningBlock:
-			chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
 		case *llm.ReasoningBlock:
 			if b != nil {
-				chunks = append(chunks, llm.ReasoningDeltaChunk{Text: b.Content})
+				chunks = append(chunks, &llm.ReasoningDeltaChunk{Text: b.Content})
 			}
-		case llm.TextBlock:
-			chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
 		case *llm.TextBlock:
 			if b != nil {
-				chunks = append(chunks, llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
+				chunks = append(chunks, &llm.TextDeltaChunk{Text: b.Text, OutputIndex: int64(outputIndex)})
 			}
-		case llm.ToolUseBlock:
-			hasToolUse = true
-			chunks = append(chunks,
-				llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
-				llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
-			)
 		case *llm.ToolUseBlock:
 			if b != nil {
 				hasToolUse = true
 				chunks = append(chunks,
-					llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
-					llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
+					&llm.ToolCallStartChunk{Index: outputIndex, ID: b.ID, Name: b.Name},
+					&llm.ToolCallArgsChunk{Index: outputIndex, Delta: string(b.Input)},
 				)
 			}
-		case llm.ReasoningItemBlock:
-			chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: b})
 		case *llm.ReasoningItemBlock:
 			if b != nil {
-				chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: *b})
+				chunks = append(chunks, &llm.ReasoningItemChunk{OutputIndex: int64(outputIndex), Item: *b})
 			}
-		case llm.ImageBlock, llm.ToolResultBlock, *llm.ImageBlock, *llm.ToolResultBlock:
+		case *llm.ImageBlock, *llm.ToolResultBlock:
 		}
 	}
 	finishReason := "stop"
 	if hasToolUse {
 		finishReason = "tool_calls"
 	}
-	return append(chunks, llm.DoneChunk{FinishReason: finishReason, Usage: usage})
+	return append(chunks, &llm.DoneChunk{FinishReason: finishReason, Usage: usage})
 }

@@ -20,15 +20,15 @@ import (
 func TestParentDelegationReturnsFinalTextAndOnlyParentEvents(t *testing.T) {
 	cfg := agenttool.Config{Name: "worker", Description: "delegates work"}
 	childProvider := scripted("child task", nil,
-		llm.TextDeltaChunk{Text: "child ", OutputIndex: 0},
-		llm.ReasoningItemChunk{OutputIndex: 1, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "private"}},
-		llm.TextDeltaChunk{Text: "final", OutputIndex: 2},
+		&llm.TextDeltaChunk{Text: "child ", OutputIndex: 0},
+		&llm.ReasoningItemChunk{OutputIndex: 1, Item: llm.ReasoningItemBlock{Type: "reasoning_item", ID: "private"}},
+		&llm.TextDeltaChunk{Text: "final", OutputIndex: 2},
 	)
 	adapter := agenttool.New(agent.New(childProvider, tool.NewRegistry()), cfg)
 	info, args := adapter.Info(), json.RawMessage(`{"input":"child task"}`)
 	parentProvider := agenttest.NewScriptedProvider(
-		agenttest.Exchange{Method: agenttest.MethodChatStream, Request: request("parent task", []tool.ToolInfo{info}), StreamChunks: toolCallChunks([]llm.ToolUseBlock{{ID: "parent-call", Name: "worker", Input: args}})},
-		agenttest.Exchange{Method: agenttest.MethodChatStream, Request: agenttest.Request{Messages: []llm.Message{llm.UserMessage("parent task"), llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "parent-call", Name: "worker", Input: args}), llm.ToolResultMessage("parent-call", tool.NewTextResult("child final"))}, Tools: []tool.ToolInfo{info}}, StreamChunks: []llm.Chunk{llm.TextDeltaChunk{Text: "parent final"}}},
+		agenttest.Exchange{Method: agenttest.MethodChatStream, Request: request("parent task", []tool.ToolInfo{info}), StreamChunks: toolCallChunks([]*llm.ToolUseBlock{{ID: "parent-call", Name: "worker", Input: args}})},
+		agenttest.Exchange{Method: agenttest.MethodChatStream, Request: agenttest.Request{Messages: []llm.Message{llm.UserMessage("parent task"), llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "parent-call", Name: "worker", Input: args}), llm.ToolResultMessage("parent-call", tool.NewTextResult("child final"))}, Tools: []tool.ToolInfo{info}}, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "parent final"}}},
 	)
 	registry := tool.NewRegistry()
 	registry.MustRegister(adapter)
@@ -74,11 +74,11 @@ func TestParentDelegationReturnsFinalTextAndOnlyParentEvents(t *testing.T) {
 
 func TestParentTruncatesChildToolResult(t *testing.T) {
 	content := strings.Repeat("x", 300)
-	childProvider := scripted("task", nil, llm.TextDeltaChunk{Text: content})
+	childProvider := scripted("task", nil, &llm.TextDeltaChunk{Text: content})
 	adapter := agenttool.New(agent.New(childProvider, tool.NewRegistry()), agenttool.Config{Name: "worker"})
 	registry := tool.NewRegistry()
 	registry.MustRegister(adapter)
-	parent := agent.New(&toolCallsProvider{calls: []llm.ToolUseBlock{{ID: "call", Name: "worker", Input: json.RawMessage(`{"input":"task"}`)}}}, registry, agent.WithContextWindowTokens(128), agent.WithCompactor(nil))
+	parent := agent.New(&toolCallsProvider{calls: []*llm.ToolUseBlock{{ID: "call", Name: "worker", Input: json.RawMessage(`{"input":"task"}`)}}}, registry, agent.WithContextWindowTokens(128), agent.WithCompactor(nil))
 	seq, err := parent.RunStream(t.Context(), "parent")
 	if err != nil {
 		t.Fatal(err)
@@ -103,12 +103,12 @@ func TestParentTruncatesChildToolResult(t *testing.T) {
 func foldParentEvents(t *testing.T, input string, events []agent.AgentEvent) []llm.Message {
 	t.Helper()
 	history := []llm.Message{llm.UserMessage(input)}
-	var calls []llm.ToolUseBlock
+	var calls []*llm.ToolUseBlock
 	var text strings.Builder
 	for _, event := range events {
 		switch event := event.(type) {
 		case agent.ToolCallEvent:
-			calls = append(calls, llm.ToolUseBlock{Type: "tool_use", ID: event.ID, Name: event.Name, Input: event.Args})
+			calls = append(calls, &llm.ToolUseBlock{Type: "tool_use", ID: event.ID, Name: event.Name, Input: event.Args})
 		case agent.ToolResultEvent:
 			if len(calls) == 0 {
 				t.Fatal("ToolResultEvent without a ToolCallEvent")
@@ -130,7 +130,7 @@ func foldParentEvents(t *testing.T, input string, events []agent.AgentEvent) []l
 }
 
 type toolCallsProvider struct {
-	calls  []llm.ToolUseBlock
+	calls  []*llm.ToolUseBlock
 	rounds atomic.Int32
 }
 
@@ -142,13 +142,13 @@ func (p *toolCallsProvider) ChatStream(context.Context, []llm.Message, []tool.To
 	if p.rounds.Add(1) == 1 {
 		return chunks(toolCallChunks(p.calls)...), nil
 	}
-	return chunks(llm.TextDeltaChunk{Text: "parent final"}), nil
+	return chunks(&llm.TextDeltaChunk{Text: "parent final"}), nil
 }
 
-func toolCallChunks(calls []llm.ToolUseBlock) []llm.Chunk {
+func toolCallChunks(calls []*llm.ToolUseBlock) []llm.Chunk {
 	chunks := make([]llm.Chunk, 0, len(calls)*2)
 	for index, call := range calls {
-		chunks = append(chunks, llm.ToolCallStartChunk{Index: index, ID: call.ID, Name: call.Name}, llm.ToolCallArgsChunk{Index: index, ID: call.ID, Delta: string(call.Input)})
+		chunks = append(chunks, &llm.ToolCallStartChunk{Index: index, ID: call.ID, Name: call.Name}, &llm.ToolCallArgsChunk{Index: index, ID: call.ID, Delta: string(call.Input)})
 	}
 	return chunks
 }

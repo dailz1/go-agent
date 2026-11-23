@@ -158,7 +158,7 @@ func TestContextRuntimeSteeringMeasuredCapacity(t *testing.T) {
 				return tool.NewTextResult("result"), err
 			}))
 			first := toolCallChunks("one", "enqueue")
-			first[len(first)-1] = llm.DoneChunk{Usage: &llm.Usage{InputTokens: inputTokens}}
+			first[len(first)-1] = &llm.DoneChunk{Usage: &llm.Usage{InputTokens: inputTokens}}
 			p := NewMockStreamingProvider([][]llm.Chunk{first, textChunks("done")})
 			a = New(p, registry, WithStore(st), WithCompactor(nil), WithContextWindowTokens(2000), WithLogger(discardLogger()))
 			if _, err := a.Run(t.Context(), "q", WithThread("thread")); err != nil {

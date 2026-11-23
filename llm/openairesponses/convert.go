@@ -135,9 +135,9 @@ func userItem(m llm.Message) (inputItem, error) {
 	item := inputItem{Type: "message", Role: string(llm.RoleUser)}
 	for _, blk := range m.Content {
 		switch b := blk.(type) {
-		case llm.TextBlock:
+		case *llm.TextBlock:
 			item.Content = append(item.Content, contentPart{Type: "input_text", Text: b.Text})
-		case llm.ImageBlock:
+		case *llm.ImageBlock:
 			url := b.URL
 			if url == "" && b.MIMEType != "" && len(b.Data) > 0 {
 				url = "data:" + b.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(b.Data)
@@ -170,15 +170,7 @@ func assistantItems(m llm.Message) ([]inputItem, error) {
 	}
 	for _, blk := range m.Content {
 		switch b := blk.(type) {
-		case llm.ReasoningItemBlock:
-			flushText()
-			item := inputItem{Type: "reasoning", ID: b.ID, EncryptedContent: b.EncryptedContent}
-			for _, s := range b.Summary {
-				item.Summary = append(item.Summary, summaryPart{Type: "summary_text", Text: s})
-			}
-			items = append(items, item)
 		case *llm.ReasoningItemBlock:
-			// Pointer form (deep-copied histories): same handling as value.
 			if b == nil {
 				continue
 			}
@@ -188,13 +180,13 @@ func assistantItems(m llm.Message) ([]inputItem, error) {
 				item.Summary = append(item.Summary, summaryPart{Type: "summary_text", Text: s})
 			}
 			items = append(items, item)
-		case llm.ReasoningBlock:
+		case *llm.ReasoningBlock:
 			// Chat Completions-style embedded reasoning text: not part of
 			// the Responses item model; drop it rather than corrupting the
 			// item sequence.
-		case llm.TextBlock:
+		case *llm.TextBlock:
 			textParts = append(textParts, b.Text)
-		case llm.ToolUseBlock:
+		case *llm.ToolUseBlock:
 			flushText()
 			items = append(items, inputItem{
 				Type:      "function_call",
@@ -212,7 +204,7 @@ func assistantItems(m llm.Message) ([]inputItem, error) {
 
 func toolOutputItem(m llm.Message) (inputItem, error) {
 	for _, blk := range m.Content {
-		if tr, ok := blk.(llm.ToolResultBlock); ok {
+		if tr, ok := blk.(*llm.ToolResultBlock); ok {
 			item := inputItem{Type: "function_call_output", CallID: tr.ToolUseID}
 			if len(tr.Images) == 0 {
 				// Wire-identical to the previous `Output string` + omitempty:
@@ -297,7 +289,7 @@ func buildRequest(o llm.Options, defaultModel string, items []inputItem, instruc
 func messageText(m llm.Message) string {
 	var b strings.Builder
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.TextBlock); ok {
+		if tb, ok := blk.(*llm.TextBlock); ok {
 			b.WriteString(tb.Text)
 		}
 	}

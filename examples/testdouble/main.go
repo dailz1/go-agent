@@ -19,7 +19,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%s (tool calls: %d)\n", result.Message.Content[0].(llm.TextBlock).Text, len(calls))
+	fmt.Printf("%s (tool calls: %d)\n", result.Message.Content[0].(*llm.TextBlock).Text, len(calls))
 }
 
 func run() (*agent.RunResult, []agenttest.ToolCall, error) {
@@ -37,10 +37,10 @@ func run() (*agent.RunResult, []agenttest.ToolCall, error) {
 	}
 	args := json.RawMessage(`{"text":"hello from a deterministic tool"}`)
 	initialRequest := agenttest.Request{Messages: []llm.Message{llm.UserMessage("demonstrate a tool")}, Tools: []tool.ToolInfo{echoInfo()}}
-	finalRequest := agenttest.Request{Messages: []llm.Message{llm.UserMessage("demonstrate a tool"), llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "echo-1", Name: "echo", Input: args}), llm.ToolResultMessage("echo-1", tool.NewTextResult("hello from a deterministic tool"))}, Tools: []tool.ToolInfo{echoInfo()}}
+	finalRequest := agenttest.Request{Messages: []llm.Message{llm.UserMessage("demonstrate a tool"), llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "echo-1", Name: "echo", Input: args}), llm.ToolResultMessage("echo-1", tool.NewTextResult("hello from a deterministic tool"))}, Tools: []tool.ToolInfo{echoInfo()}}
 	provider := agenttest.NewScriptedProvider(
 		agenttest.Exchange{Method: agenttest.MethodChatStream, Request: initialRequest, StreamOuterErr: llm.ErrStreamingNotSupported},
-		agenttest.Exchange{Method: agenttest.MethodChat, Request: initialRequest, ChatResponse: ptr(llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "echo-1", Name: "echo", Input: args}))},
+		agenttest.Exchange{Method: agenttest.MethodChat, Request: initialRequest, ChatResponse: ptr(llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "echo-1", Name: "echo", Input: args}))},
 		agenttest.Exchange{Method: agenttest.MethodChatStream, Request: finalRequest, StreamOuterErr: llm.ErrStreamingNotSupported},
 		agenttest.Exchange{Method: agenttest.MethodChat, Request: finalRequest, ChatResponse: ptr(llm.AssistantMessage("script verified"))},
 	)

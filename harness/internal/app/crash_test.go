@@ -362,7 +362,7 @@ func TestCrashDuringToolExecutionOpenDeclaration(t *testing.T) {
 	if unknown.Role != llm.RoleTool || len(unknown.Content) != 1 {
 		t.Fatalf("unknown result = role:%s blocks:%d", unknown.Role, len(unknown.Content))
 	}
-	if tr, ok := unknown.Content[0].(llm.ToolResultBlock); !ok || tr.ToolUseID != "c1" ||
+	if tr, ok := unknown.Content[0].(*llm.ToolResultBlock); !ok || tr.ToolUseID != "c1" ||
 		!tr.IsError || !strings.Contains(tr.Content, "outcome unknown") {
 		t.Fatalf("unknown result block = %#v", unknown.Content[0])
 	}
@@ -424,8 +424,8 @@ func TestControllerRedirectAfterCrashZeroOldModelCalls(t *testing.T) {
 			Options: cfgOpts,
 		},
 		StreamChunks: []llm.Chunk{
-			llm.TextDeltaChunk{Text: "redirected"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "redirected"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 	base.startup.Provider = scripted

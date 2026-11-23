@@ -65,15 +65,15 @@ func TestChatAssemblesOutputItems(t *testing.T) {
 	if msg.Role != llm.RoleAssistant || len(msg.Content) != 3 {
 		t.Fatalf("message = %+v, want 3 blocks", msg)
 	}
-	ri, ok := msg.Content[0].(llm.ReasoningItemBlock)
+	ri, ok := msg.Content[0].(*llm.ReasoningItemBlock)
 	if !ok || ri.ID != "rs_1" || ri.EncryptedContent != "enc-abc" || len(ri.Summary) != 1 {
 		t.Errorf("content[0] = %+v, want reasoning item rs_1", msg.Content[0])
 	}
-	tb, ok := msg.Content[1].(llm.TextBlock)
+	tb, ok := msg.Content[1].(*llm.TextBlock)
 	if !ok || tb.Text != "hello" {
 		t.Errorf("content[1] = %+v, want text hello", msg.Content[1])
 	}
-	ub, ok := msg.Content[2].(llm.ToolUseBlock)
+	ub, ok := msg.Content[2].(*llm.ToolUseBlock)
 	if !ok || ub.ID != "call_1" || ub.Name != "echo" {
 		t.Errorf("content[2] = %+v, want tool_use call_1", msg.Content[2])
 	}
@@ -125,25 +125,23 @@ func TestChatStreamTranslatesEvents(t *testing.T) {
 	var start *llm.ToolCallStartChunk
 	var args string
 	var done *llm.DoneChunk
-	var itemChunks []llm.ReasoningItemChunk
+	var itemChunks []*llm.ReasoningItemChunk
 	var textIndex int64 = -1
 	for _, c := range chunks {
 		switch e := c.(type) {
-		case llm.TextDeltaChunk:
+		case *llm.TextDeltaChunk:
 			texts += e.Text
 			textIndex = e.OutputIndex
-		case llm.ReasoningDeltaChunk:
+		case *llm.ReasoningDeltaChunk:
 			reasonings += e.Text
-		case llm.ToolCallStartChunk:
-			cp := e
-			start = &cp
-		case llm.ToolCallArgsChunk:
+		case *llm.ToolCallStartChunk:
+			start = e
+		case *llm.ToolCallArgsChunk:
 			args += e.Delta
-		case llm.ReasoningItemChunk:
+		case *llm.ReasoningItemChunk:
 			itemChunks = append(itemChunks, e)
-		case llm.DoneChunk:
-			cp := e
-			done = &cp
+		case *llm.DoneChunk:
+			done = e
 		}
 	}
 	if texts != "Hello" {
@@ -216,10 +214,10 @@ func TestChatStreamFailedResponse(t *testing.T) {
 // function_call), and tool results as function_call_output.
 func TestConvertMessagesItemSequence(t *testing.T) {
 	assistant := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc",
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc",
 			Summary: []string{"thought"}},
-		llm.TextBlock{Type: "text", Text: "let me check"},
-		llm.ToolUseBlock{Type: "tool_use", ID: "call_1", Name: "echo", Input: json.RawMessage(`{}`)},
+		&llm.TextBlock{Type: "text", Text: "let me check"},
+		&llm.ToolUseBlock{Type: "tool_use", ID: "call_1", Name: "echo", Input: json.RawMessage(`{}`)},
 	}}
 	messages := []llm.Message{
 		llm.SystemMessage("sys prompt"),
@@ -404,7 +402,7 @@ func TestChatStreamSetupErrorRetryable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stream error: %v", err)
 		}
-		if _, ok := c.(llm.DoneChunk); ok {
+		if _, ok := c.(*llm.DoneChunk); ok {
 			sawDone = true
 		}
 	}
@@ -451,7 +449,7 @@ func TestChatStreamIgnoresEmptyDataFrames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stream error: %v", err)
 		}
-		if _, ok := c.(llm.DoneChunk); ok {
+		if _, ok := c.(*llm.DoneChunk); ok {
 			sawDone = true
 		}
 	}
@@ -467,13 +465,13 @@ func TestChatStreamIgnoresEmptyDataFrames(t *testing.T) {
 func TestToolOutputItemImageParts(t *testing.T) {
 	messages := []llm.Message{
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
-			llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "echoed"}},
+			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "echoed"}},
 		},
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
-			llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_2"}},
+			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_2"}},
 		},
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
-			llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_3", Content: "shot",
+			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_3", Content: "shot",
 				Images: []llm.ImageBlock{
 					{Type: "image", URL: "https://example.com/a.png"},
 					{Type: "image", MIMEType: "image/png", Data: []byte("png")},

@@ -19,7 +19,7 @@ func TestConvertMessages(t *testing.T) {
 		}},
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
 			&llm.ToolResultBlock{ToolUseID: "call", Content: "", IsError: true},
-			llm.ToolResultBlock{ToolUseID: "other", Content: "result"},
+			&llm.ToolResultBlock{ToolUseID: "other", Content: "result"},
 		}},
 	}
 	items, instructions, err := convertMessages(messages)
@@ -50,10 +50,10 @@ func TestConvertMessages(t *testing.T) {
 func TestConvertRejectsInvalidBlocks(t *testing.T) {
 	for name, message := range map[string]llm.Message{
 		"nil":           {Role: llm.RoleUser, Content: []llm.ContentBlock{(*llm.TextBlock)(nil)}},
-		"system image":  {Role: llm.RoleSystem, Content: []llm.ContentBlock{llm.ImageBlock{URL: "https://example.com/a"}}},
-		"missing image": {Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ImageBlock{}}},
-		"user tool":     {Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolUseBlock{ID: "c"}}},
-		"missing call":  {Role: llm.RoleTool, Content: []llm.ContentBlock{llm.ToolResultBlock{Content: "x"}}},
+		"system image":  {Role: llm.RoleSystem, Content: []llm.ContentBlock{&llm.ImageBlock{URL: "https://example.com/a"}}},
+		"missing image": {Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.ImageBlock{}}},
+		"user tool":     {Role: llm.RoleUser, Content: []llm.ContentBlock{&llm.ToolUseBlock{ID: "c"}}},
+		"missing call":  {Role: llm.RoleTool, Content: []llm.ContentBlock{&llm.ToolResultBlock{Content: "x"}}},
 		"role":          {Role: "other"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -115,11 +115,11 @@ func TestConvertNilPointers(t *testing.T) {
 func TestToolResultImageParts(t *testing.T) {
 	messages := []llm.Message{
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
-			llm.ToolResultBlock{ToolUseID: "call_1", Content: "shot",
+			&llm.ToolResultBlock{ToolUseID: "call_1", Content: "shot",
 				Images: []llm.ImageBlock{{URL: "https://example.com/a.png"}, {MIMEType: "image/png", Data: []byte("png")}}},
 		}},
 		{Role: llm.RoleTool, Content: []llm.ContentBlock{
-			llm.ToolResultBlock{ToolUseID: "call_2"},
+			&llm.ToolResultBlock{ToolUseID: "call_2"},
 		}},
 	}
 	items, _, err := convertMessages(messages)
@@ -145,7 +145,7 @@ func TestToolResultImageParts(t *testing.T) {
 	}
 	// The image whitelist applies to tool-result attachments too.
 	rejected := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
-		llm.ToolResultBlock{ToolUseID: "call_3", Images: []llm.ImageBlock{{URL: "data:garbage"}}},
+		&llm.ToolResultBlock{ToolUseID: "call_3", Images: []llm.ImageBlock{{URL: "data:garbage"}}},
 	}}}
 	if _, _, err := convertMessages(rejected); err == nil {
 		t.Fatal("accepted garbage image source")

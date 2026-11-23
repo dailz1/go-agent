@@ -38,14 +38,14 @@ func (p *chunkThenErrProvider) ChatStream(context.Context, []llm.Message, []tool
 func TestAgentEventFoldKeepsFirstToolCallOnError(t *testing.T) {
 	t.Parallel()
 
-	call1 := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
+	call1 := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
 	registry := tool.NewRegistry()
 	registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t1"}, err: errors.New("boom")})
 	p := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
-			llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
+			&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 	ag := New(p, registry, WithLogger(discardLogger()))
@@ -77,8 +77,8 @@ func TestAgentEventFoldDiscardsPartialRoundOnStreamError(t *testing.T) {
 
 	p := &chunkThenErrProvider{
 		chunks: []llm.Chunk{
-			llm.TextDeltaChunk{Text: "par"},
-			llm.TextDeltaChunk{Text: "tial"},
+			&llm.TextDeltaChunk{Text: "par"},
+			&llm.TextDeltaChunk{Text: "tial"},
 		},
 		err: errors.New("stream broke"),
 	}
@@ -106,18 +106,18 @@ func TestAgentEventFoldDiscardsPartialRoundOnStreamError(t *testing.T) {
 func TestAgentEventFoldKeepsRoundWithPartialResultsOnError(t *testing.T) {
 	t.Parallel()
 
-	call1 := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
-	call2 := llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
+	call1 := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
+	call2 := &llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
 	registry := tool.NewRegistry()
 	registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t1"}, result: tool.NewTextResult("r1")})
 	registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "t2"}, err: errors.New("boom")})
 	p := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
-			llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-			llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
-			llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
+			&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+			&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
+			&llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 	ag := New(p, registry, WithLogger(discardLogger()))
@@ -152,8 +152,8 @@ func TestAgentEventFoldKeepsRoundWithPartialResultsOnError(t *testing.T) {
 func TestRunStreamCancelAfterAnnouncedCallsRebuilds(t *testing.T) {
 	t.Parallel()
 
-	call1 := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
-	call2 := llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
+	call1 := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
+	call2 := &llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
 	registry := tool.NewRegistry()
 	t1 := &countingTool{info: tool.ToolInfo{Name: "t1"}, result: tool.NewTextResult("r1")}
 	t2 := &countingTool{info: tool.ToolInfo{Name: "t2"}, result: tool.NewTextResult("r2")}
@@ -161,11 +161,11 @@ func TestRunStreamCancelAfterAnnouncedCallsRebuilds(t *testing.T) {
 	registry.MustRegister(t2)
 	p := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
-			llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-			llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
-			llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
+			&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+			&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
+			&llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 	ag := New(p, registry, WithLogger(discardLogger()))
@@ -216,18 +216,18 @@ func TestRunStreamCancelAfterAnnouncedCallsRebuilds(t *testing.T) {
 func TestRunStreamCancelMidAnnouncementStillAnnouncesAll(t *testing.T) {
 	t.Parallel()
 
-	call1 := llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
-	call2 := llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
+	call1 := &llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "t1", Input: json.RawMessage(`{}`)}
+	call2 := &llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "t2", Input: json.RawMessage(`{}`)}
 	registry := tool.NewRegistry()
 	t1 := &countingTool{info: tool.ToolInfo{Name: "t1"}, result: tool.NewTextResult("r1")}
 	registry.MustRegister(t1)
 	p := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
-			llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
-			llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
-			llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "t1"},
+			&llm.ToolCallArgsChunk{Index: 0, ID: "c1", Delta: `{}`},
+			&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "t2"},
+			&llm.ToolCallArgsChunk{Index: 1, ID: "c2", Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 	ag := New(p, registry, WithLogger(discardLogger()))

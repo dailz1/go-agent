@@ -15,9 +15,9 @@ import (
 // carried with empty arguments and no conversion error.
 func TestAssistantItemsCrossProviderDegrade(t *testing.T) {
 	m := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningBlock{Type: "reasoning", Content: "foreign chain of thought"},
-		llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc"},
-		llm.ToolUseBlock{Type: "tool_use", ID: "call_1", Name: "f", Input: json.RawMessage("")},
+		&llm.ReasoningBlock{Type: "reasoning", Content: "foreign chain of thought"},
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc"},
+		&llm.ToolUseBlock{Type: "tool_use", ID: "call_1", Name: "f", Input: json.RawMessage("")},
 	}}
 	items, err := assistantItems(m)
 	if err != nil {

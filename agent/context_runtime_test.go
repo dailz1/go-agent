@@ -48,7 +48,7 @@ func contextContinue(context.Context, FinishRoundContext) (FinishRoundDecision, 
 }
 
 func contextChunks(text string, usage *llm.Usage) []llm.Chunk {
-	return []llm.Chunk{llm.TextDeltaChunk{Text: text}, llm.DoneChunk{Usage: usage}}
+	return []llm.Chunk{&llm.TextDeltaChunk{Text: text}, &llm.DoneChunk{Usage: usage}}
 }
 
 func TestContextRuntimeCompactionBudgets(t *testing.T) {
@@ -175,7 +175,7 @@ type contextFailingStream struct {
 
 func (p *contextFailingStream) ChatStream(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return func(yield func(llm.Chunk, error) bool) {
-		if yield(llm.DoneChunk{Usage: &llm.Usage{InputTokens: 1000}}, nil) {
+		if yield(&llm.DoneChunk{Usage: &llm.Usage{InputTokens: 1000}}, nil) {
 			yield(nil, p.cause)
 		}
 	}, nil

@@ -97,7 +97,7 @@ func (s *streamState) register(index int, output outputItem) (*itemState, []llm.
 			item.started = true
 			item.item.CallID, item.item.Name = output.CallID, output.Name
 			s.calls[output.CallID] = index
-			chunks = append(chunks, llm.ToolCallStartChunk{Index: index, ID: output.CallID, Name: output.Name})
+			chunks = append(chunks, &llm.ToolCallStartChunk{Index: index, ID: output.CallID, Name: output.Name})
 		}
 	}
 	return item, chunks, nil
@@ -147,7 +147,7 @@ func (item *itemState) flushText(index int) []llm.Chunk {
 			break
 		}
 		if part.delivered < part.text.Len() {
-			chunks = append(chunks, llm.TextDeltaChunk{OutputIndex: int64(index), Text: part.text.String()[part.delivered:]})
+			chunks = append(chunks, &llm.TextDeltaChunk{OutputIndex: int64(index), Text: part.text.String()[part.delivered:]})
 			part.delivered = part.text.Len()
 		}
 		if !part.done {
@@ -174,7 +174,7 @@ func (item *itemState) finishArgs(index int, full *string) ([]llm.Chunk, error) 
 	item.size += len(*full)
 	item.args.WriteString(*full)
 	item.argsDone = true
-	return []llm.Chunk{llm.ToolCallArgsChunk{Index: index, ID: item.item.CallID, Delta: *full}}, nil
+	return []llm.Chunk{&llm.ToolCallArgsChunk{Index: index, ID: item.item.CallID, Delta: *full}}, nil
 }
 
 func (s *streamState) finishItem(index int, output outputItem) ([]llm.Chunk, error) {
@@ -239,7 +239,7 @@ func (s *streamState) finishItem(index int, output outputItem) ([]llm.Chunk, err
 		if size > llm.MaxResponseBody {
 			return nil, protocolError("reasoning exceeds 10 MiB")
 		}
-		chunks = append(chunks, llm.ReasoningItemChunk{OutputIndex: int64(index), Item: block})
+		chunks = append(chunks, &llm.ReasoningItemChunk{OutputIndex: int64(index), Item: block})
 	}
 	item.item, item.done = output, true
 	return chunks, nil

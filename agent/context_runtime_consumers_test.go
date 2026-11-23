@@ -33,7 +33,7 @@ func TestContextOverlayFitterCacheParity(t *testing.T) {
 				history = []llm.Message{}
 			}
 			if i%7 == 0 {
-				history = append(history, llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "bad", Name: "bad", Input: []byte("{")}))
+				history = append(history, llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "bad", Name: "bad", Input: []byte("{")}))
 			}
 			w := 500 + rng.Intn(1500)
 			a := New(NewMockProvider(), tool.NewRegistry(), WithLogger(discardLogger()))

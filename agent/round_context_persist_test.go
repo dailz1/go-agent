@@ -20,11 +20,11 @@ func TestRoundContextProviderPersistence(t *testing.T) {
 		registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("ok")})
 		p := &capturedProvider{streams: []capturedStreamResult{
 			{chunks: []llm.Chunk{
-				llm.ToolCallStartChunk{Index: 0, ID: "call", Name: "echo"},
-				llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-				llm.DoneChunk{FinishReason: "tool_calls"},
+				&llm.ToolCallStartChunk{Index: 0, ID: "call", Name: "echo"},
+				&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+				&llm.DoneChunk{FinishReason: "tool_calls"},
 			}},
-			{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
+			{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}},
 		}}
 		var requests []RoundContextRequest
 		ag := New(p, registry, WithStore(st), WithRoundContextProvider(func(_ context.Context, request RoundContextRequest) (string, error) {
@@ -68,7 +68,7 @@ func TestRoundContextProviderPersistence(t *testing.T) {
 
 	t.Run("RunWithHistory preserves caller history and excludes overlay", func(t *testing.T) {
 		history := []llm.Message{llm.SystemMessage("system"), llm.UserMessage("old")}
-		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}}}}
+		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}}}}
 		ag := New(p, tool.NewRegistry(), WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
 			return "history-snapshot", nil
 		}), WithLogger(discardLogger()))
@@ -93,7 +93,7 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 
 	t.Run("post-session callback error is resumable", func(t *testing.T) {
 		st := store.NewMemory()
-		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}}}}
+		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}}}}
 		want := errors.New("snapshot unavailable")
 		attempt := 0
 		ag := New(p, tool.NewRegistry(), WithStore(st), WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
@@ -127,8 +127,8 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 	t.Run("early stream break reports no synthetic interruption", func(t *testing.T) {
 		st := store.NewMemory()
 		p := &capturedProvider{streams: []capturedStreamResult{
-			{chunks: []llm.Chunk{llm.TextDeltaChunk{Text: "partial"}}},
-			{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
+			{chunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "partial"}}},
+			{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}},
 		}}
 		ag := New(p, tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
 		seq, err := ag.RunStream(context.Background(), "input", WithThread("thread"))
@@ -177,7 +177,7 @@ func TestRunInterruptedErrorPersistentBoundaries(t *testing.T) {
 
 	t.Run("closed-thread sentinel penetrates interruption wrapper", func(t *testing.T) {
 		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		}}}}
 		ag := New(p, tool.NewRegistry(), WithStore(store.NewMemory()), WithLogger(discardLogger()))
 		if _, err := ag.Run(context.Background(), "input", WithThread("closed-thread")); err != nil {

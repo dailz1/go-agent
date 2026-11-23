@@ -46,7 +46,7 @@ func TestParentToolConcurrencyMatchesAdapterScope(t *testing.T) {
 		adapter := agenttool.New(agent.New(provider, tool.NewRegistry()), agenttool.Config{Name: "worker"})
 		registry := tool.NewRegistry()
 		registry.MustRegister(adapter)
-		parent := agent.New(&toolCallsProvider{calls: []llm.ToolUseBlock{
+		parent := agent.New(&toolCallsProvider{calls: []*llm.ToolUseBlock{
 			{ID: "one", Name: "worker", Input: json.RawMessage(`{"input":"one"}`)},
 			{ID: "two", Name: "worker", Input: json.RawMessage(`{"input":"two"}`)},
 		}}, registry, agent.WithToolConcurrency(2))
@@ -72,7 +72,7 @@ func TestParentToolConcurrencyMatchesAdapterScope(t *testing.T) {
 		registry := tool.NewRegistry()
 		registry.MustRegister(first)
 		registry.MustRegister(second)
-		parent := agent.New(&toolCallsProvider{calls: []llm.ToolUseBlock{
+		parent := agent.New(&toolCallsProvider{calls: []*llm.ToolUseBlock{
 			{ID: "one", Name: "first", Input: json.RawMessage(`{"input":"one"}`)},
 			{ID: "two", Name: "second", Input: json.RawMessage(`{"input":"two"}`)},
 		}}, registry, agent.WithToolConcurrency(2))
@@ -156,7 +156,7 @@ func (p *blockingProvider) ChatStream(ctx context.Context, _ []llm.Message, _ []
 		p.started <- struct{}{}
 		select {
 		case <-p.release:
-			yield(llm.TextDeltaChunk{Text: "done"}, nil)
+			yield(&llm.TextDeltaChunk{Text: "done"}, nil)
 		case <-ctx.Done():
 			yield(nil, ctx.Err())
 		}

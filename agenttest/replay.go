@@ -101,22 +101,22 @@ func decodeExchange(encoded dtoExchange) (Exchange, error) {
 func decodeChunk(encoded dtoChunk) (llm.Chunk, error) {
 	switch encoded.Type {
 	case "text_delta":
-		return llm.TextDeltaChunk{Text: encoded.Text, OutputIndex: encoded.OutputIndex}, nil
+		return &llm.TextDeltaChunk{Text: encoded.Text, OutputIndex: encoded.OutputIndex}, nil
 	case "reasoning_delta":
-		return llm.ReasoningDeltaChunk{Text: encoded.Text}, nil
+		return &llm.ReasoningDeltaChunk{Text: encoded.Text}, nil
 	case "tool_call_start":
-		return llm.ToolCallStartChunk{Index: encoded.Index, ID: encoded.ID, Name: encoded.Name}, nil
+		return &llm.ToolCallStartChunk{Index: encoded.Index, ID: encoded.ID, Name: encoded.Name}, nil
 	case "tool_call_args":
-		return llm.ToolCallArgsChunk{Index: encoded.Index, ID: encoded.ID, Delta: encoded.Delta}, nil
+		return &llm.ToolCallArgsChunk{Index: encoded.Index, ID: encoded.ID, Delta: encoded.Delta}, nil
 	case "reasoning_item":
 		if encoded.Item == nil {
 			return nil, incompatiblef("reasoning item missing item")
 		}
 		item := *encoded.Item
 		item.Summary = cloneStrings(item.Summary)
-		return llm.ReasoningItemChunk{OutputIndex: encoded.OutputIndex, Item: item}, nil
+		return &llm.ReasoningItemChunk{OutputIndex: encoded.OutputIndex, Item: item}, nil
 	case "done":
-		return llm.DoneChunk{FinishReason: encoded.FinishReason, Usage: cloneUsage(encoded.Usage)}, nil
+		return &llm.DoneChunk{FinishReason: encoded.FinishReason, Usage: cloneUsage(encoded.Usage)}, nil
 	default:
 		return nil, incompatiblef("unknown chunk type %q", encoded.Type)
 	}

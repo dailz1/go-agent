@@ -88,7 +88,7 @@ func TestSettleInterruptCommittedResults(t *testing.T) {
 				}
 				settleInterruptEmptyCancel(t, st)
 				got := historyResultBlocks(snapshot.History)
-				want := []llm.ToolResultBlock{
+				want := []*llm.ToolResultBlock{
 					{Type: "tool_result", ToolUseID: "c1", Content: "real success"},
 					{Type: "tool_result", ToolUseID: "c2", Content: "real rejection", IsError: true},
 				}

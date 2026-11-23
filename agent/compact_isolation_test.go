@@ -26,7 +26,7 @@ func isolationSeed() []llm.Message {
 }
 
 func mutateSystemInPlace(history []llm.Message) bool {
-	block, ok := history[0].Content[0].(llm.TextBlock)
+	block, ok := history[0].Content[0].(*llm.TextBlock)
 	if !ok {
 		return false
 	}
@@ -41,8 +41,6 @@ func firstMessageText(history []llm.Message) string {
 	}
 	for _, block := range history[0].Content {
 		switch tb := block.(type) {
-		case llm.TextBlock:
-			return tb.Text
 		case *llm.TextBlock:
 			if tb != nil {
 				return tb.Text
@@ -159,12 +157,12 @@ func TestWellBehavedCompactorStillAdopts(t *testing.T) {
 func TestCopyMessagesIsolatesEmptyContentBacking(t *testing.T) {
 	src := []llm.Message{{Role: llm.RoleUser, Content: make([]llm.ContentBlock, 0, 4)}}
 	dst := deepCopyMessages(src)
-	dst[0].Content = append(dst[0].Content, llm.TextBlock{Type: "text", Text: "appended"})
+	dst[0].Content = append(dst[0].Content, &llm.TextBlock{Type: "text", Text: "appended"})
 	if len(src[0].Content) != 0 {
 		t.Fatalf("source Content length = %d, want 0", len(src[0].Content))
 	}
 	if cap(src[0].Content) > 0 {
-		if leaked, ok := src[0].Content[:1][0].(llm.TextBlock); ok && leaked.Text == "appended" {
+		if leaked, ok := src[0].Content[:1][0].(*llm.TextBlock); ok && leaked.Text == "appended" {
 			t.Errorf("destination append leaked into source backing array")
 		}
 	}
@@ -354,7 +352,7 @@ func TestAdoptedHistoryIsolatedFromCompactorRetention(t *testing.T) {
 			t.Fatalf("RunStream() error = %v", evErr)
 		}
 		if _, ok := event.(CompactionEvent); ok {
-			block, ok := retained[1].Content[0].(llm.TextBlock)
+			block, ok := retained[1].Content[0].(*llm.TextBlock)
 			if !ok {
 				t.Fatalf("retained user block not in expected value form")
 			}
@@ -366,7 +364,7 @@ func TestAdoptedHistoryIsolatedFromCompactorRetention(t *testing.T) {
 		t.Fatal("provider was not called")
 	}
 	last := requests[len(requests)-1]
-	got, ok := last[1].Content[0].(llm.TextBlock)
+	got, ok := last[1].Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("provider user block not in expected value form")
 	}
@@ -377,7 +375,7 @@ func TestAdoptedHistoryIsolatedFromCompactorRetention(t *testing.T) {
 
 func TestUnchangedMutationCannotShrinkLiveHistory(t *testing.T) {
 	compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
-		block, ok := history[1].Content[0].(llm.TextBlock)
+		block, ok := history[1].Content[0].(*llm.TextBlock)
 		if !ok {
 			t.Errorf("compactor input user block not in expected value form")
 			return CompactionResult{History: history}, nil

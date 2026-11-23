@@ -7,7 +7,7 @@ Provider-agnostic LLM seam: Provider iface, Message/ContentBlock/Chunk sealed un
 | Task | Location |
 |------|----------|
 | Provider contract | provider.go:19 — Name/Chat/ChatStream; `ErrStreamingNotSupported` sentinel; chunk-delivery-lazy `iter.Seq2` (setup eager per adapter, see ChatStream doc) |
-| Message model | message.go:22 — Role + sealed []ContentBlock :27 (Text/Reasoning/Image/ToolUse/ReasoningItem/ToolResult); OpenAI string-content compatible; constructors :93-:126 |
+| Message model | message.go:22 — Role + sealed []ContentBlock :27 (Text/Reasoning/Image/ToolUse/ReasoningItem/ToolResult); OpenAI string-content compatible; constructors :95-:158 |
 | Stream chunks | chunk.go:20 — 6 sealed variants (TextDelta..DoneChunk) |
 | Retry + errors | retry.go, errors.go:9 — `APIError` leaf (no Unwrap); `Retryable()` = 429/5xx :21 |
 | HTTP/SSE plumbing | http.go (10MB body cap :20), sse.go (1MB line cap :29) |
@@ -26,6 +26,6 @@ Provider-agnostic LLM seam: Provider iface, Message/ContentBlock/Chunk sealed un
 - Do not wrap/retry mid-stream SSE errors.
 
 ## NOTES
-- Message constructors live at message.go:93-:126 (Text/System/User/etc.) — build histories with these, not struct literals.
+- Message constructors live at message.go:95-:158 (System/User/Assistant/AssistantToolCall/ToolResult) — build histories with these, not struct literals.
 - The e2e file llm/openairesponses/e2e_test.go is `//go:build e2e`-gated and invisible to plain `go test ./...`.
 - Every adapter pins a 120s default HTTP client timeout; overrides flow through llm.Option.

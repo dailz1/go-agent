@@ -118,14 +118,14 @@ type demoProvider struct{}
 func (d *demoProvider) Name() string { return "demo" }
 
 func (d *demoProvider) Chat(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (*llm.Message, *llm.Usage, error) {
-	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "demo"}}}, nil, nil
+	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "demo"}}}, nil, nil
 }
 
 func (d *demoProvider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return func(yield func(llm.Chunk, error) bool) {
-		if !yield(llm.TextDeltaChunk{Text: "hello"}, nil) {
+		if !yield(&llm.TextDeltaChunk{Text: "hello"}, nil) {
 			return
 		}
-		yield(llm.DoneChunk{}, nil)
+		yield(&llm.DoneChunk{}, nil)
 	}, nil
 }

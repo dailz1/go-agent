@@ -24,7 +24,7 @@ func (p *progressProvider) Chat(_ context.Context, messages []llm.Message, _ []t
 	p.messages = append(p.messages, messages)
 	p.calls++
 	if p.calls == 1 {
-		message := llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "1", Name: "remote__progress", Input: json.RawMessage(`{}`)})
+		message := llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "1", Name: "remote__progress", Input: json.RawMessage(`{}`)})
 		return &message, nil, nil
 	}
 	message := llm.AssistantMessage("done")

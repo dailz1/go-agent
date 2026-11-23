@@ -112,7 +112,7 @@ func TestAgentRun_ToolCallThenReply(t *testing.T) {
 	})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "mock_tool", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "mock_tool", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("done")),
 	)
 
@@ -145,7 +145,7 @@ func TestAgentRun_ToolCallThenReply(t *testing.T) {
 
 func TestAgentRun_ToolNotFound(t *testing.T) {
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "nonexistent", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "nonexistent", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("ok I see the error")),
 	)
 
@@ -166,7 +166,7 @@ func TestAgentRun_ToolNotFound(t *testing.T) {
 	if toolResultMsg.Role != llm.RoleTool {
 		t.Fatalf("History[2].Role = %q, want tool", toolResultMsg.Role)
 	}
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -186,7 +186,7 @@ func TestAgentRun_ApprovalFailsClosed(t *testing.T) {
 	reg.MustRegister(sensitiveTool)
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("understood rejection")),
 	)
 
@@ -200,7 +200,7 @@ func TestAgentRun_ApprovalFailsClosed(t *testing.T) {
 	}
 
 	toolResultMsg := result.History[2]
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -221,7 +221,7 @@ func TestAgentRun_ApprovalRejected(t *testing.T) {
 	})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("understood rejection")),
 	)
 
@@ -236,7 +236,7 @@ func TestAgentRun_ApprovalRejected(t *testing.T) {
 	}
 
 	toolResultMsg := result.History[2]
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -253,7 +253,7 @@ func TestAgentRun_ApprovalApproved(t *testing.T) {
 	})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("done")),
 	)
 
@@ -272,7 +272,7 @@ func TestAgentRun_ApprovalApproved(t *testing.T) {
 	}
 
 	toolResultMsg := result.History[2]
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -294,7 +294,7 @@ func TestAgentRun_Truncated(t *testing.T) {
 	var responses []mockResponse
 	for i := 0; i < 5; i++ {
 		responses = append(responses, MsgResponse(
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", i), Name: "loop_tool", Input: json.RawMessage(`{}`)}),
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", i), Name: "loop_tool", Input: json.RawMessage(`{}`)}),
 		))
 	}
 
@@ -341,7 +341,7 @@ func TestAgentRun_ToolExecuteError(t *testing.T) {
 	})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "boom_tool", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "boom_tool", Input: json.RawMessage(`{}`)})),
 	)
 
 	agent := New(provider, reg, WithLogger(discardLogger()))
@@ -366,7 +366,7 @@ func TestAgentRun_NilToolResult(t *testing.T) {
 	})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "nil_tool", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "nil_tool", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("ok")),
 	)
 
@@ -377,7 +377,7 @@ func TestAgentRun_NilToolResult(t *testing.T) {
 	}
 
 	toolResultMsg := result.History[2]
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -408,7 +408,7 @@ func TestAgentRun_WithSystemPrompt(t *testing.T) {
 	if first.Role != llm.RoleSystem {
 		t.Errorf("first message Role = %q, want %q", first.Role, llm.RoleSystem)
 	}
-	tb, ok := first.Content[0].(llm.TextBlock)
+	tb, ok := first.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatal("first message Content[0] is not a TextBlock")
 	}
@@ -425,7 +425,7 @@ func TestAgentRun_HistoryContainsFullTrace(t *testing.T) {
 	})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "tracer", Input: json.RawMessage(`{}`)})),
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "tracer", Input: json.RawMessage(`{}`)})),
 		MsgResponse(llm.AssistantMessage("final answer")),
 	)
 
@@ -484,7 +484,7 @@ func TestAgentRun_EmptyInput(t *testing.T) {
 	if first.Role != llm.RoleUser {
 		t.Errorf("first message Role = %q, want %q", first.Role, llm.RoleUser)
 	}
-	tb, ok := first.Content[0].(llm.TextBlock)
+	tb, ok := first.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatal("first message Content[0] is not a TextBlock")
 	}
@@ -532,8 +532,8 @@ func TestAgentRun_MultipleToolCallsInOneResponse(t *testing.T) {
 	// LLM returns 2 tool calls in one response
 	provider := NewMockProvider(
 		MsgResponse(llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "add", Input: json.RawMessage(`{}`)},
-			llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "mul", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "add", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "mul", Input: json.RawMessage(`{}`)},
 		)),
 		MsgResponse(llm.AssistantMessage("done")),
 	)
@@ -569,14 +569,14 @@ func TestAgentRun_MultipleToolCallsInOneResponse(t *testing.T) {
 
 	// Verify tool results appear in order: add first, then mul
 	// Verify tool results appear in order: add first, then mul
-	trAdd, ok := result.History[2].Content[0].(llm.ToolResultBlock)
+	trAdd, ok := result.History[2].Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
 	if trAdd.Content != "add result" {
 		t.Errorf("first tool result = %q, want %q", trAdd.Content, "add result")
 	}
-	trMul, ok := result.History[3].Content[0].(llm.ToolResultBlock)
+	trMul, ok := result.History[3].Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[3].Content[0] is not a ToolResultBlock")
 	}
@@ -596,10 +596,10 @@ func TestAgentRun_MaxIterBoundary(t *testing.T) {
 
 	provider := NewMockProvider(
 		MsgResponse(llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "loop", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "loop", Input: json.RawMessage(`{}`)},
 		)),
 		MsgResponse(llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "loop", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "loop", Input: json.RawMessage(`{}`)},
 		)),
 	)
 
@@ -638,7 +638,7 @@ func TestAgentRun_DefaultMaxIter(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		responses = append(responses, MsgResponse(
 			llm.AssistantToolCallMessage(
-				llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", i), Name: "step", Input: json.RawMessage(`{}`)},
+				&llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", i), Name: "step", Input: json.RawMessage(`{}`)},
 			),
 		))
 	}
@@ -675,7 +675,7 @@ func TestAgentRun_ToolRequiresApproval_WithCallback(t *testing.T) {
 
 	provider := NewMockProvider(
 		MsgResponse(llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "sensitive", Input: json.RawMessage(`{}`)},
 		)),
 		MsgResponse(llm.AssistantMessage("done")),
 	)
@@ -701,7 +701,7 @@ func TestAgentRun_ToolRequiresApproval_WithCallback(t *testing.T) {
 	}
 
 	toolResultMsg := result.History[2]
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -718,7 +718,7 @@ func TestAgentRun_EmptyToolRegistry(t *testing.T) {
 
 	provider := NewMockProvider(
 		MsgResponse(llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "nonexistent", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "nonexistent", Input: json.RawMessage(`{}`)},
 		)),
 		MsgResponse(llm.AssistantMessage("I see the error")),
 	)
@@ -734,7 +734,7 @@ func TestAgentRun_EmptyToolRegistry(t *testing.T) {
 	}
 
 	toolResultMsg := result.History[2]
-	trBlock, ok := toolResultMsg.Content[0].(llm.ToolResultBlock)
+	trBlock, ok := toolResultMsg.Content[0].(*llm.ToolResultBlock)
 	if !ok {
 		t.Fatal("History[2].Content[0] is not a ToolResultBlock")
 	}
@@ -783,7 +783,7 @@ func TestAgentRun_MessagesPassedToProvider(t *testing.T) {
 	wrapper := &messageCapturingMock{
 		inner: NewMockProvider(
 			MsgResponse(llm.AssistantToolCallMessage(
-				llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)},
+				&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)},
 			)),
 			MsgResponse(llm.AssistantMessage("final")),
 		),
@@ -929,7 +929,7 @@ func containsStr(s, substr string) bool {
 
 func TestRunStream_DirectTextReply(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "hello"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "hello"}, &llm.DoneChunk{FinishReason: "stop"}},
 	})
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -969,13 +969,13 @@ func TestRunStream_ToolCallThenReply(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{"input":"hi"}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{"input":"hi"}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -1040,15 +1040,15 @@ func TestRunStream_MultipleToolCallsInOneStream(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "add"},
-			llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "mul"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{"a":1}`},
-			llm.ToolCallArgsChunk{Index: 1, Delta: `{"b":2}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "add"},
+			&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "mul"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{"a":1}`},
+			&llm.ToolCallArgsChunk{Index: 1, Delta: `{"b":2}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "all done"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "all done"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -1100,9 +1100,9 @@ func TestRunStream_Truncated(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "loop_tool"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "loop_tool"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 
@@ -1149,7 +1149,7 @@ func TestRunStream_Truncated(t *testing.T) {
 
 func TestRunStream_ContextCancellation(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "should not reach"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "should not reach"}, &llm.DoneChunk{FinishReason: "stop"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1253,13 +1253,13 @@ func TestRunStream_ApprovalRejected(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "sensitive"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "sensitive"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "understood rejection"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "understood rejection"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -1293,13 +1293,13 @@ func TestRunStream_ApprovalRejected(t *testing.T) {
 func TestRunStream_ToolNotFound(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "nonexistent_tool"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "nonexistent_tool"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "I see the error"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "I see the error"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -1334,13 +1334,13 @@ func TestRunStream_HistoryIntegrity(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "final"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "final"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -1383,13 +1383,13 @@ func TestRunStream_TextAndToolCallsInSameStream(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.TextDeltaChunk{Text: "thinking..."},
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.TextDeltaChunk{Text: "thinking..."},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -1442,7 +1442,7 @@ func TestRunStream_TextAndToolCallsInSameStream(t *testing.T) {
 
 	hasToolUse := false
 	for _, block := range assistantMsg.Content {
-		if _, ok := block.(llm.ToolUseBlock); ok {
+		if _, ok := block.(*llm.ToolUseBlock); ok {
 			hasToolUse = true
 		}
 	}
@@ -1453,7 +1453,7 @@ func TestRunStream_TextAndToolCallsInSameStream(t *testing.T) {
 
 func TestRunStream_EmptyStreamDoneOnly(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
-		{llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.DoneChunk{FinishReason: "stop"}},
 	})
 
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
@@ -1489,10 +1489,10 @@ func TestRunStream_CallerBreaksEarly(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.TextDeltaChunk{Text: "hello"},
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.TextDeltaChunk{Text: "hello"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 	})
 
@@ -1825,7 +1825,7 @@ func TestAgentRun_RetryOnSecondIteration(t *testing.T) {
 		MsgResponse(llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentBlock{
-				llm.ToolUseBlock{ID: "c1", Name: "test_tool", Input: json.RawMessage(`{}`)},
+				&llm.ToolUseBlock{ID: "c1", Name: "test_tool", Input: json.RawMessage(`{}`)},
 			},
 		}),
 		// Iteration 2: 429 error (triggers retry)
@@ -1873,7 +1873,7 @@ func TestAgentRun_ExplicitZeroMaxRetriesUsesDefault(t *testing.T) {
 
 func TestAgentRunStream_RetryOnRateLimit(t *testing.T) {
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "recovered!"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "recovered!"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
@@ -1909,7 +1909,7 @@ func TestAgentRunStream_RetryOnRateLimit(t *testing.T) {
 
 func TestAgentRunStream_RetryOnNetworkError(t *testing.T) {
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "recovered!"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "recovered!"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		fmt.Errorf("dial: %w", syscall.ECONNREFUSED),
@@ -1936,7 +1936,7 @@ func TestAgentRunStream_RetryOnNetworkError(t *testing.T) {
 
 func TestAgentRunStream_RetryEventFields(t *testing.T) {
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "ok"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "ok"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
@@ -2007,7 +2007,7 @@ func TestAgentRunStream_NoRetryOnNonRetryable(t *testing.T) {
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 401},
 		1,
-		[][]llm.Chunk{{llm.TextDeltaChunk{Text: "should not reach"}, llm.DoneChunk{FinishReason: "stop"}}},
+		[][]llm.Chunk{{&llm.TextDeltaChunk{Text: "should not reach"}, &llm.DoneChunk{FinishReason: "stop"}}},
 	)
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -2074,7 +2074,7 @@ func TestAgentRunStream_NoRetryOnContextCanceled(t *testing.T) {
 	provider := NewRetryableStreamingMockProvider(
 		fmt.Errorf("connection refused"),
 		1,
-		[][]llm.Chunk{{llm.TextDeltaChunk{Text: "should not reach"}, llm.DoneChunk{FinishReason: "stop"}}},
+		[][]llm.Chunk{{&llm.TextDeltaChunk{Text: "should not reach"}, &llm.DoneChunk{FinishReason: "stop"}}},
 	)
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -2094,7 +2094,7 @@ func TestAgentRunStream_NoRetryOnContextCanceled(t *testing.T) {
 
 func TestAgentRunStream_MultipleRetries(t *testing.T) {
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "finally!"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "finally!"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
@@ -2126,7 +2126,7 @@ func TestAgentRunStream_MultipleRetries(t *testing.T) {
 
 func TestAgentRunStream_RetryPreservesStreamContent(t *testing.T) {
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "hello world"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "hello world"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
@@ -2154,7 +2154,7 @@ func TestAgentRunStream_RetryPreservesStreamContent(t *testing.T) {
 func TestAgentRunStream_RetryReasonSanitized(t *testing.T) {
 	t.Run("429", func(t *testing.T) {
 		chunks := [][]llm.Chunk{
-			{llm.TextDeltaChunk{Text: "ok"}, llm.DoneChunk{FinishReason: "stop"}},
+			{&llm.TextDeltaChunk{Text: "ok"}, &llm.DoneChunk{FinishReason: "stop"}},
 		}
 		provider := NewRetryableStreamingMockProvider(
 			&llm.APIError{StatusCode: 429, Body: "sensitive internal details"},
@@ -2177,7 +2177,7 @@ func TestAgentRunStream_RetryReasonSanitized(t *testing.T) {
 
 	t.Run("500", func(t *testing.T) {
 		chunks := [][]llm.Chunk{
-			{llm.TextDeltaChunk{Text: "ok"}, llm.DoneChunk{FinishReason: "stop"}},
+			{&llm.TextDeltaChunk{Text: "ok"}, &llm.DoneChunk{FinishReason: "stop"}},
 		}
 		provider := NewRetryableStreamingMockProvider(
 			&llm.APIError{StatusCode: 500, Body: "internal server error details"},
@@ -2239,7 +2239,7 @@ func TestAgentRunStream_OnRetryCalled(t *testing.T) {
 	var callbackCount atomic.Int32
 
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "recovered!"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "recovered!"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
@@ -2307,7 +2307,7 @@ func TestRunWithHistory(t *testing.T) {
 		}
 
 		// Verify the original history messages are preserved
-		tb0, ok := result.History[0].Content[0].(llm.TextBlock)
+		tb0, ok := result.History[0].Content[0].(*llm.TextBlock)
 		if !ok {
 			t.Fatal("History[0].Content[0] is not a TextBlock")
 		}
@@ -2315,7 +2315,7 @@ func TestRunWithHistory(t *testing.T) {
 			t.Errorf("History[0] text = %q, want %q", tb0.Text, "first question")
 		}
 
-		tb1, ok := result.History[1].Content[0].(llm.TextBlock)
+		tb1, ok := result.History[1].Content[0].(*llm.TextBlock)
 		if !ok {
 			t.Fatal("History[1].Content[0] is not a TextBlock")
 		}
@@ -2401,7 +2401,7 @@ func TestRunWithHistory(t *testing.T) {
 
 		history := []llm.Message{
 			llm.UserMessage("original question"),
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 				Type:  "tool_use",
 				ID:    "c0",
 				Name:  "mock_tool",
@@ -2430,7 +2430,7 @@ func TestRunWithHistory(t *testing.T) {
 		priorAssistant := result.History[1]
 		var foundToolUse bool
 		for _, block := range priorAssistant.Content {
-			if tu, ok := block.(llm.ToolUseBlock); ok && tu.Name == "mock_tool" {
+			if tu, ok := block.(*llm.ToolUseBlock); ok && tu.Name == "mock_tool" {
 				foundToolUse = true
 			}
 		}
@@ -2478,7 +2478,7 @@ func TestRunWithHistory(t *testing.T) {
 func TestRunStreamWithHistory(t *testing.T) {
 	t.Run("WithPriorHistory", func(t *testing.T) {
 		provider := NewMockStreamingProvider([][]llm.Chunk{
-			{llm.TextDeltaChunk{Text: "continuing"}, llm.DoneChunk{FinishReason: "stop"}},
+			{&llm.TextDeltaChunk{Text: "continuing"}, &llm.DoneChunk{FinishReason: "stop"}},
 		})
 		agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -2514,13 +2514,13 @@ func TestRunStreamWithHistory(t *testing.T) {
 
 	t.Run("ToolInputIsCopiedBeforeIteration", func(t *testing.T) {
 		provider := NewMockStreamingProvider([][]llm.Chunk{
-			{llm.TextDeltaChunk{Text: "continuing"}, llm.DoneChunk{FinishReason: "stop"}},
+			{&llm.TextDeltaChunk{Text: "continuing"}, &llm.DoneChunk{FinishReason: "stop"}},
 		})
 		agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 		input := json.RawMessage(`{"path":"safe"}`)
 		history := []llm.Message{
 			llm.UserMessage("original question"),
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 				Type: "tool_use", ID: "c0", Name: "read", Input: input,
 			}),
 			llm.ToolResultMessage("c0", tool.NewTextResult("prior result")),
@@ -2533,7 +2533,7 @@ func TestRunStreamWithHistory(t *testing.T) {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
 
-		got, ok := provider.LastMessages[1].Content[0].(llm.ToolUseBlock)
+		got, ok := provider.LastMessages[1].Content[0].(*llm.ToolUseBlock)
 		if !ok {
 			t.Fatalf("provider tool block = %T, want llm.ToolUseBlock", provider.LastMessages[1].Content[0])
 		}
@@ -2544,7 +2544,7 @@ func TestRunStreamWithHistory(t *testing.T) {
 
 	t.Run("WithEmptyHistory", func(t *testing.T) {
 		provider := NewMockStreamingProvider([][]llm.Chunk{
-			{llm.TextDeltaChunk{Text: "hello"}, llm.DoneChunk{FinishReason: "stop"}},
+			{&llm.TextDeltaChunk{Text: "hello"}, &llm.DoneChunk{FinishReason: "stop"}},
 		})
 		agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -2575,7 +2575,7 @@ func TestRunStreamWithHistory(t *testing.T) {
 
 	t.Run("WithNilHistory", func(t *testing.T) {
 		provider := NewMockStreamingProvider([][]llm.Chunk{
-			{llm.TextDeltaChunk{Text: "hello"}, llm.DoneChunk{FinishReason: "stop"}},
+			{&llm.TextDeltaChunk{Text: "hello"}, &llm.DoneChunk{FinishReason: "stop"}},
 		})
 		agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -2606,20 +2606,20 @@ func TestRunStreamWithHistory(t *testing.T) {
 
 		provider := NewMockStreamingProvider([][]llm.Chunk{
 			{
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-				llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-				llm.DoneChunk{FinishReason: "tool_calls"},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+				&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+				&llm.DoneChunk{FinishReason: "tool_calls"},
 			},
 			{
-				llm.TextDeltaChunk{Text: "final"},
-				llm.DoneChunk{FinishReason: "stop"},
+				&llm.TextDeltaChunk{Text: "final"},
+				&llm.DoneChunk{FinishReason: "stop"},
 			},
 		})
 		agent := New(provider, reg, WithMaxIter(10), WithLogger(discardLogger()))
 
 		history := []llm.Message{
 			llm.UserMessage("original question"),
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 				Type:  "tool_use",
 				ID:    "c0",
 				Name:  "echo",
@@ -2660,7 +2660,7 @@ func TestRunStreamWithHistory(t *testing.T) {
 		priorAssistant := doneEvent.History[1]
 		var foundToolUse bool
 		for _, block := range priorAssistant.Content {
-			if tu, ok := block.(llm.ToolUseBlock); ok && tu.Name == "echo" {
+			if tu, ok := block.(*llm.ToolUseBlock); ok && tu.Name == "echo" {
 				foundToolUse = true
 			}
 		}
@@ -2728,7 +2728,7 @@ func TestAgentRun_NoRetryEmptyRetries(t *testing.T) {
 
 func TestRunStream_DoneEventRetries(t *testing.T) {
 	chunks := [][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "ok"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "ok"}, &llm.DoneChunk{FinishReason: "stop"}},
 	}
 	provider := NewRetryableStreamingMockProvider(
 		&llm.APIError{StatusCode: 429},
@@ -2802,7 +2802,7 @@ func TestAgentRun_ToolPanicRecovered(t *testing.T) {
 	reg.MustRegister(panickingTool{})
 
 	provider := NewMockProvider(
-		MsgResponse(llm.AssistantToolCallMessage(llm.ToolUseBlock{
+		MsgResponse(llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 			Type: "tool_use", ID: "c1", Name: "panic_tool", Input: json.RawMessage(`{}`),
 		})),
 		MsgResponse(llm.AssistantMessage("I see the error")),
@@ -2817,7 +2817,7 @@ func TestAgentRun_ToolPanicRecovered(t *testing.T) {
 	toolMsg := result.History[2]
 	var found bool
 	for _, block := range toolMsg.Content {
-		if tr, ok := block.(llm.ToolResultBlock); ok {
+		if tr, ok := block.(*llm.ToolResultBlock); ok {
 			found = true
 			if !tr.IsError {
 				t.Error("expected ToolResultBlock.IsError = true")
@@ -2838,13 +2838,13 @@ func TestAgentRunStream_ToolPanicRecovered(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "panic_tool"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "panic_tool"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		},
 		{
-			llm.TextDeltaChunk{Text: "recovered"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.TextDeltaChunk{Text: "recovered"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 
@@ -2927,7 +2927,7 @@ func TestAgentRun_UsageAccumulatesAcrossIterations(t *testing.T) {
 
 	provider := NewMockProvider(
 		MsgWithUsageResponse(
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}),
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}),
 			&llm.Usage{InputTokens: 50, OutputTokens: 20},
 		),
 		MsgWithUsageResponse(
@@ -2968,7 +2968,7 @@ func TestAgentRun_UsageAccumulatesWithNilInMiddle(t *testing.T) {
 
 	provider := NewMockProvider(
 		MsgWithUsageResponse(
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}),
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "echo", Input: json.RawMessage(`{}`)}),
 			&llm.Usage{InputTokens: 50, OutputTokens: 20},
 		),
 		MsgResponse(llm.AssistantMessage("done")),
@@ -2997,8 +2997,8 @@ func TestAgentRun_UsageAccumulatesWithNilInMiddle(t *testing.T) {
 func TestRunStream_UsageFromDoneChunk(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.TextDeltaChunk{Text: "hello"},
-			llm.DoneChunk{
+			&llm.TextDeltaChunk{Text: "hello"},
+			&llm.DoneChunk{
 				FinishReason: "stop",
 				Usage:        &llm.Usage{InputTokens: 100, OutputTokens: 50},
 			},
@@ -3030,7 +3030,7 @@ func TestRunStream_UsageFromDoneChunk(t *testing.T) {
 
 func TestRunStream_UsageNilDoneChunk(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
-		{llm.TextDeltaChunk{Text: "hello"}, llm.DoneChunk{FinishReason: "stop"}},
+		{&llm.TextDeltaChunk{Text: "hello"}, &llm.DoneChunk{FinishReason: "stop"}},
 	})
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
 
@@ -3062,16 +3062,16 @@ func TestRunStream_UsageAccumulatesAcrossIterations(t *testing.T) {
 
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{
+			&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{
 				FinishReason: "tool_calls",
 				Usage:        &llm.Usage{InputTokens: 50, OutputTokens: 20},
 			},
 		},
 		{
-			llm.TextDeltaChunk{Text: "done"},
-			llm.DoneChunk{
+			&llm.TextDeltaChunk{Text: "done"},
+			&llm.DoneChunk{
 				FinishReason: "stop",
 				Usage:        &llm.Usage{InputTokens: 80, OutputTokens: 30},
 			},
@@ -3108,9 +3108,9 @@ func TestRunStream_UsageAccumulatesAcrossIterations(t *testing.T) {
 func TestRunStream_DualDoneChunkUsage(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.TextDeltaChunk{Text: "hello"},
-			llm.DoneChunk{FinishReason: "stop", Usage: nil},
-			llm.DoneChunk{
+			&llm.TextDeltaChunk{Text: "hello"},
+			&llm.DoneChunk{FinishReason: "stop", Usage: nil},
+			&llm.DoneChunk{
 				FinishReason: "stop",
 				Usage:        &llm.Usage{InputTokens: 42, OutputTokens: 7},
 			},

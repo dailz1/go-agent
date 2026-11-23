@@ -231,7 +231,7 @@ func TestContextOverflowSamePayloadDelivery(t *testing.T) {
 					err = streamErr
 					break
 				}
-				if delta, ok := chunk.(llm.TextDeltaChunk); ok {
+				if delta, ok := chunk.(*llm.TextDeltaChunk); ok {
 					text += delta.Text
 				}
 			}

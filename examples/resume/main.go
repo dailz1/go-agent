@@ -30,7 +30,7 @@ func main() {
 		fmt.Println("thread was explicitly cancelled; no model reply")
 		return
 	}
-	fmt.Println(result.Message.Content[0].(llm.TextBlock).Text)
+	fmt.Println(result.Message.Content[0].(*llm.TextBlock).Text)
 }
 
 func recoverThread() (*agent.RunResult, error) {
@@ -63,9 +63,9 @@ func (*resumeProvider) Name() string { return "resume-demo" }
 func (p *resumeProvider) Chat(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (*llm.Message, *llm.Usage, error) {
 	p.round++
 	if p.round == 1 {
-		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.ToolUseBlock{Type: "tool_use", ID: "interrupt", Name: "interrupt", Input: json.RawMessage(`{}`)}}}, nil, nil
+		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.ToolUseBlock{Type: "tool_use", ID: "interrupt", Name: "interrupt", Input: json.RawMessage(`{}`)}}}, nil, nil
 	}
-	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "recovered persistent thread"}}}, nil, nil
+	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "recovered persistent thread"}}}, nil, nil
 }
 func (*resumeProvider) ChatStream(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return nil, llm.ErrStreamingNotSupported

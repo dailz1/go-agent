@@ -83,11 +83,11 @@ func TestReviewEstimateKeepsExactTokenSum(t *testing.T) {
 
 func TestReviewFinishRoundCopyIsolatesReasoningSummary(t *testing.T) {
 	original := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningItemBlock{Summary: []string{"original"}},
+		&llm.ReasoningItemBlock{Summary: []string{"original"}},
 	}}
 	copied := copyMessage(original)
-	copied.Content[0].(llm.ReasoningItemBlock).Summary[0] = "mutated"
-	if original.Content[0].(llm.ReasoningItemBlock).Summary[0] != "original" {
+	copied.Content[0].(*llm.ReasoningItemBlock).Summary[0] = "mutated"
+	if original.Content[0].(*llm.ReasoningItemBlock).Summary[0] != "original" {
 		t.Fatal("FinishRound copy shares reasoning summary with live history")
 	}
 }
@@ -202,7 +202,7 @@ func TestReviewUnanchoredOverlayKeepsCanonicalCap(t *testing.T) {
 }
 
 type reviewMutableBlock struct {
-	llm.TextBlock
+	*llm.TextBlock
 	encodes *int
 }
 
@@ -214,7 +214,7 @@ func (b *reviewMutableBlock) MarshalJSON() ([]byte, error) {
 }
 
 func TestReviewUnknownEncoderFreshCandidate(t *testing.T) {
-	block := &reviewMutableBlock{TextBlock: llm.TextBlock{Type: "text", Text: "small"}}
+	block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: "small"}}
 	history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
 	a := New(NewMockProvider(), nil, WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
 		block.Text = strings.Repeat("grown", 500)
@@ -475,7 +475,7 @@ func (p *reviewNamedCounter) Name() string {
 
 func TestReviewDispatchReusesIdentityAndSkipsUnusedEstimate(t *testing.T) {
 	encodes := 0
-	block := &reviewMutableBlock{TextBlock: llm.TextBlock{Type: "text", Text: "q"}, encodes: &encodes}
+	block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: "q"}, encodes: &encodes}
 	history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
 	provider := &reviewNamedCounter{Provider: &scriptedProvider{steps: []scriptedStep{
 		{stream: true, err: &llm.APIError{StatusCode: 500}},

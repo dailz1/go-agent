@@ -74,10 +74,10 @@ func TestSettleE56AlreadyTerminalChild(t *testing.T) {
 			if len(snapshot.History) != 3 || !reflect.DeepEqual(snapshot.Message, llm.Message{}) {
 				t.Fatalf("cancellation imported child history or fabricated an answer: %+v", snapshot)
 			}
-			var blocks []llm.ToolResultBlock
+			var blocks []*llm.ToolResultBlock
 			for _, message := range snapshot.History {
 				for _, block := range message.Content {
-					if rb, ok := block.(llm.ToolResultBlock); ok {
+					if rb, ok := block.(*llm.ToolResultBlock); ok {
 						blocks = append(blocks, rb)
 					}
 				}

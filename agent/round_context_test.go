@@ -84,7 +84,7 @@ func TestRoundContextProviderCore(t *testing.T) {
 			name: "nil provider changes no request",
 			run: func(t *testing.T) {
 				p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{
-					llm.TextDeltaChunk{Text: "done"}, llm.DoneChunk{FinishReason: "stop"},
+					&llm.TextDeltaChunk{Text: "done"}, &llm.DoneChunk{FinishReason: "stop"},
 				}}}}
 				ag := New(p, tool.NewRegistry(), WithRoundContextProvider(nil), WithLogger(discardLogger()))
 				if _, err := ag.Run(context.Background(), "input"); err != nil {
@@ -98,7 +98,7 @@ func TestRoundContextProviderCore(t *testing.T) {
 		{
 			name: "empty snapshot sends no overlay",
 			run: func(t *testing.T) {
-				p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}}}}
+				p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}}}}
 				calls := 0
 				ag := New(p, tool.NewRegistry(), WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
 					calls++
@@ -153,7 +153,7 @@ func TestRoundContextProviderOverlayBudgetBoundaries(t *testing.T) {
 	}
 	t.Run("overlay exactly at cap passes", func(t *testing.T) {
 		p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		}}}}
 		ag := New(p, tool.NewRegistry(),
 			WithContextWindowTokens(exactWindow),
@@ -206,11 +206,11 @@ func TestRoundContextProviderEveryRoundAndAttempt(t *testing.T) {
 	registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("ok")})
 	p := &capturedProvider{streams: []capturedStreamResult{
 		{chunks: []llm.Chunk{
-			llm.ToolCallStartChunk{Index: 0, ID: "call", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "call", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		}},
-		{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
+		{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}},
 	}}
 	var requests []RoundContextRequest
 	ag := New(p, registry, WithRoundContextProvider(func(_ context.Context, request RoundContextRequest) (string, error) {
@@ -239,7 +239,7 @@ func TestRoundContextProviderEveryRoundAndAttempt(t *testing.T) {
 
 func TestRoundContextProviderStaysOutOfPreDoneFoldArtifacts(t *testing.T) {
 	p := &capturedProvider{streams: []capturedStreamResult{{chunks: []llm.Chunk{
-		llm.TextDeltaChunk{Text: "model response"}, llm.DoneChunk{FinishReason: "stop"},
+		&llm.TextDeltaChunk{Text: "model response"}, &llm.DoneChunk{FinishReason: "stop"},
 	}}}}
 	ag := New(p, tool.NewRegistry(), WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
 		return "fold-isolation-snapshot", nil
@@ -308,11 +308,11 @@ func TestRoundContextProviderTruncationSurvivesOversizedToolResult(t *testing.T)
 	})
 	p := &capturedProvider{streams: []capturedStreamResult{
 		{chunks: []llm.Chunk{
-			llm.ToolCallStartChunk{Index: 0, ID: "call", Name: "echo"},
-			llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-			llm.DoneChunk{FinishReason: "tool_calls"},
+			&llm.ToolCallStartChunk{Index: 0, ID: "call", Name: "echo"},
+			&llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+			&llm.DoneChunk{FinishReason: "tool_calls"},
 		}},
-		{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
+		{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}},
 	}}
 	ag := New(p, registry,
 		WithContextWindowTokens(4_000),
@@ -337,7 +337,7 @@ func TestRoundContextProviderTruncationSurvivesOversizedToolResult(t *testing.T)
 	var outboundToolResult string
 	for _, message := range p.calls[1].history {
 		for _, block := range message.Content {
-			if result, ok := block.(llm.ToolResultBlock); ok {
+			if result, ok := block.(*llm.ToolResultBlock); ok {
 				outboundToolResult = result.Content
 			}
 		}
@@ -368,7 +368,7 @@ func TestRoundContextProviderRetryAndFallbackAttempts(t *testing.T) {
 			name: "direct retry increments",
 			provider: &capturedProvider{streams: []capturedStreamResult{
 				{err: &llm.APIError{StatusCode: 500, Body: "retry"}},
-				{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
+				{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}},
 			}},
 			want: []int{1, 2},
 		},
@@ -401,7 +401,7 @@ func TestRoundContextProviderFallbackRetryAttemptDivergence(t *testing.T) {
 	p := &capturedProvider{
 		streams: []capturedStreamResult{
 			{err: llm.ErrStreamingNotSupported},
-			{chunks: []llm.Chunk{llm.DoneChunk{FinishReason: "stop"}}},
+			{chunks: []llm.Chunk{&llm.DoneChunk{FinishReason: "stop"}}},
 		},
 		chats: []capturedChatResult{{err: &llm.APIError{StatusCode: 500, Body: "retry"}}},
 	}

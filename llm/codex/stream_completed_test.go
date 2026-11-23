@@ -54,9 +54,9 @@ func TestChatCompletedWithoutOutputFixture(t *testing.T) {
 					t.Fatal(err)
 				}
 				switch c := chunk.(type) {
-				case llm.TextDeltaChunk:
+				case *llm.TextDeltaChunk:
 					text += c.Text
-				case llm.DoneChunk:
+				case *llm.DoneChunk:
 					dones++
 					if c.FinishReason != "stop" || !reflect.DeepEqual(c.Usage, wantUsage) {
 						t.Fatalf("done=%+v", c)
@@ -101,9 +101,9 @@ func TestCompletedSparseMixedItems(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := []llm.ContentBlock{
-				llm.ReasoningItemBlock{Type: "reasoning_item", ID: "r", EncryptedContent: "opaque", Summary: []string{"summary"}},
-				llm.TextBlock{Type: "text", Text: "answer: no"},
-				llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "lookup", Input: json.RawMessage(`[1]`)},
+				&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "r", EncryptedContent: "opaque", Summary: []string{"summary"}},
+				&llm.TextBlock{Type: "text", Text: "answer: no"},
+				&llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "lookup", Input: json.RawMessage(`[1]`)},
 			}
 			if !reflect.DeepEqual(got.Content, want) || usage != nil {
 				t.Fatalf("message=%+v usage=%+v", got, usage)
@@ -114,9 +114,9 @@ func TestCompletedSparseMixedItems(t *testing.T) {
 					t.Fatal(err)
 				}
 				switch c := chunk.(type) {
-				case llm.ToolCallStartChunk:
+				case *llm.ToolCallStartChunk:
 					starts++
-				case llm.DoneChunk:
+				case *llm.DoneChunk:
 					dones++
 					if c.FinishReason != "tool_calls" {
 						t.Fatalf("done=%+v", c)
@@ -156,7 +156,7 @@ func TestCompletedSparseRejectsImpossibleState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var failure error
 			for chunk, err := range scanResponse(t.Context(), strings.NewReader(sse(tc.events...))) {
-				if _, ok := chunk.(llm.DoneChunk); ok {
+				if _, ok := chunk.(*llm.DoneChunk); ok {
 					t.Fatal("impossible state completed")
 				}
 				if err != nil {
@@ -184,8 +184,8 @@ func TestCompletedSparseRetainsOutputIndices(t *testing.T) {
 		chunks = append(chunks, chunk)
 	}
 	want := []llm.Chunk{
-		llm.TextDeltaChunk{OutputIndex: 1, Text: "x"},
-		llm.DoneChunk{FinishReason: "stop"},
+		&llm.TextDeltaChunk{OutputIndex: 1, Text: "x"},
+		&llm.DoneChunk{FinishReason: "stop"},
 	}
 	if !reflect.DeepEqual(chunks, want) {
 		t.Fatalf("chunks=%#v", chunks)

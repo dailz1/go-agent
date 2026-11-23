@@ -98,7 +98,7 @@ func seededHistory(system string, history []llm.Message) []llm.Message {
 func promptText(m llm.Message) string {
 	var b strings.Builder
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.TextBlock); ok {
+		if tb, ok := blk.(*llm.TextBlock); ok {
 			b.WriteString(tb.Text)
 		}
 	}
@@ -106,10 +106,10 @@ func promptText(m llm.Message) string {
 }
 
 // toolUseBlocks extracts the tool calls of an assistant message in order.
-func toolUseBlocks(m llm.Message) []llm.ToolUseBlock {
-	var out []llm.ToolUseBlock
+func toolUseBlocks(m llm.Message) []*llm.ToolUseBlock {
+	var out []*llm.ToolUseBlock
 	for _, blk := range m.Content {
-		if tb, ok := blk.(llm.ToolUseBlock); ok {
+		if tb, ok := blk.(*llm.ToolUseBlock); ok {
 			out = append(out, tb)
 		}
 	}
@@ -137,8 +137,8 @@ func (v *threadView) applyCancellation(r store.Record) error {
 			return incompatible(r, "cancellation result count does not match declaration")
 		}
 		for i, result := range p.Results {
-			got := canonicalResultBlock(result.Content[0].(llm.ToolResultBlock))
-			want := canonicalResultBlock(want[i].Content[0].(llm.ToolResultBlock))
+			got := canonicalResultBlock(*result.Content[0].(*llm.ToolResultBlock))
+			want := canonicalResultBlock(*want[i].Content[0].(*llm.ToolResultBlock))
 			if !reflect.DeepEqual(got, want) {
 				return incompatible(r, "cancellation result does not match the recorded or canonical unknown outcome")
 			}

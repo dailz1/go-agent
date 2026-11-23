@@ -19,7 +19,7 @@ func TestToolFuncWorksWithSerialAgentExecution(t *testing.T) {
 	}}
 	registry.MustRegister(toolFunc)
 	result, err := agent.New(&singleToolProvider{}, registry).Run(t.Context(), "run")
-	if err != nil || result.Message.Content[0].(llm.TextBlock).Text != "done" {
+	if err != nil || result.Message.Content[0].(*llm.TextBlock).Text != "done" {
 		t.Fatalf("Run = %#v, %v", result, err)
 	}
 	if calls := toolFunc.Calls(); len(calls) != 1 || string(calls[0].Args) != "{}" {
@@ -34,7 +34,7 @@ func TestAgentRecoversToolFuncPanic(t *testing.T) {
 	}}
 	registry.MustRegister(toolFunc)
 	result, err := agent.New(&singleToolProvider{}, registry).Run(t.Context(), "run")
-	if err != nil || result.Message.Content[0].(llm.TextBlock).Text != "done" {
+	if err != nil || result.Message.Content[0].(*llm.TextBlock).Text != "done" {
 		t.Fatalf("Run = %#v, %v", result, err)
 	}
 	if calls := toolFunc.Calls(); len(calls) != 1 {
@@ -58,11 +58,11 @@ func (p *singleToolProvider) ChatStream(context.Context, []llm.Message, []tool.T
 	p.mu.Unlock()
 	if call == 1 {
 		return func(yield func(llm.Chunk, error) bool) {
-			if !yield(llm.ToolCallStartChunk{ID: "one", Name: "one"}, nil) {
+			if !yield(&llm.ToolCallStartChunk{ID: "one", Name: "one"}, nil) {
 				return
 			}
-			yield(llm.ToolCallArgsChunk{ID: "one", Delta: "{}"}, nil)
+			yield(&llm.ToolCallArgsChunk{ID: "one", Delta: "{}"}, nil)
 		}, nil
 	}
-	return func(yield func(llm.Chunk, error) bool) { yield(llm.TextDeltaChunk{Text: "done"}, nil) }, nil
+	return func(yield func(llm.Chunk, error) bool) { yield(&llm.TextDeltaChunk{Text: "done"}, nil) }, nil
 }

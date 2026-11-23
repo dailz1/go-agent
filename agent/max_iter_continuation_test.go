@@ -18,7 +18,7 @@ func terminalHistory(t *testing.T) []llm.Message {
 	registry.MustRegister(&mockTool{info: tool.ToolInfo{Name: "echo"}, result: tool.NewTextResult("must not run")})
 	result, err := New(
 		NewMockProvider(MsgResponse(llm.AssistantToolCallMessage(
-			llm.ToolUseBlock{Type: "tool_use", ID: "skip", Name: "echo", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "skip", Name: "echo", Input: json.RawMessage(`{}`)},
 		))),
 		registry,
 		WithMaxIter(1),

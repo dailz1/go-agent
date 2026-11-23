@@ -22,7 +22,7 @@ func TestCompactorStrategiesObserveCancellation(t *testing.T) {
 	huge := strings.Repeat("x", 1<<20)
 	history := []llm.Message{
 		llm.UserMessage("first"),
-		llm.AssistantToolCallMessage(llm.ToolUseBlock{
+		llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 			Type: "tool_use", ID: "old", Name: "lookup", Input: json.RawMessage(`{"query":"old"}`),
 		}),
 		llm.ToolResultMessage("old", tool.NewTextResult(huge)),
@@ -241,7 +241,7 @@ func TestAgentCompaction(t *testing.T) {
 		inputBytes := json.RawMessage(`{"path":"safe"}`)
 		image := &llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("safe-image")}
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "read", Input: inputBytes},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "read", Input: inputBytes},
 		}}
 		base := []llm.Message{
 			llm.SystemMessage("policy"),
@@ -288,7 +288,7 @@ func TestAgentCompaction(t *testing.T) {
 				for _, message := range typed.History {
 					for _, block := range message.Content {
 						switch value := block.(type) {
-						case llm.ToolUseBlock:
+						case *llm.ToolUseBlock:
 							value.Input[0] = 'X'
 						case *llm.ImageBlock:
 							value.Data[0] = 'X'
@@ -791,16 +791,8 @@ func historyContainsText(history []llm.Message, text string) bool {
 	for _, message := range history {
 		for _, block := range message.Content {
 			switch value := block.(type) {
-			case llm.TextBlock:
-				if strings.Contains(value.Text, text) {
-					return true
-				}
 			case *llm.TextBlock:
 				if value != nil && strings.Contains(value.Text, text) {
-					return true
-				}
-			case llm.ToolResultBlock:
-				if strings.Contains(value.Content, text) {
 					return true
 				}
 			case *llm.ToolResultBlock:
@@ -820,7 +812,7 @@ func assertMutableBlocksUnchanged(t *testing.T, history []llm.Message) {
 	for _, message := range history {
 		for _, block := range message.Content {
 			switch value := block.(type) {
-			case llm.ToolUseBlock:
+			case *llm.ToolUseBlock:
 				foundTool = true
 				if string(value.Input) != `{"path":"safe"}` {
 					t.Errorf("tool input = %q, want unchanged", value.Input)

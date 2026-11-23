@@ -23,7 +23,7 @@ func benchmarkAnchoredMultiRound(b *testing.B, snapshot string) {
 	for i := range rounds {
 		id := fmt.Sprintf("suffix-%d", i)
 		rounds[i] = []llm.Message{
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: id, Name: "read", Input: []byte(`{}`)}),
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: id, Name: "read", Input: []byte(`{}`)}),
 			llm.ToolResultMessage(id, tool.NewTextResult(strings.Repeat("result ", 64))),
 			llm.UserMessage("continue"),
 		}

@@ -336,8 +336,8 @@ func newToolResultLimitAgent(result *tool.ToolResult, opts ...Option) (*Agent, *
 	return New(provider, registry, options...), provider
 }
 
-func newToolCall(id string, name string) llm.ToolUseBlock {
-	return llm.ToolUseBlock{
+func newToolCall(id string, name string) *llm.ToolUseBlock {
+	return &llm.ToolUseBlock{
 		Type:  "tool_use",
 		ID:    id,
 		Name:  name,
@@ -358,7 +358,7 @@ func toolResultContents(history []llm.Message) []string {
 	contents := []string{}
 	for _, message := range history {
 		for _, block := range message.Content {
-			if resultBlock, ok := block.(llm.ToolResultBlock); ok {
+			if resultBlock, ok := block.(*llm.ToolResultBlock); ok {
 				contents = append(contents, resultBlock.Content)
 			}
 		}

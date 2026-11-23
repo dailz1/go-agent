@@ -8,7 +8,6 @@ import (
 	"iter"
 	"net"
 	"net/url"
-	"reflect"
 	"sync"
 	"syscall"
 	"time"
@@ -19,16 +18,9 @@ import (
 
 var (
 	ErrActiveRecording       = errors.New("recording has active stream")
-	ErrUnsupportedChunk      = errors.New("unsupported recording chunk")
 	ErrIncompatibleRecording = errors.New("incompatible recording")
 	ErrInterruptedRecording  = errors.New("interrupted recording")
 )
-
-// UnsupportedChunkError identifies a pointer-form chunk which cannot be represented by the recording grammar.
-type UnsupportedChunkError struct{ Type string }
-
-func (e *UnsupportedChunkError) Error() string { return "unsupported recording chunk: " + e.Type }
-func (*UnsupportedChunkError) Unwrap() error   { return ErrUnsupportedChunk }
 
 // Recorder records calls made through its wrapped Provider.
 type Recorder struct {
@@ -104,22 +96,14 @@ func (r *Recorder) recordStream(sequence iter.Seq2[llm.Chunk, error], index int)
 				yield(nil, err)
 				return false
 			}
-			if unsupportedChunk(chunk) {
-				r.mu.Lock()
-				if r.unsupported == nil {
-					r.unsupported = &UnsupportedChunkError{Type: reflect.TypeOf(chunk).String()}
-				}
-				r.mu.Unlock()
-			} else {
-				encoded, encodeErr := encodeChunk(chunk)
-				if encodeErr != nil {
-					complete("interrupted", nil)
-					return false
-				}
-				r.mu.Lock()
-				r.exchanges[index].Stream.Chunks = append(r.exchanges[index].Stream.Chunks, encoded)
-				r.mu.Unlock()
+			encoded, encodeErr := encodeChunk(chunk)
+			if encodeErr != nil {
+				complete("interrupted", nil)
+				return false
 			}
+			r.mu.Lock()
+			r.exchanges[index].Stream.Chunks = append(r.exchanges[index].Stream.Chunks, encoded)
+			r.mu.Unlock()
 			if !yield(chunk, nil) {
 				complete("interrupted", nil)
 				return false
@@ -204,28 +188,39 @@ type dtoError struct {
 func requestDTO(request Request) dtoRequest {
 	return dtoRequest{Messages: cloneMessages(request.Messages), Tools: cloneTools(request.Tools), Options: cloneOptions(request.Options)}
 }
-func unsupportedChunk(chunk llm.Chunk) bool {
-	switch chunk.(type) {
-	case *llm.TextDeltaChunk, *llm.ReasoningDeltaChunk, *llm.ToolCallStartChunk, *llm.ToolCallArgsChunk, *llm.ReasoningItemChunk, *llm.DoneChunk:
-		return true
-	}
-	return false
-}
 func encodeChunk(chunk llm.Chunk) (dtoChunk, error) {
 	switch c := chunk.(type) {
-	case llm.TextDeltaChunk:
+	case *llm.TextDeltaChunk:
+		if c == nil {
+			return dtoChunk{}, fmt.Errorf("nil chunk %T", chunk)
+		}
 		return dtoChunk{Type: "text_delta", Text: c.Text, OutputIndex: c.OutputIndex}, nil
-	case llm.ReasoningDeltaChunk:
+	case *llm.ReasoningDeltaChunk:
+		if c == nil {
+			return dtoChunk{}, fmt.Errorf("nil chunk %T", chunk)
+		}
 		return dtoChunk{Type: "reasoning_delta", Text: c.Text}, nil
-	case llm.ToolCallStartChunk:
+	case *llm.ToolCallStartChunk:
+		if c == nil {
+			return dtoChunk{}, fmt.Errorf("nil chunk %T", chunk)
+		}
 		return dtoChunk{Type: "tool_call_start", Index: c.Index, ID: c.ID, Name: c.Name}, nil
-	case llm.ToolCallArgsChunk:
+	case *llm.ToolCallArgsChunk:
+		if c == nil {
+			return dtoChunk{}, fmt.Errorf("nil chunk %T", chunk)
+		}
 		return dtoChunk{Type: "tool_call_args", Index: c.Index, ID: c.ID, Delta: c.Delta}, nil
-	case llm.ReasoningItemChunk:
+	case *llm.ReasoningItemChunk:
+		if c == nil {
+			return dtoChunk{}, fmt.Errorf("nil chunk %T", chunk)
+		}
 		item := c.Item
 		item.Summary = append([]string(nil), item.Summary...)
 		return dtoChunk{Type: "reasoning_item", OutputIndex: c.OutputIndex, Item: &item}, nil
-	case llm.DoneChunk:
+	case *llm.DoneChunk:
+		if c == nil {
+			return dtoChunk{}, fmt.Errorf("nil chunk %T", chunk)
+		}
 		return dtoChunk{Type: "done", FinishReason: c.FinishReason, Usage: cloneUsage(c.Usage)}, nil
 	default:
 		return dtoChunk{}, fmt.Errorf("unknown chunk %T", chunk)

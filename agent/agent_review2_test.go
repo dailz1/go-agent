@@ -20,7 +20,7 @@ func TestReview2RejectedCompactionPreservesDurableHistory(t *testing.T) {
 		llm.UserMessage(strings.Repeat("protected", 60)), llm.AssistantMessage("latest answer"),
 	}
 	log := []store.Record{
-		mustRecord(t, store.KindRunStarted, "r-start", runStartedPayload{RunID: "r", Input: history[0].Content[0].(llm.TextBlock).Text}),
+		mustRecord(t, store.KindRunStarted, "r-start", runStartedPayload{RunID: "r", Input: history[0].Content[0].(*llm.TextBlock).Text}),
 		measurementRecord(t, 0, history[1], nil, 2),
 	}
 	closed, err := runClosedFor("r", 0, llm.Usage{}, llm.Usage{})
@@ -28,7 +28,7 @@ func TestReview2RejectedCompactionPreservesDurableHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	log = append(log, closed,
-		mustRecord(t, store.KindRunStarted, "s-start", runStartedPayload{RunID: "s", Input: history[2].Content[0].(llm.TextBlock).Text}))
+		mustRecord(t, store.KindRunStarted, "s-start", runStartedPayload{RunID: "s", Input: history[2].Content[0].(*llm.TextBlock).Text}))
 	last := measurementRecord(t, 0, history[3], &llm.Usage{InputTokens: 4000}, 4)
 	last.ID = "s-d0"
 	var declared roundDeclaredPayload
@@ -86,7 +86,7 @@ func TestReview2RejectedCompactionPreservesDurableHistory(t *testing.T) {
 
 func TestReview2UnanchoredCompactionSizesHistoryOnce(t *testing.T) {
 	encodes := 0
-	block := &reviewMutableBlock{TextBlock: llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)}, encodes: &encodes}
+	block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)}, encodes: &encodes}
 	history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
 	a := New(NewMockProvider(), nil, WithLogger(discardLogger()))
 	if _, ok := a.compactHistoryRound(t.Context(), history, a.provider, nil,
@@ -128,7 +128,7 @@ func TestReview2FinishRoundResultsIsolateImages(t *testing.T) {
 				return FinishRoundDecision{}, nil
 			}
 			hooked = true
-			image := &fc.Results[0].Content[0].(llm.ToolResultBlock).Images[0]
+			image := &fc.Results[0].Content[0].(*llm.ToolResultBlock).Images[0]
 			image.URL = "mutated"
 			image.Data[0] = 'X'
 			return FinishRoundDecision{}, nil

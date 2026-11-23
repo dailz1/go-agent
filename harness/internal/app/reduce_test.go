@@ -48,7 +48,7 @@ func TestReducerSevenEventsValueAndPointer(t *testing.T) {
 		}})
 		history := []llm.Message{
 			llm.UserMessage("do it"),
-			llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "tc1", Name: "read"}),
+			llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "tc1", Name: "read"}),
 			llm.ToolResultMessage("tc1", result),
 			llm.AssistantMessage("hello world"),
 		}
@@ -158,12 +158,12 @@ func TestReducerReasoningAlignment(t *testing.T) {
 	history := []llm.Message{{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.ReasoningItemBlock{Type: "reasoning_item", ID: "ri-1", Summary: []string{"checked imports"}},
-			llm.ReasoningItemBlock{
+			&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "ri-1", Summary: []string{"checked imports"}},
+			&llm.ReasoningItemBlock{
 				Type: "reasoning_item", ID: "ri-2",
 				EncryptedContent: "opaque-ciphertext",
 			},
-			llm.ToolUseBlock{Type: "tool_use", ID: "tc1", Name: "read"},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "tc1", Name: "read"},
 		},
 	}}
 	r := NewReducer("t")

@@ -45,7 +45,7 @@ func TestRecordReplayV3ErrorLocations(t *testing.T) {
 					if location == "outer" {
 						exchange.StreamOuterErr = want
 					} else {
-						exchange.StreamChunks = []llm.Chunk{llm.TextDeltaChunk{Text: "before"}}
+						exchange.StreamChunks = []llm.Chunk{&llm.TextDeltaChunk{Text: "before"}}
 						exchange.StreamErr = want
 					}
 				}
@@ -94,7 +94,8 @@ func callErrorLocation(t *testing.T, provider llm.Provider, location string) err
 			terminal = err
 			continue
 		}
-		if terminal != nil || chunk != (llm.TextDeltaChunk{Text: "before"}) {
+		td, ok := chunk.(*llm.TextDeltaChunk)
+		if terminal != nil || !ok || td == nil || td.Text != "before" {
 			t.Fatalf("unexpected chunk: %#v", chunk)
 		}
 		chunks++
@@ -187,7 +188,7 @@ func TestRecorderV3RejectsUnfaithfulWrappers(t *testing.T) {
 					exchange = Exchange{Method: MethodChatStream, StreamOuterErr: err}
 				}
 				if location == "yielded" {
-					exchange = Exchange{Method: MethodChatStream, StreamChunks: []llm.Chunk{llm.TextDeltaChunk{Text: "before"}}, StreamErr: err}
+					exchange = Exchange{Method: MethodChatStream, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "before"}}, StreamErr: err}
 				}
 				recorder := NewRecorder(NewScriptedProvider(exchange))
 				if got := callErrorLocation(t, recorder, location); got != err {

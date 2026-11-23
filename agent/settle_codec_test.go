@@ -12,7 +12,7 @@ import (
 func settleCodecPrefix(t *testing.T) []store.Record {
 	t.Helper()
 	declared := toolCallMessage("c1", "c2")
-	declared.Content = append([]llm.ContentBlock{llm.ReasoningItemBlock{
+	declared.Content = append([]llm.ContentBlock{&llm.ReasoningItemBlock{
 		Type: "reasoning_item", ID: "reasoning", Summary: []string{"retained"},
 		EncryptedContent: "opaque",
 	}}, declared.Content...)
@@ -60,7 +60,7 @@ func TestSettleCodecClosesDeclaration(t *testing.T) {
 	if _, err := partitionHistory(seededHistory(v.system, v.history)); err != nil {
 		t.Fatal(err)
 	}
-	reasoning := v.history[1].Content[0].(llm.ReasoningItemBlock)
+	reasoning := v.history[1].Content[0].(*llm.ReasoningItemBlock)
 	if reasoning.EncryptedContent != "opaque" || !reflect.DeepEqual(reasoning.Summary, []string{"retained"}) {
 		t.Fatalf("reasoning lost: %+v", reasoning)
 	}

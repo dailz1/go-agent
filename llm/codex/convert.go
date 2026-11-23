@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"reflect"
 	"strings"
 
 	"github.com/dailz1/go-agent/llm"
@@ -26,16 +25,12 @@ func convertMessages(messages []llm.Message) ([]inputItem, string, error) {
 			if block == nil {
 				return nil, "", capabilityError("nil_block")
 			}
-			value := reflect.ValueOf(block)
-			if value.Kind() == reflect.Pointer {
-				if value.IsNil() {
-					return nil, "", capabilityError("nil_block")
-				}
-				block = value.Elem().Interface().(llm.ContentBlock)
-			}
 			var item inputItem
 			switch b := block.(type) {
-			case llm.TextBlock:
+			case *llm.TextBlock:
+				if b == nil {
+					return nil, "", capabilityError("nil_block")
+				}
 				if m.Role == llm.RoleSystem {
 					instructions = append(instructions, b.Text)
 					continue
@@ -48,7 +43,10 @@ func convertMessages(messages []llm.Message) ([]inputItem, string, error) {
 					kind = "output_text"
 				}
 				item = inputItem{Type: "message", Role: string(m.Role), Content: []contentPart{{Type: kind, Text: &b.Text}}}
-			case llm.ImageBlock:
+			case *llm.ImageBlock:
+				if b == nil {
+					return nil, "", capabilityError("nil_block")
+				}
 				if m.Role != llm.RoleUser {
 					return nil, "", capabilityError("image_role")
 				}
@@ -72,12 +70,18 @@ func convertMessages(messages []llm.Message) ([]inputItem, string, error) {
 					}
 				}
 				item = inputItem{Type: "message", Role: "user", Content: []contentPart{{Type: "input_image", ImageURL: source}}}
-			case llm.ReasoningBlock:
+			case *llm.ReasoningBlock:
+				if b == nil {
+					return nil, "", capabilityError("nil_block")
+				}
 				if m.Role != llm.RoleAssistant {
 					return nil, "", capabilityError("reasoning_role")
 				}
 				continue
-			case llm.ReasoningItemBlock:
+			case *llm.ReasoningItemBlock:
+				if b == nil {
+					return nil, "", capabilityError("nil_block")
+				}
 				if m.Role != llm.RoleAssistant || b.ID == "" {
 					return nil, "", capabilityError("reasoning_item")
 				}
@@ -85,13 +89,19 @@ func convertMessages(messages []llm.Message) ([]inputItem, string, error) {
 				for _, text := range b.Summary {
 					item.Summary = append(item.Summary, summaryPart{Type: "summary_text", Text: text})
 				}
-			case llm.ToolUseBlock:
+			case *llm.ToolUseBlock:
+				if b == nil {
+					return nil, "", capabilityError("nil_block")
+				}
 				if m.Role != llm.RoleAssistant || b.ID == "" || b.Name == "" || !json.Valid(b.Input) {
 					return nil, "", capabilityError("tool_use")
 				}
 				args := string(b.Input)
 				item = inputItem{Type: "function_call", CallID: b.ID, Name: b.Name, Arguments: &args}
-			case llm.ToolResultBlock:
+			case *llm.ToolResultBlock:
+				if b == nil {
+					return nil, "", capabilityError("nil_block")
+				}
 				if m.Role != llm.RoleTool || b.ToolUseID == "" {
 					return nil, "", capabilityError("tool_result")
 				}

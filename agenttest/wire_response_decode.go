@@ -135,7 +135,7 @@ func decodeWireChunk(raw json.RawMessage) (dtoChunk, error) {
 				err = itemErr
 			} else if string(item) != "null" {
 				value, decodeErr := decodeWireReasoningItem(item)
-				out.Item, err = &value, decodeErr
+				out.Item, err = value, decodeErr
 			} else {
 				err = incompatiblef("reasoning item is null")
 			}

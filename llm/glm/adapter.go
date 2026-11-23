@@ -362,23 +362,23 @@ func parseStreamPayload(payload string) ([]llm.Chunk, error) {
 		delta := choice.Delta
 
 		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
-			chunks = append(chunks, llm.ReasoningDeltaChunk{Text: *delta.ReasoningContent})
+			chunks = append(chunks, &llm.ReasoningDeltaChunk{Text: *delta.ReasoningContent})
 		}
 
 		if delta.Content != nil && *delta.Content != "" {
-			chunks = append(chunks, llm.TextDeltaChunk{Text: *delta.Content})
+			chunks = append(chunks, &llm.TextDeltaChunk{Text: *delta.Content})
 		}
 
 		for _, tc := range delta.ToolCalls {
 			if tc.ID != "" {
-				chunks = append(chunks, llm.ToolCallStartChunk{
+				chunks = append(chunks, &llm.ToolCallStartChunk{
 					Index: tc.Index,
 					ID:    tc.ID,
 					Name:  tc.Function.Name,
 				})
 			}
 			if tc.Function.Arguments != "" {
-				chunks = append(chunks, llm.ToolCallArgsChunk{
+				chunks = append(chunks, &llm.ToolCallArgsChunk{
 					Index: tc.Index,
 					ID:    tc.ID,
 					Delta: tc.Function.Arguments,
@@ -390,7 +390,7 @@ func parseStreamPayload(payload string) ([]llm.Chunk, error) {
 			if err := finishReasonError(*choice.FinishReason); err != nil {
 				return nil, err
 			}
-			dc := llm.DoneChunk{
+			dc := &llm.DoneChunk{
 				FinishReason: *choice.FinishReason,
 			}
 			if resp.Usage != nil {
@@ -400,7 +400,7 @@ func parseStreamPayload(payload string) ([]llm.Chunk, error) {
 		}
 	}
 	if len(resp.Choices) == 0 && resp.Usage != nil {
-		chunks = append(chunks, llm.DoneChunk{Usage: convertUsage(*resp.Usage)})
+		chunks = append(chunks, &llm.DoneChunk{Usage: convertUsage(*resp.Usage)})
 	}
 	return chunks, nil
 }
@@ -480,7 +480,7 @@ func convertStandardMessage(m llm.Message) (chatMessage, error) {
 	cm := chatMessage{Role: string(m.Role)}
 
 	if len(m.Content) == 1 {
-		if tb, ok := m.Content[0].(llm.TextBlock); ok {
+		if tb, ok := m.Content[0].(*llm.TextBlock); ok {
 			cm.Content = tb.Text
 			return cm, nil
 		}
@@ -489,12 +489,12 @@ func convertStandardMessage(m llm.Message) (chatMessage, error) {
 	parts := make([]contentPart, 0, len(m.Content))
 	for _, block := range m.Content {
 		switch b := block.(type) {
-		case llm.ReasoningBlock, llm.ReasoningItemBlock, *llm.ReasoningItemBlock:
+		case *llm.ReasoningBlock, *llm.ReasoningItemBlock:
 			// Silently strip — GLM doesn't accept reasoning in outbound messages
 			continue
-		case llm.TextBlock:
+		case *llm.TextBlock:
 			parts = append(parts, contentPart{Type: "text", Text: b.Text})
-		case llm.ImageBlock:
+		case *llm.ImageBlock:
 			cp := contentPart{Type: "image_url", ImageURL: &imageURL{URL: b.URL}}
 			if b.MIMEType != "" && len(b.Data) > 0 {
 				cp.ImageURL.URL = "data:" + b.MIMEType + ";base64," + encodeBase64(b.Data)
@@ -516,12 +516,12 @@ func convertAssistant(m llm.Message) (chatMessage, error) {
 
 	for _, block := range m.Content {
 		switch b := block.(type) {
-		case llm.ReasoningBlock, llm.ReasoningItemBlock, *llm.ReasoningItemBlock:
+		case *llm.ReasoningBlock, *llm.ReasoningItemBlock:
 			// Silently strip — GLM doesn't accept reasoning in outbound messages
 			continue
-		case llm.TextBlock:
+		case *llm.TextBlock:
 			textParts = append(textParts, b.Text)
-		case llm.ToolUseBlock:
+		case *llm.ToolUseBlock:
 			toolCalls = append(toolCalls, toolCall{
 				ID:   b.ID,
 				Type: "function",
@@ -549,7 +549,7 @@ func convertAssistant(m llm.Message) (chatMessage, error) {
 
 func convertToolResult(m llm.Message) (chatMessage, error) {
 	for _, block := range m.Content {
-		if tr, ok := block.(llm.ToolResultBlock); ok {
+		if tr, ok := block.(*llm.ToolResultBlock); ok {
 			content := tr.Content
 			if n := len(tr.Images); n > 0 {
 				content += fmt.Sprintf("\n[%d image attachment(s) omitted: not supported on this wire]", n)
@@ -589,18 +589,18 @@ func convertResponseMessage(rm respMessage) (*llm.Message, error) {
 
 	// Add ReasoningBlock BEFORE the empty-check — thinking-only response is valid
 	if rm.ReasoningContent != nil && *rm.ReasoningContent != "" {
-		blocks = append(blocks, llm.ReasoningBlock{
+		blocks = append(blocks, &llm.ReasoningBlock{
 			Type:    "reasoning",
 			Content: *rm.ReasoningContent,
 		})
 	}
 
 	if rm.Content != nil && *rm.Content != "" {
-		blocks = append(blocks, llm.TextBlock{Type: "text", Text: *rm.Content})
+		blocks = append(blocks, &llm.TextBlock{Type: "text", Text: *rm.Content})
 	}
 
 	for _, tc := range rm.ToolCalls {
-		blocks = append(blocks, llm.ToolUseBlock{
+		blocks = append(blocks, &llm.ToolUseBlock{
 			Type:  "tool_use",
 			ID:    tc.ID,
 			Name:  tc.Function.Name,

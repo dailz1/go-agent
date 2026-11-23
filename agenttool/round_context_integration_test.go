@@ -56,7 +56,7 @@ func TestAgentToolRoundContextProviderDoesNotInherit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			childProvider := &roundContextSequenceProvider{steps: [][]llm.Chunk{{llm.TextDeltaChunk{Text: "child"}, llm.DoneChunk{FinishReason: "stop"}}}}
+			childProvider := &roundContextSequenceProvider{steps: [][]llm.Chunk{{&llm.TextDeltaChunk{Text: "child"}, &llm.DoneChunk{FinishReason: "stop"}}}}
 			childOptions := []agent.Option{}
 			if tt.childSnapshot != "" {
 				childOptions = append(childOptions, agent.WithRoundContextProvider(func(context.Context, agent.RoundContextRequest) (string, error) {
@@ -67,8 +67,8 @@ func TestAgentToolRoundContextProviderDoesNotInherit(t *testing.T) {
 			registry := tool.NewRegistry()
 			registry.MustRegister(agenttool.New(child, agenttool.Config{Name: "child"}))
 			parentProvider := &roundContextSequenceProvider{steps: [][]llm.Chunk{
-				{llm.ToolCallStartChunk{ID: "call", Name: "child"}, llm.ToolCallArgsChunk{ID: "call", Delta: `{"input":"work"}`}, llm.DoneChunk{FinishReason: "tool_calls"}},
-				{llm.TextDeltaChunk{Text: "parent"}, llm.DoneChunk{FinishReason: "stop"}},
+				{&llm.ToolCallStartChunk{ID: "call", Name: "child"}, &llm.ToolCallArgsChunk{ID: "call", Delta: `{"input":"work"}`}, &llm.DoneChunk{FinishReason: "tool_calls"}},
+				{&llm.TextDeltaChunk{Text: "parent"}, &llm.DoneChunk{FinishReason: "stop"}},
 			}}
 			parentOptions := []agent.Option{}
 			if tt.parentSnapshot != "" {
@@ -102,9 +102,9 @@ func TestAgentToolNestedRunInterruptedErrorKeepsParentThread(t *testing.T) {
 	registry.MustRegister(agenttool.New(child, agenttool.Config{Name: "child",
 		RunOptions: []agent.RunOption{agent.WithThread("")}}))
 	parent := agent.New(&roundContextSequenceProvider{steps: [][]llm.Chunk{{
-		llm.ToolCallStartChunk{ID: "call", Name: "child"},
-		llm.ToolCallArgsChunk{ID: "call", Delta: string(json.RawMessage(`{"input":"work"}`))},
-		llm.DoneChunk{FinishReason: "tool_calls"},
+		&llm.ToolCallStartChunk{ID: "call", Name: "child"},
+		&llm.ToolCallArgsChunk{ID: "call", Delta: string(json.RawMessage(`{"input":"work"}`))},
+		&llm.DoneChunk{FinishReason: "tool_calls"},
 	}}}, registry, agent.WithStore(store.NewMemory()))
 
 	_, err := parent.Run(context.Background(), "parent work", agent.WithThread("parent-thread"))
@@ -122,7 +122,7 @@ func TestAgentToolNestedRunInterruptedErrorKeepsParentThread(t *testing.T) {
 func textOf(message llm.Message) string {
 	text := ""
 	for _, block := range message.Content {
-		if block, ok := block.(llm.TextBlock); ok {
+		if block, ok := block.(*llm.TextBlock); ok {
 			text += block.Text
 		}
 	}

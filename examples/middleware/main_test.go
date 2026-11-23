@@ -26,7 +26,7 @@ func (p *noStreamProvider) Name() string { return "no_stream" }
 
 func (p *noStreamProvider) Chat(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (*llm.Message, *llm.Usage, error) {
 	p.chatCalled = true
-	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "fallback-ok"}}}, nil, nil
+	return &llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "fallback-ok"}}}, nil, nil
 }
 
 func (p *noStreamProvider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
@@ -48,7 +48,7 @@ func (p *signalProvider) Chat(ctx context.Context, messages []llm.Message, tools
 func (p *signalProvider) ChatStream(ctx context.Context, messages []llm.Message, tools []tool.ToolInfo, opts ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 	return func(yield func(llm.Chunk, error) bool) {
 		defer close(p.cleanup)
-		for _, c := range []llm.Chunk{llm.TextDeltaChunk{Text: "a"}, llm.TextDeltaChunk{Text: "b"}} {
+		for _, c := range []llm.Chunk{&llm.TextDeltaChunk{Text: "a"}, &llm.TextDeltaChunk{Text: "b"}} {
 			if !yield(c, nil) {
 				return
 			}
@@ -93,7 +93,7 @@ func TestLoggingProviderPreservesStreamingNotSupported(t *testing.T) {
 	if !inner.chatCalled {
 		t.Fatal("agent did not fall back to Chat")
 	}
-	if got := res.Message.Content; len(got) != 1 || got[0].(llm.TextBlock).Text != "fallback-ok" {
+	if got := res.Message.Content; len(got) != 1 || got[0].(*llm.TextBlock).Text != "fallback-ok" {
 		t.Fatalf("unexpected fallback message: %+v", res.Message.Content)
 	}
 }

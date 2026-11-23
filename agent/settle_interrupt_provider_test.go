@@ -23,18 +23,18 @@ func TestSettleInterruptProvider(t *testing.T) {
 				p := &settleInterruptProvider{MockStreamingProvider: NewMockStreamingProvider(nil)}
 				p.run = func(ctx context.Context, _ []llm.Message, yield func(llm.Chunk, error) bool) {
 					if p.calls.Load() > 1 {
-						if !yield(llm.TextDeltaChunk{Text: "new answer"}, nil) {
+						if !yield(&llm.TextDeltaChunk{Text: "new answer"}, nil) {
 							return
 						}
-						yield(llm.DoneChunk{FinishReason: "stop"}, nil)
+						yield(&llm.DoneChunk{FinishReason: "stop"}, nil)
 						return
 					}
 					if name == "E02_partial_stream" {
 						for _, chunk := range []llm.Chunk{
-							llm.TextDeltaChunk{Text: "unfinished text"},
-							llm.ReasoningDeltaChunk{Text: "unfinished reasoning"},
-							llm.ToolCallStartChunk{Index: 0, ID: "partial-call", Name: "echo"},
-							llm.ToolCallArgsChunk{Index: 0, Delta: `{"partial":`},
+							&llm.TextDeltaChunk{Text: "unfinished text"},
+							&llm.ReasoningDeltaChunk{Text: "unfinished reasoning"},
+							&llm.ToolCallStartChunk{Index: 0, ID: "partial-call", Name: "echo"},
+							&llm.ToolCallArgsChunk{Index: 0, Delta: `{"partial":`},
 						} {
 							if !yield(chunk, nil) {
 								return

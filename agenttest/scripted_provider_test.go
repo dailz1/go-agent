@@ -20,7 +20,7 @@ func TestScriptedProviderSequentialAndFallback(t *testing.T) {
 		t.Fatalf("ChatStream error = %v", err)
 	}
 	message, _, err := provider.Chat(context.Background(), request.Messages, nil)
-	if err != nil || message.Content[0].(llm.TextBlock).Text != "fallback" {
+	if err != nil || message.Content[0].(*llm.TextBlock).Text != "fallback" {
 		t.Fatalf("Chat = %#v, %v", message, err)
 	}
 	if err := provider.Verify(); err != nil {

@@ -32,7 +32,7 @@ func TestNewInfo(t *testing.T) {
 }
 
 func TestMalformedArgumentsAreSoftAndDoNotRunChild(t *testing.T) {
-	provider := &countingProvider{Provider: scripted("unused", nil, llm.TextDeltaChunk{Text: "unused"})}
+	provider := &countingProvider{Provider: scripted("unused", nil, &llm.TextDeltaChunk{Text: "unused"})}
 	adapter := agenttool.New(agent.New(provider, tool.NewRegistry()), agenttool.Config{Name: "worker"})
 	for _, args := range []json.RawMessage{nil, []byte(`null`), []byte(`[]`), []byte(`"input"`), []byte(`{}`), []byte(`{"input":null}`), []byte(`{"input":1}`), []byte(`{`)} {
 		result, err := adapter.Execute(t.Context(), args)
@@ -62,12 +62,12 @@ func TestSubAgentHardErrorReachesParent(t *testing.T) {
 
 func TestApprovalBoundariesRemainIndependent(t *testing.T) {
 	t.Run("outer", func(t *testing.T) {
-		childProvider := &countingProvider{Provider: scripted("task", nil, llm.TextDeltaChunk{Text: "unused"})}
+		childProvider := &countingProvider{Provider: scripted("task", nil, &llm.TextDeltaChunk{Text: "unused"})}
 		adapter := agenttool.New(agent.New(childProvider, tool.NewRegistry()), agenttool.Config{Name: "worker", RequiresApproval: true})
 		info, args := adapter.Info(), json.RawMessage(`{"input":"task"}`)
 		parentProvider := agenttest.NewScriptedProvider(
-			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: request("parent", []tool.ToolInfo{info}), StreamChunks: []llm.Chunk{llm.ToolCallStartChunk{ID: "call", Name: "worker"}, llm.ToolCallArgsChunk{ID: "call", Delta: string(args)}}},
-			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: agenttest.Request{Messages: []llm.Message{llm.UserMessage("parent"), llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "call", Name: "worker", Input: args}), llm.ToolResultMessage("call", tool.NewErrorResult("tool %q requires approval but no approval callback is configured", "worker"))}, Tools: []tool.ToolInfo{info}}, StreamChunks: []llm.Chunk{llm.TextDeltaChunk{Text: "parent final"}}},
+			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: request("parent", []tool.ToolInfo{info}), StreamChunks: []llm.Chunk{&llm.ToolCallStartChunk{ID: "call", Name: "worker"}, &llm.ToolCallArgsChunk{ID: "call", Delta: string(args)}}},
+			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: agenttest.Request{Messages: []llm.Message{llm.UserMessage("parent"), llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "call", Name: "worker", Input: args}), llm.ToolResultMessage("call", tool.NewErrorResult("tool %q requires approval but no approval callback is configured", "worker"))}, Tools: []tool.ToolInfo{info}}, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "parent final"}}},
 		)
 		registry := tool.NewRegistry()
 		registry.MustRegister(adapter)
@@ -86,8 +86,8 @@ func TestApprovalBoundariesRemainIndependent(t *testing.T) {
 		registry.MustRegister(guarded)
 		args, info := json.RawMessage(`{}`), guarded.Info()
 		provider := agenttest.NewScriptedProvider(
-			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: request("task", []tool.ToolInfo{info}), StreamChunks: []llm.Chunk{llm.ToolCallStartChunk{ID: "call", Name: "guarded"}, llm.ToolCallArgsChunk{ID: "call", Delta: string(args)}}},
-			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: agenttest.Request{Messages: []llm.Message{llm.UserMessage("task"), llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "call", Name: "guarded", Input: args}), llm.ToolResultMessage("call", tool.NewErrorResult("tool %q requires approval but no approval callback is configured", "guarded"))}, Tools: []tool.ToolInfo{info}}, StreamChunks: []llm.Chunk{llm.TextDeltaChunk{Text: "child final"}}},
+			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: request("task", []tool.ToolInfo{info}), StreamChunks: []llm.Chunk{&llm.ToolCallStartChunk{ID: "call", Name: "guarded"}, &llm.ToolCallArgsChunk{ID: "call", Delta: string(args)}}},
+			agenttest.Exchange{Method: agenttest.MethodChatStream, Request: agenttest.Request{Messages: []llm.Message{llm.UserMessage("task"), llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "call", Name: "guarded", Input: args}), llm.ToolResultMessage("call", tool.NewErrorResult("tool %q requires approval but no approval callback is configured", "guarded"))}, Tools: []tool.ToolInfo{info}}, StreamChunks: []llm.Chunk{&llm.TextDeltaChunk{Text: "child final"}}},
 		)
 		result, err := agenttool.New(agent.New(provider, registry), agenttool.Config{Name: "worker"}).Execute(t.Context(), []byte(`{"input":"task"}`))
 		if err != nil || result.IsError() || result.Content != "child final" || len(guarded.Calls()) != 0 {
@@ -106,14 +106,14 @@ func TestTruncatedAndTextlessChildrenAreSoft(t *testing.T) {
 		}}
 		registry := tool.NewRegistry()
 		registry.MustRegister(childTool)
-		provider := scripted("task", []tool.ToolInfo{childTool.Info()}, llm.ToolCallStartChunk{ID: "child-call", Name: "child-tool"}, llm.ToolCallArgsChunk{ID: "child-call", Delta: `{}`})
+		provider := scripted("task", []tool.ToolInfo{childTool.Info()}, &llm.ToolCallStartChunk{ID: "child-call", Name: "child-tool"}, &llm.ToolCallArgsChunk{ID: "child-call", Delta: `{}`})
 		result, err := agenttool.New(agent.New(provider, registry, agent.WithMaxIter(1)), agenttool.Config{Name: "worker"}).Execute(t.Context(), []byte(`{"input":"task"}`))
 		if err != nil || !result.IsError() || len(childTool.Calls()) != 0 {
 			t.Fatalf("Execute = %#v, %v; child calls = %#v", result, err, childTool.Calls())
 		}
 	})
 	t.Run("no text", func(t *testing.T) {
-		result, err := agenttool.New(agent.New(scripted("task", nil, llm.ReasoningDeltaChunk{Text: "private"}), tool.NewRegistry()), agenttool.Config{Name: "worker"}).Execute(t.Context(), []byte(`{"input":"task"}`))
+		result, err := agenttool.New(agent.New(scripted("task", nil, &llm.ReasoningDeltaChunk{Text: "private"}), tool.NewRegistry()), agenttool.Config{Name: "worker"}).Execute(t.Context(), []byte(`{"input":"task"}`))
 		if err != nil || !result.IsError() || result.Data != nil {
 			t.Fatalf("Execute = %#v, %v", result, err)
 		}
@@ -142,7 +142,7 @@ func (*callProvider) Chat(context.Context, []llm.Message, []tool.ToolInfo, ...ll
 	return nil, nil, llm.ErrStreamingNotSupported
 }
 func (p *callProvider) ChatStream(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
-	return chunks(llm.ToolCallStartChunk{ID: "parent-call", Name: p.name}, llm.ToolCallArgsChunk{ID: "parent-call", Delta: p.args}), nil
+	return chunks(&llm.ToolCallStartChunk{ID: "parent-call", Name: p.name}, &llm.ToolCallArgsChunk{ID: "parent-call", Delta: p.args}), nil
 }
 
 func scripted(input string, tools []tool.ToolInfo, chunks ...llm.Chunk) *agenttest.ScriptedProvider {

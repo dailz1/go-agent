@@ -19,11 +19,11 @@ import (
 // carried with empty arguments and no conversion error.
 func TestConvertAssistantStripsForeignReasoning(t *testing.T) {
 	messages := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningBlock{Type: "reasoning", Content: "chain of thought"},
-		llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc"},
+		&llm.ReasoningBlock{Type: "reasoning", Content: "chain of thought"},
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc"},
 		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_2", EncryptedContent: "enc"},
-		llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "ping", Input: json.RawMessage("")},
-		llm.TextBlock{Type: "text", Text: "answer"},
+		&llm.ToolUseBlock{Type: "tool_use", ID: "call", Name: "ping", Input: json.RawMessage("")},
+		&llm.TextBlock{Type: "text", Text: "answer"},
 	}}}
 	converted, err := convertMessages(messages)
 	if err != nil {
@@ -86,7 +86,7 @@ func TestProviderThreadModelShadowsConstructorModel(t *testing.T) {
 // told what was omitted.
 func TestConvertToolResultImagesDegrade(t *testing.T) {
 	messages := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
-		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "shot done",
+		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_1", Content: "shot done",
 			Images: []llm.ImageBlock{{Type: "image", URL: "https://example.com/a.png"}}},
 	}}}
 	converted, err := convertMessages(messages)
@@ -104,7 +104,7 @@ func TestConvertToolResultImagesDegrade(t *testing.T) {
 
 	// No images: content unchanged.
 	plain, err := convertMessages([]llm.Message{{Role: llm.RoleTool, Content: []llm.ContentBlock{
-		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_2", Content: "plain"}}}})
+		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "call_2", Content: "plain"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

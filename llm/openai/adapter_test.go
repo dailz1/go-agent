@@ -207,7 +207,7 @@ func TestProvider_ChatStreamSetupErrorIsRetryable(t *testing.T) {
 		if streamErr != nil {
 			t.Fatalf("consume retry stream: %v", streamErr)
 		}
-		if _, ok := chunk.(llm.DoneChunk); ok {
+		if _, ok := chunk.(*llm.DoneChunk); ok {
 			sawDone = true
 		}
 	}
@@ -308,9 +308,9 @@ func TestProvider_ChatStreamIgnoresEmptyDataFrames(t *testing.T) {
 			t.Fatalf("consume stream: %v", streamErr)
 		}
 		switch c := chunk.(type) {
-		case llm.TextDeltaChunk:
+		case *llm.TextDeltaChunk:
 			sawText = c.Text == "hello"
-		case llm.DoneChunk:
+		case *llm.DoneChunk:
 			sawDone = true
 		}
 	}
@@ -377,7 +377,7 @@ func TestProvider_ChatStreamWithoutCompletionYieldsError(t *testing.T) {
 func TestConvertStandardMessage_SingleText(t *testing.T) {
 	msg := llm.Message{
 		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "hello"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "hello"}},
 	}
 
 	got, err := convertStandardMessage(msg)
@@ -401,8 +401,8 @@ func TestConvertStandardMessage_MultipleBlocks(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: "first"},
-			llm.TextBlock{Type: "text", Text: "second"},
+			&llm.TextBlock{Type: "text", Text: "first"},
+			&llm.TextBlock{Type: "text", Text: "second"},
 		},
 	}
 
@@ -432,7 +432,7 @@ func TestConvertStandardMessage_ImageBlock(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.ImageBlock{Type: "image", URL: "https://example.com/img.png"},
+			&llm.ImageBlock{Type: "image", URL: "https://example.com/img.png"},
 		},
 	}
 
@@ -464,7 +464,7 @@ func TestConvertStandardMessage_ImageBlockBase64(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("fake-png-data")},
+			&llm.ImageBlock{Type: "image", MIMEType: "image/png", Data: []byte("fake-png-data")},
 		},
 	}
 
@@ -495,7 +495,7 @@ func TestConvertStandardMessage_ImageBlockBase64(t *testing.T) {
 func TestConvertAssistant_TextOnly(t *testing.T) {
 	msg := llm.Message{
 		Role:    llm.RoleAssistant,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "response"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "response"}},
 	}
 
 	got, err := convertAssistant(msg)
@@ -523,7 +523,7 @@ func TestConvertAssistant_ToolCallsOnly(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "fn", Input: input},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c1", Name: "fn", Input: input},
 		},
 	}
 
@@ -558,8 +558,8 @@ func TestConvertAssistant_MixedContent(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: "partial answer"},
-			llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "search", Input: input},
+			&llm.TextBlock{Type: "text", Text: "partial answer"},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "c2", Name: "search", Input: input},
 		},
 	}
 
@@ -587,8 +587,8 @@ func TestConvertAssistant_MultipleTextParts(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: "line1"},
-			llm.TextBlock{Type: "text", Text: "line2"},
+			&llm.TextBlock{Type: "text", Text: "line1"},
+			&llm.TextBlock{Type: "text", Text: "line2"},
 		},
 	}
 
@@ -613,7 +613,7 @@ func TestConvertToolResult(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleTool,
 		Content: []llm.ContentBlock{
-			llm.ToolResultBlock{Type: "tool_result", ToolUseID: "id1", Content: "result text"},
+			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "id1", Content: "result text"},
 		},
 	}
 
@@ -640,7 +640,7 @@ func TestConvertToolResult(t *testing.T) {
 func TestConvertToolResult_NoBlock(t *testing.T) {
 	msg := llm.Message{
 		Role:    llm.RoleTool,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "not a result"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "not a result"}},
 	}
 
 	_, err := convertToolResult(msg)
@@ -729,7 +729,7 @@ func TestConvertResponseMessage_TextOnly(t *testing.T) {
 	if len(got.Content) != 1 {
 		t.Fatalf("len(Content) = %d, want 1", len(got.Content))
 	}
-	tb, ok := got.Content[0].(llm.TextBlock)
+	tb, ok := got.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want TextBlock", got.Content[0])
 	}
@@ -755,7 +755,7 @@ func TestConvertResponseMessage_ToolCalls(t *testing.T) {
 	if len(got.Content) != 1 {
 		t.Fatalf("len(Content) = %d, want 1", len(got.Content))
 	}
-	tub, ok := got.Content[0].(llm.ToolUseBlock)
+	tub, ok := got.Content[0].(*llm.ToolUseBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want ToolUseBlock", got.Content[0])
 	}
@@ -788,7 +788,7 @@ func TestConvertResponseMessage_Mixed(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 2", len(got.Content))
 	}
 
-	tb, ok := got.Content[0].(llm.TextBlock)
+	tb, ok := got.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want TextBlock", got.Content[0])
 	}
@@ -796,7 +796,7 @@ func TestConvertResponseMessage_Mixed(t *testing.T) {
 		t.Errorf("TextBlock.Text = %q, want %q", tb.Text, "thinking")
 	}
 
-	tub, ok := got.Content[1].(llm.ToolUseBlock)
+	tub, ok := got.Content[1].(*llm.ToolUseBlock)
 	if !ok {
 		t.Fatalf("Content[1] type = %T, want ToolUseBlock", got.Content[1])
 	}
@@ -871,7 +871,7 @@ func TestConvertStandardMessage_UnsupportedBlock(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.ToolUseBlock{Type: "tool_use", ID: "bad", Name: "fn", Input: json.RawMessage(`{}`)},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "bad", Name: "fn", Input: json.RawMessage(`{}`)},
 		},
 	}
 
@@ -886,7 +886,7 @@ func TestConvertStandardMessage_ImageBlockEmptyURL(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.ImageBlock{Type: "image", URL: ""},
+			&llm.ImageBlock{Type: "image", URL: ""},
 		},
 	}
 
@@ -938,7 +938,7 @@ func TestConvertAssistant_UnsupportedBlock(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.ImageBlock{Type: "image", URL: "https://example.com/img.png"},
+			&llm.ImageBlock{Type: "image", URL: "https://example.com/img.png"},
 		},
 	}
 
@@ -952,7 +952,7 @@ func TestConvertAssistant_SingleEmptyText(t *testing.T) {
 	t.Parallel()
 	msg := llm.Message{
 		Role:    llm.RoleAssistant,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: ""}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: ""}},
 	}
 
 	got, err := convertAssistant(msg)
@@ -978,7 +978,7 @@ func TestConvertToolResult_ErrorResult(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleTool,
 		Content: []llm.ContentBlock{
-			llm.ToolResultBlock{
+			&llm.ToolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: "err1",
 				Content:   "something went wrong",
@@ -1011,7 +1011,7 @@ func TestConvertToolResult_EmptyContent(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleTool,
 		Content: []llm.ContentBlock{
-			llm.ToolResultBlock{
+			&llm.ToolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: "empty1",
 				Content:   "",
@@ -1040,12 +1040,12 @@ func TestConvertToolResult_MultipleToolResultBlocks(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleTool,
 		Content: []llm.ContentBlock{
-			llm.ToolResultBlock{
+			&llm.ToolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: "first",
 				Content:   "result one",
 			},
-			llm.ToolResultBlock{
+			&llm.ToolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: "second",
 				Content:   "result two",
@@ -1103,7 +1103,7 @@ func TestConvertResponseMessage_NilContentWithToolCalls(t *testing.T) {
 	if len(got.Content) != 1 {
 		t.Fatalf("len(Content) = %d, want 1", len(got.Content))
 	}
-	tub, ok := got.Content[0].(llm.ToolUseBlock)
+	tub, ok := got.Content[0].(*llm.ToolUseBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want ToolUseBlock", got.Content[0])
 	}
@@ -1138,7 +1138,7 @@ func TestConvertResponseMessage_MultipleToolCalls(t *testing.T) {
 	wantNames := []string{"fn1", "fn2", "fn3"}
 	wantIDs := []string{"mc1", "mc2", "mc3"}
 	for i, block := range got.Content {
-		tub, ok := block.(llm.ToolUseBlock)
+		tub, ok := block.(*llm.ToolUseBlock)
 		if !ok {
 			t.Fatalf("Content[%d] type = %T, want ToolUseBlock", i, block)
 		}
@@ -1169,7 +1169,7 @@ func TestConvertResponseMessage_EmptyArguments(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 2", len(got.Content))
 	}
 
-	tb, ok := got.Content[0].(llm.TextBlock)
+	tb, ok := got.Content[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want TextBlock", got.Content[0])
 	}
@@ -1177,7 +1177,7 @@ func TestConvertResponseMessage_EmptyArguments(t *testing.T) {
 		t.Errorf("Text = %q, want %q", tb.Text, "text")
 	}
 
-	tub, ok := got.Content[1].(llm.ToolUseBlock)
+	tub, ok := got.Content[1].(*llm.ToolUseBlock)
 	if !ok {
 		t.Fatalf("Content[1] type = %T, want ToolUseBlock", got.Content[1])
 	}
@@ -1252,7 +1252,7 @@ func TestConvertMessage_UnsupportedRole(t *testing.T) {
 	t.Parallel()
 	msg := llm.Message{
 		Role:    "custom",
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "hello"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "hello"}},
 	}
 
 	got, err := convertMessage(msg)
@@ -1278,7 +1278,7 @@ func TestConvertMessage_RoutesByRole(t *testing.T) {
 	toolMsg := llm.Message{
 		Role: llm.RoleTool,
 		Content: []llm.ContentBlock{
-			llm.ToolResultBlock{Type: "tool_result", ToolUseID: "t1", Content: "ok"},
+			&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "t1", Content: "ok"},
 		},
 	}
 	cm, err := convertMessage(toolMsg)
@@ -1292,7 +1292,7 @@ func TestConvertMessage_RoutesByRole(t *testing.T) {
 	// Assistant role → convertAssistant
 	asstMsg := llm.Message{
 		Role:    llm.RoleAssistant,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "hi"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "hi"}},
 	}
 	cm, err = convertMessage(asstMsg)
 	if err != nil {
@@ -1305,7 +1305,7 @@ func TestConvertMessage_RoutesByRole(t *testing.T) {
 	// User role → convertStandardMessage
 	userMsg := llm.Message{
 		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "hey"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "hey"}},
 	}
 	cm, err = convertMessage(userMsg)
 	if err != nil {
@@ -1318,7 +1318,7 @@ func TestConvertMessage_RoutesByRole(t *testing.T) {
 	// System role → convertStandardMessage
 	sysMsg := llm.Message{
 		Role:    llm.RoleSystem,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "sys"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "sys"}},
 	}
 	cm, err = convertMessage(sysMsg)
 	if err != nil {
@@ -1347,7 +1347,7 @@ func TestParseStreamPayload_TextDelta(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	td, ok := chunks[0].(llm.TextDeltaChunk)
+	td, ok := chunks[0].(*llm.TextDeltaChunk)
 	if !ok {
 		t.Fatalf("expected TextDeltaChunk, got %T", chunks[0])
 	}
@@ -1363,7 +1363,7 @@ func TestParseStreamPayload_ToolCallStart(t *testing.T) {
 	if len(chunks) < 1 {
 		t.Fatal("expected at least 1 chunk")
 	}
-	tcs, ok := chunks[0].(llm.ToolCallStartChunk)
+	tcs, ok := chunks[0].(*llm.ToolCallStartChunk)
 	if !ok {
 		t.Fatalf("expected ToolCallStartChunk, got %T", chunks[0])
 	}
@@ -1385,7 +1385,7 @@ func TestParseStreamPayload_ToolCallArgs(t *testing.T) {
 	if len(chunks) < 1 {
 		t.Fatal("expected at least 1 chunk")
 	}
-	tca, ok := chunks[0].(llm.ToolCallArgsChunk)
+	tca, ok := chunks[0].(*llm.ToolCallArgsChunk)
 	if !ok {
 		t.Fatalf("expected ToolCallArgsChunk, got %T", chunks[0])
 	}
@@ -1401,7 +1401,7 @@ func TestParseStreamPayload_Done(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
-	done, ok := chunks[0].(llm.DoneChunk)
+	done, ok := chunks[0].(*llm.DoneChunk)
 	if !ok {
 		t.Fatalf("expected DoneChunk, got %T", chunks[0])
 	}
@@ -1426,10 +1426,10 @@ func TestParseStreamPayload_ContentAndDone(t *testing.T) {
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
-	if _, ok := chunks[0].(llm.TextDeltaChunk); !ok {
+	if _, ok := chunks[0].(*llm.TextDeltaChunk); !ok {
 		t.Fatalf("chunk[0]: expected TextDeltaChunk, got %T", chunks[0])
 	}
-	if _, ok := chunks[1].(llm.DoneChunk); !ok {
+	if _, ok := chunks[1].(*llm.DoneChunk); !ok {
 		t.Fatalf("chunk[1]: expected DoneChunk, got %T", chunks[1])
 	}
 }
@@ -1439,9 +1439,9 @@ func TestParseStreamPayload_FinishReasonWithUsage_YieldsOneDoneChunk(t *testing.
 	payload := `{"id":"1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
 	chunks := mustParseStreamPayload(t, payload)
 
-	var done []llm.DoneChunk
+	var done []*llm.DoneChunk
 	for _, c := range chunks {
-		if d, ok := c.(llm.DoneChunk); ok {
+		if d, ok := c.(*llm.DoneChunk); ok {
 			done = append(done, d)
 		}
 	}
@@ -1463,7 +1463,7 @@ func TestParseStreamPayload_UsageOnlyFrame_YieldsUsageOnlyDoneChunk(t *testing.T
 	if len(chunks) != 1 {
 		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
 	}
-	done, ok := chunks[0].(llm.DoneChunk)
+	done, ok := chunks[0].(*llm.DoneChunk)
 	if !ok {
 		t.Fatalf("expected DoneChunk, got %T", chunks[0])
 	}
@@ -1507,7 +1507,7 @@ func TestConvertResponseMessage_ReasoningBlock(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 2", len(got.Content))
 	}
 
-	rb, ok := got.Content[0].(llm.ReasoningBlock)
+	rb, ok := got.Content[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want ReasoningBlock", got.Content[0])
 	}
@@ -1518,7 +1518,7 @@ func TestConvertResponseMessage_ReasoningBlock(t *testing.T) {
 		t.Errorf("ReasoningBlock.Content = %q, want %q", rb.Content, "step-by-step thinking")
 	}
 
-	tb, ok := got.Content[1].(llm.TextBlock)
+	tb, ok := got.Content[1].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("Content[1] type = %T, want TextBlock", got.Content[1])
 	}
@@ -1542,7 +1542,7 @@ func TestConvertResponseMessage_NoReasoningBlock(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 1", len(got.Content))
 	}
 
-	if _, ok := got.Content[0].(llm.TextBlock); !ok {
+	if _, ok := got.Content[0].(*llm.TextBlock); !ok {
 		t.Fatalf("Content[0] type = %T, want TextBlock", got.Content[0])
 	}
 }
@@ -1563,7 +1563,7 @@ func TestConvertResponseMessage_EmptyReasoningContent(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 1 (empty reasoning should be skipped)", len(got.Content))
 	}
 
-	if _, ok := got.Content[0].(llm.TextBlock); !ok {
+	if _, ok := got.Content[0].(*llm.TextBlock); !ok {
 		t.Fatalf("Content[0] type = %T, want TextBlock", got.Content[0])
 	}
 }
@@ -1586,7 +1586,7 @@ func TestConvertResponseMessage_ReasoningWithToolCalls(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 2", len(got.Content))
 	}
 
-	rb, ok := got.Content[0].(llm.ReasoningBlock)
+	rb, ok := got.Content[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want ReasoningBlock", got.Content[0])
 	}
@@ -1594,7 +1594,7 @@ func TestConvertResponseMessage_ReasoningWithToolCalls(t *testing.T) {
 		t.Errorf("ReasoningBlock.Content = %q, want %q", rb.Content, "planning tool use")
 	}
 
-	tub, ok := got.Content[1].(llm.ToolUseBlock)
+	tub, ok := got.Content[1].(*llm.ToolUseBlock)
 	if !ok {
 		t.Fatalf("Content[1] type = %T, want ToolUseBlock", got.Content[1])
 	}
@@ -1618,7 +1618,7 @@ func TestConvertResponseMessage_ReasoningOnly(t *testing.T) {
 		t.Fatalf("len(Content) = %d, want 1", len(got.Content))
 	}
 
-	rb, ok := got.Content[0].(llm.ReasoningBlock)
+	rb, ok := got.Content[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want ReasoningBlock", got.Content[0])
 	}
@@ -1632,8 +1632,8 @@ func TestConvertAssistant_ReasoningBlockStripped(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.ReasoningBlock{Type: "reasoning", Content: "internal thought"},
-			llm.TextBlock{Type: "text", Text: "public answer"},
+			&llm.ReasoningBlock{Type: "reasoning", Content: "internal thought"},
+			&llm.TextBlock{Type: "text", Text: "public answer"},
 		},
 	}
 
@@ -1665,8 +1665,8 @@ func TestConvertStandard_ReasoningBlockStripped(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{
-			llm.ReasoningBlock{Type: "reasoning", Content: "should be dropped"},
-			llm.TextBlock{Type: "text", Text: "actual user text"},
+			&llm.ReasoningBlock{Type: "reasoning", Content: "should be dropped"},
+			&llm.TextBlock{Type: "text", Text: "actual user text"},
 		},
 	}
 
@@ -1692,8 +1692,8 @@ func TestConvertAssistant_ReasoningContentJSON(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.ReasoningBlock{Type: "reasoning", Content: "step 1: analyze"},
-			llm.TextBlock{Type: "text", Text: "answer"},
+			&llm.ReasoningBlock{Type: "reasoning", Content: "step 1: analyze"},
+			&llm.TextBlock{Type: "text", Text: "answer"},
 		},
 	}
 
@@ -1734,7 +1734,7 @@ func TestConvertAssistant_NoReasoningBlock_NilReasoningContent(t *testing.T) {
 	t.Parallel()
 	msg := llm.Message{
 		Role:    llm.RoleAssistant,
-		Content: []llm.ContentBlock{llm.TextBlock{Type: "text", Text: "plain"}},
+		Content: []llm.ContentBlock{&llm.TextBlock{Type: "text", Text: "plain"}},
 	}
 
 	got, err := convertAssistant(msg)

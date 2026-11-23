@@ -95,7 +95,7 @@ func (a *adapter) Execute(ctx context.Context, args json.RawMessage) (*tool.Tool
 	var text strings.Builder
 	foundText := false
 	for _, block := range result.Message.Content {
-		if block, ok := block.(llm.TextBlock); ok {
+		if block, ok := block.(*llm.TextBlock); ok {
 			foundText = true
 			text.WriteString(block.Text)
 		}

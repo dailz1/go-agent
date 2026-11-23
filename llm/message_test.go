@@ -19,7 +19,7 @@ func TestSystemMessage(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(TextBlock)
+	tb, ok := msg.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -36,7 +36,7 @@ func TestUserMessage(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(TextBlock)
+	tb, ok := msg.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -53,7 +53,7 @@ func TestAssistantMessage(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(TextBlock)
+	tb, ok := msg.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -63,7 +63,7 @@ func TestAssistantMessage(t *testing.T) {
 }
 
 func TestAssistantToolCallMessage(t *testing.T) {
-	calls := []ToolUseBlock{
+	calls := []*ToolUseBlock{
 		{ID: "call_1", Name: "search", Input: json.RawMessage(`{"q":"go"}`)},
 		{ID: "call_2", Name: "read", Input: json.RawMessage(`{"path":"/tmp"}`)},
 	}
@@ -71,11 +71,14 @@ func TestAssistantToolCallMessage(t *testing.T) {
 	if msg.Role != RoleAssistant {
 		t.Errorf("expected Role %q, got %q", RoleAssistant, msg.Role)
 	}
+	if calls[0].Type != "" || calls[1].Type != "" {
+		t.Fatalf("caller ToolUseBlock mutated: %+v %+v", calls[0], calls[1])
+	}
 	if len(msg.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
 	}
 	for i, block := range msg.Content {
-		tu, ok := block.(ToolUseBlock)
+		tu, ok := block.(*ToolUseBlock)
 		if !ok {
 			t.Fatalf("block[%d]: expected ToolUseBlock, got %T", i, block)
 		}
@@ -94,7 +97,7 @@ func TestToolResultMessage(t *testing.T) {
 		if len(msg.Content) != 1 {
 			t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 		}
-		tr, ok := msg.Content[0].(ToolResultBlock)
+		tr, ok := msg.Content[0].(*ToolResultBlock)
 		if !ok {
 			t.Fatalf("expected ToolResultBlock, got %T", msg.Content[0])
 		}
@@ -111,7 +114,7 @@ func TestToolResultMessage(t *testing.T) {
 
 	t.Run("error", func(t *testing.T) {
 		msg := ToolResultMessage("call_err", tool.NewErrorResult("bad"))
-		tr := msg.Content[0].(ToolResultBlock)
+		tr := msg.Content[0].(*ToolResultBlock)
 		if !tr.IsError {
 			t.Error("expected IsError=true for error result")
 		}
@@ -141,7 +144,7 @@ func TestMessageJSONRoundTrip_SystemText(t *testing.T) {
 	if len(got.Content) != 1 {
 		t.Fatalf("content blocks: expected 1, got %d", len(got.Content))
 	}
-	tb, ok := got.Content[0].(TextBlock)
+	tb, ok := got.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", got.Content[0])
 	}
@@ -154,8 +157,8 @@ func TestMessageJSONRoundTrip_UserMultipleBlocks(t *testing.T) {
 	orig := Message{
 		Role: RoleUser,
 		Content: []ContentBlock{
-			TextBlock{Type: "text", Text: "describe this"},
-			ImageBlock{Type: "image", URL: "https://example.com/img.png"},
+			&TextBlock{Type: "text", Text: "describe this"},
+			&ImageBlock{Type: "image", URL: "https://example.com/img.png"},
 		},
 	}
 	data, err := json.Marshal(orig)
@@ -171,11 +174,11 @@ func TestMessageJSONRoundTrip_UserMultipleBlocks(t *testing.T) {
 	if len(got.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(got.Content))
 	}
-	tb, ok := got.Content[0].(TextBlock)
+	tb, ok := got.Content[0].(*TextBlock)
 	if !ok || tb.Text != "describe this" {
 		t.Errorf("block[0]: expected TextBlock with text %q", "describe this")
 	}
-	ib, ok := got.Content[1].(ImageBlock)
+	ib, ok := got.Content[1].(*ImageBlock)
 	if !ok || ib.URL != "https://example.com/img.png" {
 		t.Errorf("block[1]: expected ImageBlock with URL %q", "https://example.com/img.png")
 	}
@@ -186,7 +189,7 @@ func TestMessageJSONRoundTrip_AssistantToolUse(t *testing.T) {
 	orig := Message{
 		Role: RoleAssistant,
 		Content: []ContentBlock{
-			ToolUseBlock{Type: "tool_use", ID: "call_42", Name: "get_weather", Input: input},
+			&ToolUseBlock{Type: "tool_use", ID: "call_42", Name: "get_weather", Input: input},
 		},
 	}
 	data, err := json.Marshal(orig)
@@ -202,7 +205,7 @@ func TestMessageJSONRoundTrip_AssistantToolUse(t *testing.T) {
 	if len(got.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(got.Content))
 	}
-	tu, ok := got.Content[0].(ToolUseBlock)
+	tu, ok := got.Content[0].(*ToolUseBlock)
 	if !ok {
 		t.Fatalf("expected ToolUseBlock, got %T", got.Content[0])
 	}
@@ -242,7 +245,7 @@ func TestMessageJSONRoundTrip_ToolResult(t *testing.T) {
 	if len(got.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(got.Content))
 	}
-	tr, ok := got.Content[0].(ToolResultBlock)
+	tr, ok := got.Content[0].(*ToolResultBlock)
 	if !ok {
 		t.Fatalf("expected ToolResultBlock, got %T", got.Content[0])
 	}
@@ -286,7 +289,7 @@ func TestMessageUnmarshal_EmptyContent(t *testing.T) {
 }
 
 func TestMessageMarshal_TextBlockSerializesType(t *testing.T) {
-	tb := TextBlock{Type: "text", Text: "hello"}
+	tb := &TextBlock{Type: "text", Text: "hello"}
 	data, err := json.Marshal(tb)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -316,7 +319,7 @@ func TestMessageUnmarshal_ContentIsString(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(TextBlock)
+	tb, ok := msg.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -369,7 +372,7 @@ func TestMessageUnmarshal_EmptyStringContent(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
 	}
-	tb, ok := msg.Content[0].(TextBlock)
+	tb, ok := msg.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -393,7 +396,7 @@ func TestMessageUnmarshal_EmptyToolUseBlockInput(t *testing.T) {
 	orig := Message{
 		Role: RoleAssistant,
 		Content: []ContentBlock{
-			ToolUseBlock{Type: "tool_use", ID: "call_empty", Name: "ping", Input: json.RawMessage(`""`)},
+			&ToolUseBlock{Type: "tool_use", ID: "call_empty", Name: "ping", Input: json.RawMessage(`""`)},
 		},
 	}
 	data, err := json.Marshal(orig)
@@ -404,7 +407,7 @@ func TestMessageUnmarshal_EmptyToolUseBlockInput(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	tu, ok := got.Content[0].(ToolUseBlock)
+	tu, ok := got.Content[0].(*ToolUseBlock)
 	if !ok {
 		t.Fatalf("expected ToolUseBlock, got %T", got.Content[0])
 	}
@@ -428,7 +431,7 @@ func TestMessageUnmarshal_LargeContent(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	tb, ok := got.Content[0].(TextBlock)
+	tb, ok := got.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", got.Content[0])
 	}
@@ -445,7 +448,7 @@ func TestMessageUnmarshal_LargeContentString(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tb, ok := msg.Content[0].(TextBlock)
+	tb, ok := msg.Content[0].(*TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", msg.Content[0])
 	}
@@ -456,13 +459,13 @@ func TestMessageUnmarshal_LargeContentString(t *testing.T) {
 
 func TestContentBlockSealedInterface(t *testing.T) {
 	t.Parallel()
-	var _ ContentBlock = TextBlock{}
+	var _ ContentBlock = &TextBlock{}
 	var _ ContentBlock = (*TextBlock)(nil)
-	var _ ContentBlock = ImageBlock{}
+	var _ ContentBlock = &ImageBlock{}
 	var _ ContentBlock = (*ImageBlock)(nil)
-	var _ ContentBlock = ToolUseBlock{}
+	var _ ContentBlock = &ToolUseBlock{}
 	var _ ContentBlock = (*ToolUseBlock)(nil)
-	var _ ContentBlock = ToolResultBlock{}
+	var _ ContentBlock = &ToolResultBlock{}
 	var _ ContentBlock = (*ToolResultBlock)(nil)
 }
 
@@ -470,7 +473,7 @@ func TestContentBlockSealedInterface(t *testing.T) {
 
 func TestReasoningBlock_BlockType(t *testing.T) {
 	t.Parallel()
-	rb := ReasoningBlock{Type: "reasoning", Content: "thinking..."}
+	rb := &ReasoningBlock{Type: "reasoning", Content: "thinking..."}
 	if rb.blockType() != "reasoning" {
 		t.Errorf("blockType: expected %q, got %q", "reasoning", rb.blockType())
 	}
@@ -478,7 +481,7 @@ func TestReasoningBlock_BlockType(t *testing.T) {
 
 func TestReasoningBlock_Serialize(t *testing.T) {
 	t.Parallel()
-	rb := ReasoningBlock{Type: "reasoning", Content: "I should consider..."}
+	rb := &ReasoningBlock{Type: "reasoning", Content: "I should consider..."}
 	data, err := json.Marshal(rb)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -502,7 +505,7 @@ func TestReasoningBlock_Deserialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshalContentBlock: %v", err)
 	}
-	rb, ok := b.(ReasoningBlock)
+	rb, ok := b.(*ReasoningBlock)
 	if !ok {
 		t.Fatalf("expected ReasoningBlock, got %T", b)
 	}
@@ -519,21 +522,21 @@ func TestReasoningBlock_InMessage(t *testing.T) {
 	msg := Message{
 		Role: RoleAssistant,
 		Content: []ContentBlock{
-			ReasoningBlock{Type: "reasoning", Content: "let me think"},
-			TextBlock{Type: "text", Text: "Here is the answer"},
+			&ReasoningBlock{Type: "reasoning", Content: "let me think"},
+			&TextBlock{Type: "text", Text: "Here is the answer"},
 		},
 	}
 	if len(msg.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
 	}
-	rb, ok := msg.Content[0].(ReasoningBlock)
+	rb, ok := msg.Content[0].(*ReasoningBlock)
 	if !ok {
 		t.Fatalf("block[0]: expected ReasoningBlock, got %T", msg.Content[0])
 	}
 	if rb.Content != "let me think" {
 		t.Errorf("block[0] content: expected %q, got %q", "let me think", rb.Content)
 	}
-	tb, ok := msg.Content[1].(TextBlock)
+	tb, ok := msg.Content[1].(*TextBlock)
 	if !ok || tb.Text != "Here is the answer" {
 		t.Errorf("block[1]: expected TextBlock with text %q", "Here is the answer")
 	}
@@ -541,7 +544,7 @@ func TestReasoningBlock_InMessage(t *testing.T) {
 
 func TestReasoningBlock_SealedInterface(t *testing.T) {
 	t.Parallel()
-	var _ ContentBlock = ReasoningBlock{}
+	var _ ContentBlock = &ReasoningBlock{}
 	var _ ContentBlock = (*ReasoningBlock)(nil)
 }
 
@@ -550,8 +553,8 @@ func TestMessageJSONRoundTrip_ReasoningBlock(t *testing.T) {
 	orig := Message{
 		Role: RoleAssistant,
 		Content: []ContentBlock{
-			ReasoningBlock{Type: "reasoning", Content: "analyzing the query"},
-			TextBlock{Type: "text", Text: "The answer is 42"},
+			&ReasoningBlock{Type: "reasoning", Content: "analyzing the query"},
+			&TextBlock{Type: "text", Text: "The answer is 42"},
 		},
 	}
 	data, err := json.Marshal(orig)
@@ -570,14 +573,14 @@ func TestMessageJSONRoundTrip_ReasoningBlock(t *testing.T) {
 	if len(got.Content) != 2 {
 		t.Fatalf("content blocks: expected 2, got %d", len(got.Content))
 	}
-	rb, ok := got.Content[0].(ReasoningBlock)
+	rb, ok := got.Content[0].(*ReasoningBlock)
 	if !ok {
 		t.Fatalf("block[0]: expected ReasoningBlock, got %T", got.Content[0])
 	}
 	if rb.Content != "analyzing the query" {
 		t.Errorf("block[0] content: expected %q, got %q", "analyzing the query", rb.Content)
 	}
-	tb, ok := got.Content[1].(TextBlock)
+	tb, ok := got.Content[1].(*TextBlock)
 	if !ok {
 		t.Fatalf("block[1]: expected TextBlock, got %T", got.Content[1])
 	}
@@ -592,7 +595,7 @@ func TestToolResultMessageImages(t *testing.T) {
 	if len(msg.Content) != 1 {
 		t.Fatalf("blocks = %d, want 1", len(msg.Content))
 	}
-	block, ok := msg.Content[0].(ToolResultBlock)
+	block, ok := msg.Content[0].(*ToolResultBlock)
 	if !ok {
 		t.Fatalf("block type %T, want ToolResultBlock", msg.Content[0])
 	}
@@ -603,7 +606,7 @@ func TestToolResultMessageImages(t *testing.T) {
 
 	// No images: nil slice so existing DeepEqual(nil) assertions keep holding.
 	plain := ToolResultMessage("call_1", tool.NewTextResult("done"))
-	blockPlain := plain.Content[0].(ToolResultBlock)
+	blockPlain := plain.Content[0].(*ToolResultBlock)
 	if blockPlain.Images != nil {
 		t.Errorf("images = %+v, want nil for text-only result", blockPlain.Images)
 	}
@@ -616,7 +619,7 @@ func TestToolResultMessageImages(t *testing.T) {
 func TestToolResultMessageImageDataIsolated(t *testing.T) {
 	result := tool.NewImageResult("shot", tool.Image{MIMEType: "image/png", Data: []byte("png-bytes")})
 	msg := ToolResultMessage("call_1", result)
-	block := msg.Content[0].(ToolResultBlock)
+	block := msg.Content[0].(*ToolResultBlock)
 
 	// Tool-side rewrite must not reach the message.
 	result.Images[0].Data[0] = 'X'
@@ -635,12 +638,12 @@ func TestToolResultMessageImageDataIsolated(t *testing.T) {
 	// identical on the wire (omitempty); the durable path's canonicalResultBlock
 	// normalizes empty to nil at record time.
 	nilResult := tool.NewImageResult("u", tool.Image{URL: "https://example.com/a.png"})
-	nilBlock := ToolResultMessage("call_2", nilResult).Content[0].(ToolResultBlock)
+	nilBlock := ToolResultMessage("call_2", nilResult).Content[0].(*ToolResultBlock)
 	if nilBlock.Images[0].Data != nil {
 		t.Errorf("nil source data = %v, want nil", nilBlock.Images[0].Data)
 	}
 	emptyResult := tool.NewImageResult("e", tool.Image{MIMEType: "image/png", Data: []byte{}})
-	emptyBlock := ToolResultMessage("call_3", emptyResult).Content[0].(ToolResultBlock)
+	emptyBlock := ToolResultMessage("call_3", emptyResult).Content[0].(*ToolResultBlock)
 	if len(emptyBlock.Images[0].Data) != 0 {
 		t.Errorf("empty source data = %v, want empty", emptyBlock.Images[0].Data)
 	}
@@ -652,7 +655,7 @@ func TestToolResultBlockDecodeImages(t *testing.T) {
 	if err := json.Unmarshal([]byte(data), &msg); err != nil {
 		t.Fatal(err)
 	}
-	block := msg.Content[0].(ToolResultBlock)
+	block := msg.Content[0].(*ToolResultBlock)
 	if len(block.Images) != 1 || block.Images[0].URL != "https://example.com/a.png" {
 		t.Errorf("images = %+v", block.Images)
 	}

@@ -295,7 +295,7 @@ func TestEnqueueValidation(t *testing.T) {
 	}
 }
 
-var _ = llm.TextDeltaChunk{}
+var _ = &llm.TextDeltaChunk{}
 var _ = json.RawMessage{}
 
 func TestSteeringStarvationFreeDrain(t *testing.T) {

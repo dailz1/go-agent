@@ -11,8 +11,8 @@ import (
 
 func TestAccum_SingleToolCall(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `{"key":"val"}`})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `{"key":"val"}`})
 
 	blocks, err := a.assemble()
 	if err != nil {
@@ -38,12 +38,12 @@ func TestAccum_SingleToolCall(t *testing.T) {
 
 func TestAccum_InterleavedMultiTool(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"})
-	a.feed(llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "tool_b"})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `{"a`})
-	a.feed(llm.ToolCallArgsChunk{Index: 1, Delta: `{"b`})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `":1}`})
-	a.feed(llm.ToolCallArgsChunk{Index: 1, Delta: `":2}`})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"})
+	a.feed(&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "tool_b"})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `{"a`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 1, Delta: `{"b`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `":1}`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 1, Delta: `":2}`})
 
 	blocks, err := a.assemble()
 	if err != nil {
@@ -74,16 +74,16 @@ func TestAccum_DuplicateToolCallStart(t *testing.T) {
 		{
 			name: "replayed before args",
 			chunks: []llm.Chunk{
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
 			},
 		},
 		{
 			name: "replayed after args",
 			chunks: []llm.Chunk{
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
-				llm.ToolCallArgsChunk{Index: 0, Delta: `{"key":"val"}`},
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
+				&llm.ToolCallArgsChunk{Index: 0, Delta: `{"key":"val"}`},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"},
 			},
 		},
 	}
@@ -119,14 +119,14 @@ func TestAccum_EmptyFinish(t *testing.T) {
 
 func TestAccum_TextAccumulation(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.TextDeltaChunk{Text: "Hello "})
-	a.feed(llm.TextDeltaChunk{Text: "world"})
+	a.feed(&llm.TextDeltaChunk{Text: "Hello "})
+	a.feed(&llm.TextDeltaChunk{Text: "world"})
 
 	blocks := a.textBlocks()
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
-	tb, ok := blocks[0].(llm.TextBlock)
+	tb, ok := blocks[0].(*llm.TextBlock)
 	if !ok {
 		t.Fatalf("expected TextBlock, got %T", blocks[0])
 	}
@@ -140,8 +140,8 @@ func TestAccum_TextAccumulation(t *testing.T) {
 
 func TestAccum_Reset(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"})
-	a.feed(llm.TextDeltaChunk{Text: "hi"})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "tool_a"})
+	a.feed(&llm.TextDeltaChunk{Text: "hi"})
 
 	a.reset()
 
@@ -159,10 +159,10 @@ func TestAccum_Reset(t *testing.T) {
 
 func TestAccum_SortedFinish(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ToolCallStartChunk{Index: 5, ID: "c5", Name: "e"})
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c0", Name: "a"})
-	a.feed(llm.ToolCallArgsChunk{Index: 5, Delta: `5`})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `0`})
+	a.feed(&llm.ToolCallStartChunk{Index: 5, ID: "c5", Name: "e"})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c0", Name: "a"})
+	a.feed(&llm.ToolCallArgsChunk{Index: 5, Delta: `5`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `0`})
 
 	blocks, err := a.assemble()
 	if err != nil {
@@ -187,7 +187,7 @@ func TestAccum_SortedFinish(t *testing.T) {
 
 func TestAccum_DoneChunkIgnored(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.DoneChunk{FinishReason: "stop"})
+	a.feed(&llm.DoneChunk{FinishReason: "stop"})
 
 	blocks, err := a.assemble()
 	if err != nil {
@@ -203,7 +203,7 @@ func TestAccum_DoneChunkIgnored(t *testing.T) {
 
 func TestAccum_DoneChunkUsageNil(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.DoneChunk{FinishReason: "stop"})
+	a.feed(&llm.DoneChunk{FinishReason: "stop"})
 
 	if u := a.usage(); u != nil {
 		t.Errorf("usage() = %v, want nil when DoneChunk has no Usage", u)
@@ -212,7 +212,7 @@ func TestAccum_DoneChunkUsageNil(t *testing.T) {
 
 func TestAccum_DoneChunkUsageCaptured(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.DoneChunk{
+	a.feed(&llm.DoneChunk{
 		FinishReason: "stop",
 		Usage:        &llm.Usage{InputTokens: 42, OutputTokens: 7},
 	})
@@ -233,13 +233,13 @@ func TestAccum_DualDoneChunk_SecondWins(t *testing.T) {
 	var a toolCallAccum
 
 	// First DoneChunk with nil Usage (OpenAI sometimes sends an early done)
-	a.feed(llm.DoneChunk{FinishReason: "stop", Usage: nil})
+	a.feed(&llm.DoneChunk{FinishReason: "stop", Usage: nil})
 	if u := a.usage(); u != nil {
 		t.Errorf("after first DoneChunk: usage() = %v, want nil", u)
 	}
 
 	// Second DoneChunk with actual Usage
-	a.feed(llm.DoneChunk{
+	a.feed(&llm.DoneChunk{
 		FinishReason: "stop",
 		Usage:        &llm.Usage{InputTokens: 100, OutputTokens: 50, ReasoningTokens: 20},
 	})
@@ -261,7 +261,7 @@ func TestAccum_DualDoneChunk_SecondWins(t *testing.T) {
 
 func TestAccum_ResetClearsUsage(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.DoneChunk{
+	a.feed(&llm.DoneChunk{
 		FinishReason: "stop",
 		Usage:        &llm.Usage{InputTokens: 42},
 	})
@@ -281,11 +281,11 @@ func TestAccum_UsageAfterResetReaccumulates(t *testing.T) {
 	var a toolCallAccum
 
 	// First iteration: accumulate usage then reset
-	a.feed(llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 10}})
+	a.feed(&llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 10}})
 	a.reset()
 
 	// Second iteration: new usage
-	a.feed(llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 20}})
+	a.feed(&llm.DoneChunk{FinishReason: "stop", Usage: &llm.Usage{InputTokens: 20}})
 
 	u := a.usage()
 	if u == nil {
@@ -298,8 +298,8 @@ func TestAccum_UsageAfterResetReaccumulates(t *testing.T) {
 
 func TestAccum_OrphanArgsDetected(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ToolCallArgsChunk{Index: 5, Delta: `{"key":"val"}`})
-	a.feed(llm.ToolCallArgsChunk{Index: 2, Delta: `{"a":"b"}`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 5, Delta: `{"key":"val"}`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 2, Delta: `{"a":"b"}`})
 
 	_, err := a.assemble()
 	if err == nil {
@@ -345,9 +345,9 @@ func TestAccum_MissingName(t *testing.T) {
 
 func TestAccum_OrphanArgsWithValidToolCalls(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "search"})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `{"q":"go"}`})
-	a.feed(llm.ToolCallArgsChunk{Index: 3, Delta: `{"orphan":true}`})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "search"})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `{"q":"go"}`})
+	a.feed(&llm.ToolCallArgsChunk{Index: 3, Delta: `{"orphan":true}`})
 
 	_, err := a.assemble()
 	if err == nil {
@@ -360,14 +360,14 @@ func TestAccum_OrphanArgsWithValidToolCalls(t *testing.T) {
 
 func TestAccumulator_ReasoningDelta(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ReasoningDeltaChunk{Text: "step 1: "})
-	a.feed(llm.ReasoningDeltaChunk{Text: "analyze"})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "step 1: "})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "analyze"})
 
 	blocks := a.reasoningBlocks()
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
-	rb, ok := blocks[0].(llm.ReasoningBlock)
+	rb, ok := blocks[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("expected ReasoningBlock, got %T", blocks[0])
 	}
@@ -388,8 +388,8 @@ func TestAccumulator_ReasoningEmpty(t *testing.T) {
 
 func TestAccumulator_ReasoningPrepended(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ReasoningDeltaChunk{Text: "thinking"})
-	a.feed(llm.TextDeltaChunk{Text: "answer"})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "thinking"})
+	a.feed(&llm.TextDeltaChunk{Text: "answer"})
 
 	var contentBlocks []llm.ContentBlock
 	contentBlocks = append(contentBlocks, a.reasoningBlocks()...)
@@ -398,17 +398,17 @@ func TestAccumulator_ReasoningPrepended(t *testing.T) {
 	if len(contentBlocks) != 2 {
 		t.Fatalf("expected 2 blocks, got %d", len(contentBlocks))
 	}
-	if _, ok := contentBlocks[0].(llm.ReasoningBlock); !ok {
+	if _, ok := contentBlocks[0].(*llm.ReasoningBlock); !ok {
 		t.Errorf("block[0] = %T, want ReasoningBlock", contentBlocks[0])
 	}
-	if _, ok := contentBlocks[1].(llm.TextBlock); !ok {
+	if _, ok := contentBlocks[1].(*llm.TextBlock); !ok {
 		t.Errorf("block[1] = %T, want TextBlock", contentBlocks[1])
 	}
 }
 
 func TestAccumulator_ReasoningReset(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ReasoningDeltaChunk{Text: "some reasoning"})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "some reasoning"})
 
 	a.reset()
 
@@ -419,15 +419,15 @@ func TestAccumulator_ReasoningReset(t *testing.T) {
 
 func TestAccumulator_ReasoningWithToolCalls(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ReasoningDeltaChunk{Text: "need to search"})
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "search"})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `{"q":"test"}`})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "need to search"})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "search"})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `{"q":"test"}`})
 
 	reasoning := a.reasoningBlocks()
 	if len(reasoning) != 1 {
 		t.Fatalf("expected 1 reasoning block, got %d", len(reasoning))
 	}
-	rb, ok := reasoning[0].(llm.ReasoningBlock)
+	rb, ok := reasoning[0].(*llm.ReasoningBlock)
 	if !ok {
 		t.Fatalf("expected ReasoningBlock, got %T", reasoning[0])
 	}
@@ -451,16 +451,16 @@ func TestAccumulator_ReasoningWithToolCalls(t *testing.T) {
 
 func TestAccumulator_TextPlusReasoningAccumulation(t *testing.T) {
 	var a toolCallAccum
-	a.feed(llm.ReasoningDeltaChunk{Text: "reasoning "})
-	a.feed(llm.ReasoningDeltaChunk{Text: "content"})
-	a.feed(llm.TextDeltaChunk{Text: "text "})
-	a.feed(llm.TextDeltaChunk{Text: "output"})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "reasoning "})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "content"})
+	a.feed(&llm.TextDeltaChunk{Text: "text "})
+	a.feed(&llm.TextDeltaChunk{Text: "output"})
 
 	reasoning := a.reasoningBlocks()
 	if len(reasoning) != 1 {
 		t.Fatalf("expected 1 reasoning block, got %d", len(reasoning))
 	}
-	rb, _ := reasoning[0].(llm.ReasoningBlock)
+	rb, _ := reasoning[0].(*llm.ReasoningBlock)
 	if rb.Content != "reasoning content" {
 		t.Errorf("reasoning Content = %q, want %q", rb.Content, "reasoning content")
 	}
@@ -469,7 +469,7 @@ func TestAccumulator_TextPlusReasoningAccumulation(t *testing.T) {
 	if len(text) != 1 {
 		t.Fatalf("expected 1 text block, got %d", len(text))
 	}
-	tb, _ := text[0].(llm.TextBlock)
+	tb, _ := text[0].(*llm.TextBlock)
 	if tb.Text != "text output" {
 		t.Errorf("text Text = %q, want %q", tb.Text, "text output")
 	}
@@ -479,8 +479,8 @@ func TestAccumulator_MultiIterationReset(t *testing.T) {
 	var a toolCallAccum
 
 	// Iteration N: reasoning + text
-	a.feed(llm.ReasoningDeltaChunk{Text: "thinking"})
-	a.feed(llm.TextDeltaChunk{Text: "response"})
+	a.feed(&llm.ReasoningDeltaChunk{Text: "thinking"})
+	a.feed(&llm.TextDeltaChunk{Text: "response"})
 
 	// Simulate end of iteration: reset
 	a.reset()
@@ -495,8 +495,8 @@ func TestAccumulator_MultiIterationReset(t *testing.T) {
 	}
 
 	// Iteration N+1: only tool calls (no reasoning leak)
-	a.feed(llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "search"})
-	a.feed(llm.ToolCallArgsChunk{Index: 0, Delta: `{"q":"go"}`})
+	a.feed(&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "search"})
+	a.feed(&llm.ToolCallArgsChunk{Index: 0, Delta: `{"q":"go"}`})
 
 	// reasoning should still be nil
 	if blocks := a.reasoningBlocks(); blocks != nil {
@@ -522,9 +522,9 @@ func TestAccumulator_MultiIterationReset(t *testing.T) {
 func TestRunStream_FeedsAllChunkTypes(t *testing.T) {
 	provider := NewMockStreamingProvider([][]llm.Chunk{
 		{
-			llm.ReasoningDeltaChunk{Text: "let me think"},
-			llm.TextDeltaChunk{Text: "hello"},
-			llm.DoneChunk{FinishReason: "stop"},
+			&llm.ReasoningDeltaChunk{Text: "let me think"},
+			&llm.TextDeltaChunk{Text: "hello"},
+			&llm.DoneChunk{FinishReason: "stop"},
 		},
 	})
 	agent := New(provider, tool.NewRegistry(), WithLogger(discardLogger()))
@@ -565,10 +565,10 @@ func TestRunStream_FeedsAllChunkTypes(t *testing.T) {
 	if len(done.Message.Content) != 2 {
 		t.Fatalf("Message.Content length = %d, want 2", len(done.Message.Content))
 	}
-	if _, ok := done.Message.Content[0].(llm.ReasoningBlock); !ok {
+	if _, ok := done.Message.Content[0].(*llm.ReasoningBlock); !ok {
 		t.Errorf("Message.Content[0] = %T, want ReasoningBlock", done.Message.Content[0])
 	}
-	if _, ok := done.Message.Content[1].(llm.TextBlock); !ok {
+	if _, ok := done.Message.Content[1].(*llm.TextBlock); !ok {
 		t.Errorf("Message.Content[1] = %T, want TextBlock", done.Message.Content[1])
 	}
 }

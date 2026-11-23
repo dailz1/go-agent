@@ -15,7 +15,7 @@ func TestConvertMessagesSkipsPointerReasoningItem(t *testing.T) {
 		llm.UserMessage("hi"),
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
 			&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_1", EncryptedContent: "enc"},
-			llm.TextBlock{Type: "text", Text: "answer"},
+			&llm.TextBlock{Type: "text", Text: "answer"},
 		}},
 	}
 	converted, err := convertMessages(messages)

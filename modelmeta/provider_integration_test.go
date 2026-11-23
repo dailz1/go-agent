@@ -99,10 +99,10 @@ func TestAgentKeepsStartedRoundBudgetAndFallsBackNextRound(t *testing.T) {
 	base := &stubProvider{
 		stream: func(context.Context, []llm.Message, []tool.ToolInfo, ...llm.Option) (iter.Seq2[llm.Chunk, error], error) {
 			return func(yield func(llm.Chunk, error) bool) {
-				if !yield(llm.TextDeltaChunk{Text: strings.Repeat("a", 12000)}, nil) {
+				if !yield(&llm.TextDeltaChunk{Text: strings.Repeat("a", 12000)}, nil) {
 					return
 				}
-				yield(llm.DoneChunk{FinishReason: "stop"}, nil)
+				yield(&llm.DoneChunk{FinishReason: "stop"}, nil)
 			}, nil
 		},
 	}

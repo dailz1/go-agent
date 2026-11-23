@@ -408,8 +408,8 @@ func TestSummarizationFollowsSwitchedProvider(t *testing.T) {
 // shape that compaction must never orphan.
 func reasoningItemToolGroup(itemID, callID string, resultRunes int) (llm.Message, llm.Message) {
 	assistant := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningItemBlock{Type: "reasoning_item", ID: itemID, EncryptedContent: "enc-" + itemID},
-		llm.ToolUseBlock{Type: "tool_use", ID: callID, Name: "read", Input: json.RawMessage(`{"path":"a"}`)},
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: itemID, EncryptedContent: "enc-" + itemID},
+		&llm.ToolUseBlock{Type: "tool_use", ID: callID, Name: "read", Input: json.RawMessage(`{"path":"a"}`)},
 	}}
 	result := llm.ToolResultMessage(callID, tool.NewTextResult(strings.Repeat("payload", resultRunes)))
 	return assistant, result
@@ -428,14 +428,14 @@ func assertNoOrphanReasoningItems(t *testing.T, history []llm.Message) {
 		}
 		for i, block := range message.Content {
 			switch block.(type) {
-			case llm.ReasoningItemBlock, *llm.ReasoningItemBlock:
+			case *llm.ReasoningItemBlock:
 			default:
 				continue
 			}
 			paired := false
 			for _, later := range message.Content[i+1:] {
 				switch later.(type) {
-				case llm.ReasoningItemBlock, *llm.ReasoningItemBlock, llm.ReasoningBlock, *llm.ReasoningBlock:
+				case *llm.ReasoningItemBlock, *llm.ReasoningBlock:
 					continue
 				default:
 					paired = true
@@ -454,8 +454,8 @@ func TestCompactionPreservesReasoningItemPairing(t *testing.T) {
 	// plain text, and neutral rounds in between.
 	assistant1, result1 := reasoningItemToolGroup("rs_1", "call_1", 40)
 	assistant2 := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_2", EncryptedContent: "enc-rs_2"},
-		llm.TextBlock{Type: "text", Text: "note"},
+		&llm.ReasoningItemBlock{Type: "reasoning_item", ID: "rs_2", EncryptedContent: "enc-rs_2"},
+		&llm.TextBlock{Type: "text", Text: "note"},
 	}}
 	assistant3, result3 := reasoningItemToolGroup("rs_3", "call_3", 200)
 	history := []llm.Message{

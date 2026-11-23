@@ -33,14 +33,14 @@ func TestSettleStreamExit(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			st := store.NewMemory()
 			chunks := []llm.Chunk{
-				llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"}, llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
-				llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "echo"}, llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
-				llm.DoneChunk{FinishReason: "tool_calls"},
+				&llm.ToolCallStartChunk{Index: 0, ID: "c1", Name: "echo"}, &llm.ToolCallArgsChunk{Index: 0, Delta: `{}`},
+				&llm.ToolCallStartChunk{Index: 1, ID: "c2", Name: "echo"}, &llm.ToolCallArgsChunk{Index: 1, Delta: `{}`},
+				&llm.DoneChunk{FinishReason: "tool_calls"},
 			}
 			if test.stop == "text" || test.stop == "done" {
-				chunks = []llm.Chunk{llm.TextDeltaChunk{Text: "partial"}, llm.DoneChunk{FinishReason: "stop"}}
+				chunks = []llm.Chunk{&llm.TextDeltaChunk{Text: "partial"}, &llm.DoneChunk{FinishReason: "stop"}}
 			}
-			p := NewMockStreamingProvider([][]llm.Chunk{chunks, {llm.TextDeltaChunk{Text: "redirected"}, llm.DoneChunk{FinishReason: "stop"}}})
+			p := NewMockStreamingProvider([][]llm.Chunk{chunks, {&llm.TextDeltaChunk{Text: "redirected"}, &llm.DoneChunk{FinishReason: "stop"}}})
 			reg := tool.NewRegistry()
 			calls := 0
 			reg.MustRegister(&settleCountingTool{calls: &calls})

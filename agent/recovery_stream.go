@@ -48,14 +48,10 @@ func (r *overflowRecovery) receiveRound(
 				accum.feed(chunk)
 				var event AgentEvent
 				switch c := chunk.(type) {
-				case llm.ReasoningDeltaChunk:
-					event = ThinkingDeltaEvent{Text: c.Text}
 				case *llm.ReasoningDeltaChunk:
 					if c != nil {
 						event = ThinkingDeltaEvent{Text: c.Text}
 					}
-				case llm.TextDeltaChunk:
-					event = TextDeltaEvent{Text: c.Text}
 				case *llm.TextDeltaChunk:
 					if c != nil {
 						event = TextDeltaEvent{Text: c.Text}

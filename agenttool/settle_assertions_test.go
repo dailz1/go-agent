@@ -72,12 +72,12 @@ func settleCancelled(t *testing.T, a *agent.Agent, token agent.SettlementToken, 
 	for _, message := range result.History {
 		for _, block := range message.Content {
 			switch block := block.(type) {
-			case llm.ToolUseBlock:
+			case *llm.ToolUseBlock:
 				if message.Role != llm.RoleAssistant || len(results) != 0 {
 					t.Fatalf("misplaced tool declaration: %+v", message)
 				}
 				calls = append(calls, block.ID)
-			case llm.ToolResultBlock:
+			case *llm.ToolResultBlock:
 				index := len(results)
 				if message.Role != llm.RoleTool || index >= len(calls) || calls[index] != block.ToolUseID {
 					t.Fatalf("unpaired or reordered result: %+v", message)

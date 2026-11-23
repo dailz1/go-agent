@@ -28,16 +28,16 @@ type stubReply struct {
 
 func finalText(text string) stubReply {
 	return stubReply{chunks: []llm.Chunk{
-		llm.TextDeltaChunk{Text: text},
-		llm.DoneChunk{FinishReason: "stop"},
+		&llm.TextDeltaChunk{Text: text},
+		&llm.DoneChunk{FinishReason: "stop"},
 	}}
 }
 
 func toolCall(id, name, args string) stubReply {
 	return stubReply{chunks: []llm.Chunk{
-		llm.ToolCallStartChunk{Index: 0, ID: id, Name: name},
-		llm.ToolCallArgsChunk{Index: 0, ID: id, Delta: args},
-		llm.DoneChunk{FinishReason: "tool_calls"},
+		&llm.ToolCallStartChunk{Index: 0, ID: id, Name: name},
+		&llm.ToolCallArgsChunk{Index: 0, ID: id, Delta: args},
+		&llm.DoneChunk{FinishReason: "tool_calls"},
 	}}
 }
 
@@ -390,7 +390,7 @@ func assertUserMessage(t *testing.T, msg llm.Message, text string) {
 	if msg.Role != llm.RoleUser || len(msg.Content) != 1 {
 		t.Fatalf("message = role:%s blocks:%d, want user with one block", msg.Role, len(msg.Content))
 	}
-	if tb, ok := msg.Content[0].(llm.TextBlock); !ok || tb.Text != text {
+	if tb, ok := msg.Content[0].(*llm.TextBlock); !ok || tb.Text != text {
 		t.Fatalf("user text = %#v, want %q", msg.Content[0], text)
 	}
 }

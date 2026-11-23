@@ -27,8 +27,8 @@ func TestCompactorPartitionHistory(t *testing.T) {
 	hybridAssistant := llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentBlock{
-			llm.TextBlock{Type: "text", Text: "I will inspect both files."},
-			llm.ToolUseBlock{Type: "tool_use", ID: "hybrid", Name: "read", Input: json.RawMessage(`{"path":"a"}`)},
+			&llm.TextBlock{Type: "text", Text: "I will inspect both files."},
+			&llm.ToolUseBlock{Type: "tool_use", ID: "hybrid", Name: "read", Input: json.RawMessage(`{"path":"a"}`)},
 		},
 	}
 	hybridResult := compactorToolResult("hybrid", "contents")
@@ -118,7 +118,7 @@ func TestCompactorPartitionHistory(t *testing.T) {
 			name: "empty tool use id",
 			history: []llm.Message{
 				llm.UserMessage("question"),
-				llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "", Name: "read", Input: json.RawMessage(`{}`)}),
+				llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "", Name: "read", Input: json.RawMessage(`{}`)}),
 			},
 			expectedErr: ErrInvalidHistory,
 		},
@@ -127,8 +127,8 @@ func TestCompactorPartitionHistory(t *testing.T) {
 			history: []llm.Message{
 				llm.UserMessage("question"),
 				llm.AssistantToolCallMessage(
-					llm.ToolUseBlock{ID: "same", Name: "read", Input: json.RawMessage(`{}`)},
-					llm.ToolUseBlock{ID: "same", Name: "write", Input: json.RawMessage(`{}`)},
+					&llm.ToolUseBlock{ID: "same", Name: "read", Input: json.RawMessage(`{}`)},
+					&llm.ToolUseBlock{ID: "same", Name: "write", Input: json.RawMessage(`{}`)},
 				),
 				compactorToolResult("same", "result"),
 			},
@@ -177,7 +177,7 @@ func TestCompactorEstimateRunes(t *testing.T) {
 		llm.SystemMessage("ASCII"),
 		llm.UserMessage("中文"),
 		llm.AssistantMessage("emoji 😀"),
-		llm.AssistantToolCallMessage(llm.ToolUseBlock{
+		llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 			ID:    "raw",
 			Name:  "inspect",
 			Input: json.RawMessage(`{"ключ":"значение"}`),
@@ -195,11 +195,11 @@ func TestCompactorEstimateRunes(t *testing.T) {
 		{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentBlock{
-				llm.TextBlock{Type: "text", Text: "中文😀"},
-				llm.ToolUseBlock{Type: "tool_use", ID: "bad", Name: "lookup", Input: invalidInput},
-				llm.ToolResultBlock{Type: "tool_result", ToolUseID: "bad", Content: "result"},
-				llm.ReasoningBlock{Type: "reasoning", Content: "reason"},
-				llm.ImageBlock{Type: "image", Data: []byte{1, 2, 3}},
+				&llm.TextBlock{Type: "text", Text: "中文😀"},
+				&llm.ToolUseBlock{Type: "tool_use", ID: "bad", Name: "lookup", Input: invalidInput},
+				&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "bad", Content: "result"},
+				&llm.ReasoningBlock{Type: "reasoning", Content: "reason"},
+				&llm.ImageBlock{Type: "image", Data: []byte{1, 2, 3}},
 			},
 		},
 	}
@@ -366,7 +366,7 @@ func TestCompactorDropOldestToolGroups(t *testing.T) {
 	t.Run("replacement must be smaller", func(t *testing.T) {
 		t.Parallel()
 
-		assistant := llm.AssistantToolCallMessage(llm.ToolUseBlock{
+		assistant := llm.AssistantToolCallMessage(&llm.ToolUseBlock{
 			ID: "x", Name: "n", Input: json.RawMessage(`{`),
 		})
 		resultMessage := compactorToolResult("x", "r")
@@ -548,7 +548,7 @@ func TestCompactorSlidingWindowDropsExactlyToBudget(t *testing.T) {
 }
 
 type compactCustomMarshalBlock struct {
-	llm.TextBlock
+	*llm.TextBlock
 }
 
 func (c compactCustomMarshalBlock) MarshalJSON() ([]byte, error) {
@@ -562,7 +562,7 @@ func TestKnownBlockTypesGate(t *testing.T) {
 		t.Error("knownBlockTypes() = false for known types, want true")
 	}
 	history := []llm.Message{llm.UserMessage("mixed")}
-	history[0].Content = append(history[0].Content, compactCustomMarshalBlock{TextBlock: llm.TextBlock{Text: "custom"}})
+	history[0].Content = append(history[0].Content, compactCustomMarshalBlock{TextBlock: &llm.TextBlock{Text: "custom"}})
 	if knownBlockTypes(history) {
 		t.Error("knownBlockTypes() = true for embedding-wrapper block, want false")
 	}
@@ -580,7 +580,7 @@ func TestCompactorSlidingWindowCustomMarshalBlock(t *testing.T) {
 		llm.AssistantMessage("old"),
 		llm.UserMessage("latest"),
 	}
-	history[4].Content = append(history[4].Content, compactCustomMarshalBlock{TextBlock: llm.TextBlock{Text: "custom"}})
+	history[4].Content = append(history[4].Content, compactCustomMarshalBlock{TextBlock: &llm.TextBlock{Text: "custom"}})
 
 	result, err := NewSlidingWindowCompactor().Compact(
 		context.Background(),
@@ -604,16 +604,16 @@ func TestJSONSizeLowerBoundBelowActualEncoding(t *testing.T) {
 	t.Parallel()
 
 	blocks := []llm.ContentBlock{
-		llm.TextBlock{Text: strings.Repeat("中文内容", 100)},
+		&llm.TextBlock{Text: strings.Repeat("中文内容", 100)},
 		&llm.TextBlock{Text: "{  padded  }"},
-		llm.ToolUseBlock{ID: "a", Name: "read", Input: json.RawMessage(`{  "x" : 1  }`)},
-		llm.ToolResultBlock{Type: "tool_result", ToolUseID: "a", Content: strings.Repeat("结果", 50), Images: []llm.ImageBlock{{Type: "image", Data: make([]byte, 1000)}}},
+		&llm.ToolUseBlock{ID: "a", Name: "read", Input: json.RawMessage(`{  "x" : 1  }`)},
+		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "a", Content: strings.Repeat("结果", 50), Images: []llm.ImageBlock{{Type: "image", Data: make([]byte, 1000)}}},
 		&llm.ToolResultBlock{Type: "tool_result", ToolUseID: "a", Content: "result"},
-		llm.ReasoningBlock{Type: "reasoning", Content: strings.Repeat("思考", 30)},
+		&llm.ReasoningBlock{Type: "reasoning", Content: strings.Repeat("思考", 30)},
 		&llm.ReasoningBlock{Type: "reasoning", Content: "thinking"},
-		llm.ReasoningItemBlock{Type: "reasoning_item", EncryptedContent: strings.Repeat("密", 100), Summary: []string{"摘要"}},
-		llm.ImageBlock{Type: "image", Data: make([]byte, 500)},
-		llm.AssistantToolCallMessage(llm.ToolUseBlock{ID: "b", Name: "w", Input: json.RawMessage(`{}`)}).Content[0],
+		&llm.ReasoningItemBlock{Type: "reasoning_item", EncryptedContent: strings.Repeat("密", 100), Summary: []string{"摘要"}},
+		&llm.ImageBlock{Type: "image", Data: make([]byte, 500)},
+		llm.AssistantToolCallMessage(&llm.ToolUseBlock{ID: "b", Name: "w", Input: json.RawMessage(`{}`)}).Content[0],
 	}
 	group := []llm.Message{{Role: llm.RoleAssistant, Content: blocks}}
 	bound := jsonSizeLowerBound(group)
@@ -715,9 +715,9 @@ func TestCompactorSummarization(t *testing.T) {
 		provider := &compactorProvider{response: &llm.Message{
 			Role: llm.RoleTool,
 			Content: []llm.ContentBlock{
-				llm.TextBlock{Type: "text", Text: "summary one"},
-				llm.ReasoningBlock{Type: "reasoning", Content: "ignored"},
-				llm.TextBlock{Type: "text", Text: "summary two"},
+				&llm.TextBlock{Type: "text", Text: "summary one"},
+				&llm.ReasoningBlock{Type: "reasoning", Content: "ignored"},
+				&llm.TextBlock{Type: "text", Text: "summary two"},
 			},
 		}}
 		result, err := NewSummarizationCompactor().Compact(
@@ -771,7 +771,7 @@ func TestCompactorSummarization(t *testing.T) {
 			provider: &compactorProvider{response: &llm.Message{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentBlock{
-					llm.ReasoningBlock{Type: "reasoning", Content: "not summary text"},
+					&llm.ReasoningBlock{Type: "reasoning", Content: "not summary text"},
 				},
 			}},
 		},
@@ -997,10 +997,10 @@ type compactorToolCall struct {
 }
 
 func compactorToolExchange(calls ...compactorToolCall) (llm.Message, []llm.Message) {
-	toolCalls := make([]llm.ToolUseBlock, 0, len(calls))
+	toolCalls := make([]*llm.ToolUseBlock, 0, len(calls))
 	results := make([]llm.Message, 0, len(calls))
 	for _, call := range calls {
-		toolCalls = append(toolCalls, llm.ToolUseBlock{
+		toolCalls = append(toolCalls, &llm.ToolUseBlock{
 			ID:    call.id,
 			Name:  call.name,
 			Input: json.RawMessage(`{"value":"test"}`),
@@ -1017,7 +1017,7 @@ func compactorToolResult(id string, content string) llm.Message {
 func compactorText(message llm.Message) string {
 	var texts []string
 	for _, block := range message.Content {
-		if text, ok := block.(llm.TextBlock); ok {
+		if text, ok := block.(*llm.TextBlock); ok {
 			texts = append(texts, text.Text)
 		}
 	}

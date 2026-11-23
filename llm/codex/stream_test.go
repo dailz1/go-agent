@@ -43,18 +43,18 @@ func TestStreamReconciliation(t *testing.T) {
 	var starts, dones, reasoning int
 	for _, chunk := range chunks {
 		switch c := chunk.(type) {
-		case llm.TextDeltaChunk:
+		case *llm.TextDeltaChunk:
 			gotText += c.Text
-		case llm.ToolCallArgsChunk:
+		case *llm.ToolCallArgsChunk:
 			gotArgs += c.Delta
-		case llm.ToolCallStartChunk:
+		case *llm.ToolCallStartChunk:
 			starts++
-		case llm.ReasoningItemChunk:
+		case *llm.ReasoningItemChunk:
 			reasoning++
 			if c.OutputIndex != 0 {
 				t.Fatal(c)
 			}
-		case llm.DoneChunk:
+		case *llm.DoneChunk:
 			dones++
 			if c.FinishReason != "tool_calls" || !reflect.DeepEqual(c.Usage, &llm.Usage{InputTokens: 3, OutputTokens: 4}) {
 				t.Fatal(c)
@@ -86,7 +86,7 @@ func TestStreamRejectsInvalidCompletion(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var got error
 			for chunk, err := range scanResponse(t.Context(), strings.NewReader(sse(events...))) {
-				if _, ok := chunk.(llm.DoneChunk); ok {
+				if _, ok := chunk.(*llm.DoneChunk); ok {
 					t.Fatal("fake done")
 				}
 				got = err
