@@ -85,17 +85,43 @@ func TestReview2RejectedCompactionPreservesDurableHistory(t *testing.T) {
 }
 
 func TestReview2UnanchoredCompactionSizesHistoryOnce(t *testing.T) {
-	encodes := 0
-	block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)}, encodes: &encodes}
-	history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
-	a := New(NewMockProvider(), nil, WithLogger(discardLogger()))
-	if _, ok := a.compactHistoryRound(t.Context(), history, a.provider, nil,
-		func(AgentEvent, error) bool { return true }, nil, 100, &contextRuntime{}); !ok {
-		t.Fatal("unsupported block must retain warn-and-continue behavior")
-	}
-	if encodes != 1 {
-		t.Fatalf("unanchored history encoded %d times, want one estimate", encodes)
-	}
+	t.Run("estimate runs once when compaction does not trigger", func(t *testing.T) {
+		encodes := 0
+		block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)}, encodes: &encodes}
+		history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
+		a := New(NewMockProvider(), nil, WithLogger(discardLogger()))
+		if _, ok := a.compactHistoryRound(t.Context(), history, a.provider, nil,
+			func(AgentEvent, error) bool { return true }, nil, 100000, &contextRuntime{}); !ok {
+			t.Fatal("non-triggering window must keep the run alive")
+		}
+		if encodes != 1 {
+			t.Fatalf("unanchored history encoded %d times, want one estimate", encodes)
+		}
+	})
+	t.Run("foreign compactor result is rejected", func(t *testing.T) {
+		invoked := false
+		compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+			invoked = true
+			poisoned := deepCopyMessages(history)
+			poisoned[0].Content = []llm.ContentBlock{wrappedTextBlock{&llm.TextBlock{Type: "text", Text: "foreign"}}}
+			return CompactionResult{History: poisoned, Changed: true}, nil
+		})
+		history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{
+			&llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)},
+		}}}
+		a := New(NewMockProvider(), nil, WithLogger(discardLogger()), WithCompactor(compactor))
+		got, ok := a.compactHistoryRound(t.Context(), history, a.provider, nil,
+			func(AgentEvent, error) bool { return true }, nil, 100, &contextRuntime{})
+		if !ok {
+			t.Fatal("foreign compactor result must retain warn-and-continue")
+		}
+		if !invoked {
+			t.Fatal("compactor not invoked; the result-rejection path was not exercised")
+		}
+		if !reflect.DeepEqual(got, history) {
+			t.Error("rejected candidate replaced the history")
+		}
+	})
 }
 
 func TestReview2CompactorOptionsCannotChangeMainRequest(t *testing.T) {

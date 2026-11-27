@@ -4,12 +4,13 @@ package agent
 // direct provider invocation (ChatStream attempt, non-streaming fallback)
 // receives a fresh deep copy of the round's live history, so a mutating or
 // retaining third-party provider cannot poison the run. Foreign block types
-// (whitelist outsiders) are carried through with outer-layer isolation only
-// — the D0 carve-out, pinned in TestProviderForeignBlockCompatibility.
+// are rejected at the run entry (issue #25), so providers only ever receive
+// built-in block histories.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"math"
@@ -755,8 +756,14 @@ func TestProviderMaxIterHistoryIsolation(t *testing.T) {
 	verifyRetentionSeed(t, "done history", result.History)
 }
 
-func TestProviderForeignBlockCompatibility(t *testing.T) {
+// TestRunWithHistoryRejectsForeignBlocks pins issue #25: a history carrying
+// a content block outside the six built-in variants fails at the entry with
+// an error wrapping ErrForeignBlock that names the offending type and
+// position — before any provider call is made. This reverses the former #12
+// carve-out that carried foreign blocks through with shared internals.
+func TestRunWithHistoryRejectsForeignBlocks(t *testing.T) {
 	t.Parallel()
+
 	seed := []llm.Message{
 		llm.SystemMessage("system policy"),
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{
@@ -767,41 +774,42 @@ func TestProviderForeignBlockCompatibility(t *testing.T) {
 		{stream: true, chunks: probeTextChunks()},
 	}}
 	ag := newIsolationAgent(p, 0)
+
 	result, err := ag.RunWithHistory(context.Background(), seed, "go")
-	if err != nil {
-		t.Fatalf("RunWithHistory() error = %v (foreign blocks must keep flowing)", err)
+	if result != nil {
+		t.Fatalf("RunWithHistory() result = %#v, want nil", result)
 	}
-	if len(p.snapshots) != 1 {
-		t.Fatalf("provider calls = %d, want 1", len(p.snapshots))
-	}
+	assertForeignBlockError(t, err)
 
-	recv := p.refs[0]
-	origWrapped, okOrig := seed[1].Content[0].(wrappedTextBlock)
-	recvWrapped, okRecv := recv[1].Content[0].(wrappedTextBlock)
-	if !okOrig || !okRecv {
-		t.Fatalf("foreign block missing: seed=%v received=%v", okOrig, okRecv)
+	// The streaming entry shares the same gate.
+	seq, err := ag.RunStreamWithHistory(context.Background(), seed, "go")
+	if seq != nil {
+		t.Fatalf("RunStreamWithHistory() seq = %#v, want nil", seq)
 	}
-	// D0 carve-out, pinned: the kernel does not clone foreign internals.
-	if origWrapped.TextBlock != recvWrapped.TextBlock {
-		t.Errorf("foreign block pointee was cloned; want shared reference through to the provider")
-	}
+	assertForeignBlockError(t, err)
 
-	recv[1].Content[0] = &llm.TextBlock{Type: "text", Text: "replaced"}
+	// Rejection happens before the provider is ever consulted.
+	if len(p.snapshots) != 0 {
+		t.Errorf("provider calls = %d, want 0 (foreign history must be rejected at entry)", len(p.snapshots))
+	}
+	// Validation only reads: the caller's history keeps its foreign block.
 	if _, ok := seed[1].Content[0].(wrappedTextBlock); !ok {
-		t.Errorf("original Content slice shares backing: wrapped block replaced")
+		t.Errorf("original history was modified by validation")
 	}
-	recv[1] = llm.UserMessage("replaced")
-	if _, ok := seed[1].Content[0].(wrappedTextBlock); !ok {
-		t.Errorf("original outer slice shares backing: wrapped message replaced")
-	}
+}
 
-	// Serial write through the shared pointee is visible to the original —
-	// the documented residue of the carve-out.
-	recvWrapped.Text = "MUTATED-BY-PROVIDER"
-	if got := seed[1].Content[0].(wrappedTextBlock).Text; got != "MUTATED-BY-PROVIDER" {
-		t.Errorf("foreign pointee write not shared with original: %q", got)
+func assertForeignBlockError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want foreign-block rejection")
 	}
-	if result == nil {
-		t.Errorf("RunResult = nil")
+	if !errors.Is(err, ErrForeignBlock) {
+		t.Fatalf("error = %v, want errors.Is(err, ErrForeignBlock)", err)
+	}
+	if !strings.Contains(err.Error(), "wrappedTextBlock") {
+		t.Errorf("error %q does not name the offending type", err)
+	}
+	if !strings.Contains(err.Error(), "message 1 block 0") {
+		t.Errorf("error %q does not name the offending position", err)
 	}
 }

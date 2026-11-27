@@ -80,9 +80,10 @@ func deepCopyMessages(src []llm.Message) []llm.Message {
 }
 
 // clonableBlock reports whether a content block's concrete type is deep-copy
-// safe: handled by the deepCopyMessages switch, or a value form whose
-// interface copy is already a deep copy (all fields immutable). Keep this
-// whitelist in sync with the deepCopyMessages switch.
+// safe: handled by the deepCopyMessages switch. Only pointer forms satisfy
+// the sealed interface (issue #24), so one case per variant covers every
+// representable block. Keep this whitelist in sync with the
+// deepCopyMessages switch.
 func clonableBlock(block llm.ContentBlock) bool {
 	switch block.(type) {
 	case *llm.TextBlock, *llm.ReasoningBlock, *llm.ReasoningItemBlock,
@@ -94,9 +95,11 @@ func clonableBlock(block llm.ContentBlock) bool {
 }
 
 // hasUnsupportedBlocks reports whether history contains block types outside
-// the clonable whitelist (e.g. user-defined types embedding a built-in block,
-// which copyMessages cannot isolate). The compaction boundary fail-closes on
-// them: skip compaction on input, reject the result on output (issue #9).
+// the clonable whitelist. Two consumers: run-entry validation rejects such
+// histories outright (RunWithHistory / RunStreamWithHistory, issue #25), and
+// the compaction boundary rejects compactor results containing them. The
+// check on compaction input is gone — entry validation guarantees built-in
+// blocks only. Keep this whitelist in sync with the deepCopyMessages switch.
 func hasUnsupportedBlocks(history []llm.Message) bool {
 	for i := range history {
 		for _, block := range history[i].Content {
@@ -923,120 +926,124 @@ func (a *Agent) compactHistoryRound(
 			yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
 			return history, false
 		}
-		if hasUnsupportedBlocks(history) {
-			a.logger.Warn("history compaction skipped: unsupported content block types cannot be isolated")
+		// The compactor is user code: hand it an isolated deep copy so
+		// in-place mutation cannot leak into the live history (issue #9).
+		// Validation below compares against the untouched original. The former
+		// input-side foreign-block skip is gone: run-entry validation (issue
+		// #25) rejects such histories before the loop, so the input here is
+		// built-in blocks only.
+		compactInput := deepCopyMessages(history)
+		result, err := a.compactor.Compact(ctx, compactInput, CompactionBudget{MaxRunes: budgetRunes}, provider, append([]llm.Option(nil), opts...))
+		// Decide rejection on the compactor's ORIGINAL return value. Durable
+		// normalization below round-trips the result through JSON, which would
+		// launder a wrapper block whose wire form matches a built-in type into
+		// *llm.TextBlock and defeat the scan. Recovery applies the same check
+		// before canonicalization; the two paths must stay in the same order
+		// (issue #25 review, #33).
+		resultRejected := err == nil && ((result.Changed && len(result.History) == 0) || hasUnsupportedBlocks(result.History))
+		if err == nil && result.Changed && !resultRejected && sess != nil {
+			var canonical []llm.Message
+			canonical, err = durableHistory(history)
+			if err == nil {
+				result.History, err = durableHistory(result.History)
+			}
+			if err == nil {
+				err = validateCompacted(canonical, result.History)
+			}
+		}
+		for _, strategyErr := range result.Errors {
+			a.logger.Warn("history compaction strategy failed", "error", strategyErr)
+		}
+		if err != nil {
+			a.logger.Warn("history compaction failed", "error", err)
+		} else if resultRejected {
+			a.logger.Warn("history compaction produced empty or unsupported history; ignoring compaction result")
+		} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
+			a.logger.Warn("history compaction produced invalid history", "error", validationErr)
 		} else {
-			// The compactor is user code: hand it an isolated deep copy so
-			// in-place mutation cannot leak into the live history (issue #9).
-			// Validation below compares against the untouched original.
-			compactInput := deepCopyMessages(history)
-			result, err := a.compactor.Compact(ctx, compactInput, CompactionBudget{MaxRunes: budgetRunes}, provider, append([]llm.Option(nil), opts...))
-			if err == nil && result.Changed && sess != nil {
-				var canonical []llm.Message
-				canonical, err = durableHistory(history)
-				if err == nil {
-					result.History, err = durableHistory(result.History)
-				}
-				if err == nil {
-					err = validateCompacted(canonical, result.History)
-				}
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+				return history, false
 			}
-			for _, strategyErr := range result.Errors {
-				a.logger.Warn("history compaction strategy failed", "error", strategyErr)
+			candidateEstimate := estimated
+			if result.Changed {
+				candidateEstimate = uint64(estimateRunes(result.History))
 			}
-			if err != nil {
-				a.logger.Warn("history compaction failed", "error", err)
-			} else if (result.Changed && len(result.History) == 0) || hasUnsupportedBlocks(result.History) {
-				a.logger.Warn("history compaction produced empty or unsupported history; ignoring compaction result")
-			} else if validationErr := validateCompacted(history, result.History); validationErr != nil {
-				a.logger.Warn("history compaction produced invalid history", "error", validationErr)
-			} else {
-				if err := ctx.Err(); err != nil {
-					yield(nil, err)
+			// Only a verified strategy result proves the history cannot
+			// fit. Check it before replacing history or announcing it.
+			// Steering carry remains bounded by the hard window.
+			if anchored || a.roundContextProvider == nil {
+				carry := 0
+				if sess != nil {
+					carry = sess.carry
+				}
+				limit := targetRunes + min(carry, w-targetRunes)
+				runeLimit := budgetRunes + min(carry, w-budgetRunes)
+				if (result.Changed && candidateEstimate > uint64(runeLimit)) || candidateEstimate > uint64(limit) {
+					yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
 					return history, false
 				}
-				candidateEstimate := estimated
-				if result.Changed {
-					candidateEstimate = uint64(estimateRunes(result.History))
-				}
-				// Only a verified strategy result proves the history cannot
-				// fit. Check it before replacing history or announcing it.
-				// Steering carry remains bounded by the hard window.
-				if anchored || a.roundContextProvider == nil {
-					carry := 0
-					if sess != nil {
-						carry = sess.carry
+			}
+			if result.Changed {
+				adopted := deepCopyMessages(result.History)
+				// The compacted view is durable before it is announced, so
+				// replay never re-runs a (nondeterministic) summarizer.
+				if sess != nil {
+					id, err := newRunID()
+					if err == nil {
+						adopted, err = sess.replaceHistory(ctx, history, historyReplacedPayload{
+							RunID: sess.runID, Round: sess.lastRound + 1, OperationID: id,
+							Reason: "proactive_compaction", History: adopted,
+						})
 					}
-					limit := targetRunes + min(carry, w-targetRunes)
-					runeLimit := budgetRunes + min(carry, w-budgetRunes)
-					if (result.Changed && candidateEstimate > uint64(runeLimit)) || candidateEstimate > uint64(limit) {
-						yield(nil, fmt.Errorf("history exceeds compaction budget: %w", ErrCompactionBudgetExceeded))
+					if err != nil {
+						yield(nil, err)
 						return history, false
 					}
 				}
-				if result.Changed {
-					adopted := deepCopyMessages(result.History)
-					// The compacted view is durable before it is announced, so
-					// replay never re-runs a (nondeterministic) summarizer.
-					if sess != nil {
-						id, err := newRunID()
-						if err == nil {
-							adopted, err = sess.replaceHistory(ctx, history, historyReplacedPayload{
-								RunID: sess.runID, Round: sess.lastRound + 1, OperationID: id,
-								Reason: "proactive_compaction", History: adopted,
-							})
-						}
-						if err != nil {
-							yield(nil, err)
-							return history, false
-						}
+				if sess == nil {
+					accounting.replaceHistory()
+				}
+				afterRunes := int(candidateEstimate)
+				estimated = uint64(afterRunes)
+				if sess != nil {
+					if err := sess.checkpoint(ctx, adopted); err != nil {
+						yield(nil, err)
+						return history, false
 					}
-					if sess == nil {
-						accounting.replaceHistory()
-					}
-					afterRunes := int(candidateEstimate)
-					estimated = uint64(afterRunes)
-					if sess != nil {
-						if err := sess.checkpoint(ctx, adopted); err != nil {
-							yield(nil, err)
-							return history, false
-						}
-					}
-					history = adopted
-					a.logger.Warn("history compacted",
-						"strategies", strings.Join(result.Strategies, ","),
-						"dropped_groups", result.DroppedGroups,
-						"before_runes", beforeRunes,
-						"after_runes", afterRunes,
+				}
+				history = adopted
+				a.logger.Warn("history compacted",
+					"strategies", strings.Join(result.Strategies, ","),
+					"dropped_groups", result.DroppedGroups,
+					"before_runes", beforeRunes,
+					"after_runes", afterRunes,
+				)
+				if result.SpanTruncated {
+					a.logger.Warn("summarization span truncated to fit budget",
+						"span_total_runes", result.SpanTotalRunes,
+						"span_kept_runes", result.SpanKeptRunes,
 					)
-					if result.SpanTruncated {
-						a.logger.Warn("summarization span truncated to fit budget",
-							"span_total_runes", result.SpanTotalRunes,
-							"span_kept_runes", result.SpanKeptRunes,
-						)
-					}
-					if !yield(CompactionEvent{
-						Strategies:    append([]string{}, result.Strategies...),
-						DroppedGroups: result.DroppedGroups,
-						BeforeRunes:   beforeRunes,
-						AfterRunes:    afterRunes,
-						History:       deepCopyMessages(history),
-					}, nil) {
-						return history, false
-					}
 				}
-
+				if !yield(CompactionEvent{
+					Strategies:    append([]string{}, result.Strategies...),
+					DroppedGroups: result.DroppedGroups,
+					BeforeRunes:   beforeRunes,
+					AfterRunes:    afterRunes,
+					History:       deepCopyMessages(history),
+				}, nil) {
+					return history, false
+				}
 			}
-			// Runs on every compaction outcome (including the unsupported-input
-			// skip): a context canceled during the compactor call must not
-			// reach the provider through a Warn-and-continue path (issue #9
-			// review).
-			select {
-			case <-ctx.Done():
-				yield(nil, ctx.Err())
-				return history, false
-			default:
-			}
+		}
+		// Runs on every compaction outcome: a context canceled during the
+		// compactor call must not reach the provider through a Warn-and-
+		// continue path (issue #9 review).
+		select {
+		case <-ctx.Done():
+			yield(nil, ctx.Err())
+			return history, false
+		default:
 		}
 	}
 	if a.roundContextProvider != nil && estimated > uint64(a.canonicalContextCapFor(w)) {
@@ -1070,11 +1077,34 @@ func (a *Agent) assembleAssistantMessage(
 	return assistantMsg, toolBlocks, true
 }
 
+// validateRunHistory rejects histories carrying content blocks outside the
+// six built-in llm.ContentBlock variants (issue #25). It names the first
+// offending block with its position so the failure is actionable at the
+// call site instead of surfacing mid-run at the provider boundary or
+// aliasing the caller's history through a custom provider.
+func validateRunHistory(history []llm.Message) error {
+	for i := range history {
+		for j, block := range history[i].Content {
+			if !clonableBlock(block) {
+				return fmt.Errorf("invalid history: message %d block %d (%T): %w", i, j, block, ErrForeignBlock)
+			}
+		}
+	}
+	return nil
+}
+
 // RunWithHistory executes the agent loop with a pre-existing conversation history
 // appended with the given user input. The history is defensively copied; the caller's
 // slice is not modified. The caller is responsible for including any desired system
 // prompt in the history — this method does not inject one.
+//
+// The history is validated before the run starts: any content block outside
+// the six built-in llm.ContentBlock variants fails the call with an error
+// wrapping ErrForeignBlock (issue #25).
 func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input string) (*RunResult, error) {
+	if err := validateRunHistory(history); err != nil {
+		return nil, err
+	}
 	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
 	seq, err := a.runStreamInternal(ctx, copied, nil)
@@ -1089,7 +1119,14 @@ func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input
 // defensively copied; the caller's slice is not modified. The caller is
 // responsible for including any desired system prompt in the history — this
 // method does not inject one.
+//
+// Like RunWithHistory, the history is validated before the run starts: any
+// content block outside the six built-in llm.ContentBlock variants fails the
+// call with an error wrapping ErrForeignBlock (issue #25).
 func (a *Agent) RunStreamWithHistory(ctx context.Context, history []llm.Message, input string) (iter.Seq2[AgentEvent, error], error) {
+	if err := validateRunHistory(history); err != nil {
+		return nil, err
+	}
 	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
 	return a.runStreamInternal(ctx, copied, nil)

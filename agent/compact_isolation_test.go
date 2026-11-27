@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/store"
 	"github.com/dailz1/go-agent/tool"
 )
 
@@ -170,11 +171,22 @@ func TestCopyMessagesIsolatesEmptyContentBacking(t *testing.T) {
 
 type wrappedTextBlock struct{ *llm.TextBlock }
 
-func TestCompactionSkippedForUnsupportedInputBlocks(t *testing.T) {
+// TestDurableCompactionRejectsForeignResultBeforeNormalization pins the
+// ordering fix on the durable proactive path (issue #25 review, #33): the
+// foreign-block rejection must run on the compactor's ORIGINAL return value
+// before durableHistory round-trips the result through JSON — a wrapper
+// whose wire form matches a built-in type would otherwise be laundered into
+// *llm.TextBlock and adopted. The reactive recovery path already checks in
+// this order; the two paths must stay aligned.
+func TestDurableCompactionRejectsForeignResultBeforeNormalization(t *testing.T) {
+	t.Parallel()
+
 	invoked := false
-	compactor := CompactFunc(func(_ context.Context, _ []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
+	compactor := CompactFunc(func(_ context.Context, history []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 		invoked = true
-		return CompactionResult{}, nil
+		poisoned := deepCopyMessages(history)
+		poisoned[0].Content = []llm.ContentBlock{wrappedTextBlock{&llm.TextBlock{Type: "text", Text: isolationSystemPrompt}}}
+		return CompactionResult{History: poisoned, Changed: true}, nil
 	})
 	var requests [][]llm.Message
 	provider := &messageCapturingMock{
@@ -183,30 +195,28 @@ func TestCompactionSkippedForUnsupportedInputBlocks(t *testing.T) {
 			requests = append(requests, copyMessages(messages))
 		},
 	}
-	history := []llm.Message{
-		llm.SystemMessage(isolationSystemPrompt),
-		{Role: llm.RoleUser, Content: []llm.ContentBlock{wrappedTextBlock{&llm.TextBlock{Type: "text", Text: "wrapped"}}}},
-	}
-	window := estimateRunes(history) + estimateRunes([]llm.Message{llm.UserMessage("hello")}) - 1
+	seed := isolationSeed()
 	ag := New(
 		provider,
 		tool.NewRegistry(),
+		WithStore(store.NewMemory()),
+		WithSystemPrompt(isolationSystemPrompt),
 		WithCompactor(compactor),
 		WithCompactionThresholdPercent(100),
-		WithContextWindowTokens(window),
+		WithContextWindowTokens(estimateRunes(seed)-1),
 		WithLogger(discardLogger()),
 	)
-	if _, err := ag.RunWithHistory(context.Background(), history, "hello"); err != nil {
-		t.Fatalf("RunWithHistory() error = %v", err)
+	if _, err := ag.Run(context.Background(), "hello", WithThread("t-foreign-result")); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
-	if invoked {
-		t.Errorf("compactor invoked for history with unsupported block types, want skipped")
+	if !invoked {
+		t.Fatal("compactor not invoked; compaction must trigger for the durable-path ordering to be exercised")
 	}
 	if len(requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(requests))
 	}
-	if len(requests[0]) != 3 {
-		t.Errorf("provider request length = %d, want 3 (history passed through un-compacted)", len(requests[0]))
+	if !reflect.DeepEqual(requests[0], isolationSeed()) {
+		t.Errorf("provider request = %#v, want untouched original history (foreign compactor result must be rejected on the durable path too)", requests[0])
 	}
 }
 

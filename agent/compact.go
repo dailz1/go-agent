@@ -16,6 +16,12 @@ var (
 	ErrInvalidHistory = errors.New("agent: invalid message history")
 	// ErrCompactionBudgetExceeded indicates that a strategy exhausted its options before meeting the budget.
 	ErrCompactionBudgetExceeded = errors.New("agent: compaction could not meet history budget")
+	// ErrForeignBlock indicates that a history contains a content block type
+	// outside the six built-in llm.ContentBlock variants. Histories supplied
+	// to RunWithHistory / RunStreamWithHistory are rejected at entry with
+	// this error (issue #25); a compactor result containing one is rejected
+	// before adoption.
+	ErrForeignBlock = errors.New("agent: unsupported content block type: llm.ContentBlock is sealed; use the six built-in block types")
 )
 
 const (
@@ -80,9 +86,11 @@ type CompactionResult struct {
 // history, so implementations may mutate or retain the input freely;
 // result.History must be self-owned memory (the kernel deep-copies it on
 // adoption) and must not rewrite the system prefix (validated against the
-// untouched original). Histories containing block types the kernel cannot
-// deep-copy skip compaction; results containing them are rejected (both
-// non-fatal, Warn and continue).
+// untouched original). Run-entry validation (issue #25) guarantees the
+// in-loop input contains only built-in block types; results containing
+// block types the kernel cannot deep-copy are rejected on the compactor's
+// original return value, before durable JSON normalization (non-fatal,
+// Warn and continue).
 //
 // Chain adoption semantics (issue #13): only candidates with Changed=true
 // replace the working history — Changed=false is a no-op declaration and is

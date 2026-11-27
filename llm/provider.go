@@ -24,10 +24,12 @@ var ErrStreamingNotSupported = errors.New("streaming not supported by this provi
 // The agent loop supplies a fresh message snapshot for each direct method
 // invocation, including retries and streaming fallback. The built-in
 // summarization compactor also isolates each provider request. These
-// snapshots deep-copy all built-in ContentBlock types in value and pointer
-// forms. Custom concrete block types, including types embedding a built-in
-// block, retain their internal references and are outside the full isolation
-// guarantee.
+// snapshots deep-copy all built-in ContentBlock types (pointer forms; see
+// issue #24). Histories containing custom concrete block types — including
+// types embedding a built-in block — are rejected at the RunWithHistory /
+// RunStreamWithHistory entry (issue #25), so providers receive only the six
+// built-in variants. Histories replayed from a durable thread are rebuilt
+// from the block type field and cannot retain foreign concrete types.
 //
 // This defensive copying does not permit input mutation or imply that tool
 // definitions and options are copied per invocation. Calls made directly by
