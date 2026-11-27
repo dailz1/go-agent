@@ -9,7 +9,7 @@ import (
 )
 
 // outputMarkerReserve is kept out of the display budget so omission markers
-// always fit (D5/D11.2).
+// always fit.
 const outputMarkerReserve = 256
 
 const (
@@ -19,7 +19,7 @@ const (
 )
 
 // assembleResponse folds the selected cause, the executor outcome and the
-// cleanup facts into the outer ToolResult (D12/D11.2). Supervisor-selected
+// cleanup facts into the outer ToolResult. Supervisor-selected
 // causes and terminal script failures return soft errors with explicit
 // cleanup state; a hard fault with no prior cause never reaches here —
 // supervise returned it as a wrapped Go error.
@@ -43,7 +43,7 @@ func (e *execution) assembleResponse() execResponse {
 		default:
 			if cause == FailureInternal && e.hardPending.Load() {
 				// A registered hard fault whose buffered value was not yet
-				// observed still propagates as the Go error (D12/F5).
+				// observed still propagates as the Go error.
 				return execResponse{hardErr: &hardAgentError{category: causeMsg}}
 			}
 			msg := fmt.Sprintf("code execution stopped: %s: %s", cause, causeMsg)
@@ -63,7 +63,7 @@ func (e *execution) assembleResponse() execResponse {
 // terminal value first, then explicitly selected images in script order,
 // then captured stdout — all within OutputBytes minus the marker reserve.
 // The outer Data channel stays nil: the model's structured payload is the
-// script's own return value in Content (D11.2).
+// script's own return value in Content.
 func projectSuccess(e *execution, outcome *RunOutcome) *tool.ToolResult {
 	if outcome == nil {
 		return tool.NewErrorResult("code execution produced no outcome")
@@ -94,7 +94,7 @@ func projectSuccess(e *execution, outcome *RunOutcome) *tool.ToolResult {
 	for _, ref := range outcome.Images {
 		if !strings.HasPrefix(ref.Token, e.id+"-") {
 			// Cross-execution or forged refs fail closed; the token is never
-			// echoed verbatim into the response (ocr medium).
+			// echoed verbatim into the response.
 			return tool.NewErrorResult("code execution failed: image ref is unknown for this execution")
 		}
 		img, ok := e.lookupImage(ref.Token)
@@ -103,7 +103,7 @@ func projectSuccess(e *execution, outcome *RunOutcome) *tool.ToolResult {
 		}
 		cost := len(img.Data) + len(img.URL) + len(img.MIMEType) + 128
 		if spent+cost > budget {
-			omitted++ // repeated refs are allowed; the marker is capped below (F13)
+			omitted++ // repeated refs are allowed; the marker is capped below
 			continue
 		}
 		spent += cost
@@ -134,7 +134,7 @@ func projectSuccess(e *execution, outcome *RunOutcome) *tool.ToolResult {
 			}
 		} else if spent+len(truncMarker) <= e.limits.OutputBytes {
 			// No room for even a prefix: still signal the suppressed stdout
-			// with the marker (ocr medium).
+			// with the marker.
 			content += truncMarker
 		}
 	}

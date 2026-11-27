@@ -9,12 +9,12 @@ import (
 	"strings"
 )
 
-// maxRefDepth bounds local $ref resolution (D8): deeper ref chains or ref
+// maxRefDepth bounds local $ref resolution: deeper ref chains or ref
 // cycles degrade that subtree to any with a diagnostic.
 const maxRefDepth = 20
 
 // maxTotalRenders bounds the total node renderings per tool: an acyclic but
-// dense $ref graph could otherwise expand exponentially (ocr medium).
+// dense $ref graph could otherwise expand exponentially.
 const maxTotalRenders = 4000
 
 // declarationRenderer renders one tool's input schema (the canonical marshaled
@@ -22,7 +22,7 @@ const maxTotalRenders = 4000
 // run_code Description. It documents the API for the model; it is not a
 // validator and never claims TS-level runtime guarantees. Every degraded or
 // unrepresentable construct yields a diagnostic carrying the tool name and
-// JSON Pointer (D8); the original schema bytes stay untouched.
+// JSON Pointer; the original schema bytes stay untouched.
 type declarationRenderer struct {
 	tool        string
 	root        any
@@ -36,7 +36,7 @@ type declarationRenderer struct {
 
 // schemaError is a hard generation failure: the tool's schema root provably
 // disallows a JSON object, so it cannot be exposed as a single-object
-// argument (D8). Connect/Refresh fails and names the tool.
+// argument. Connect/Refresh fails and names the tool.
 type schemaError struct{ msg string }
 
 func (e *schemaError) Error() string { return e.msg }
@@ -51,7 +51,7 @@ func renderToolDeclaration(desc ToolDescriptor) (string, []string, []string, err
 	}
 	var root any
 	dec := json.NewDecoder(strings.NewReader(string(desc.InputSchema)))
-	dec.UseNumber() // preserve big JSON numbers exactly (ocr medium)
+	dec.UseNumber() // preserve big JSON numbers exactly
 	if err := dec.Decode(&root); err != nil {
 		return "", nil, nil, &schemaError{msg: fmt.Sprintf(
 			"tool %q: decode marshaled parameter schema: %v", desc.Name, err)}
@@ -68,7 +68,7 @@ func renderToolDeclaration(desc ToolDescriptor) (string, []string, []string, err
 // renderAPIDocument renders declarations for every descriptor in input
 // order, one hard failure naming the offending tool if any root excludes
 // objects. Per-tool degradation notes are collected so the model Description
-// can carry them next to the declarations (D8/F18).
+// can carry them next to the declarations.
 func renderAPIDocument(tools []ToolDescriptor) (APIDocument, error) {
 	var b strings.Builder
 	var diags, notes []string
@@ -112,7 +112,7 @@ func (r *declarationRenderer) checkObjectRoot(ptr string, node any, depth int) e
 		}
 		// JSON Schema conjunctive semantics: a sibling type applies on top of
 		// any composition keywords, so a type that excludes objects excludes
-		// them through anyOf/oneOf/allOf as well (ocr medium).
+		// them through anyOf/oneOf/allOf as well.
 		return &schemaError{msg: fmt.Sprintf(
 			"tool %q: schema root at %s declares type(s) %v which exclude JSON objects; such tools cannot be exposed as single-object code calls (filter them via WithToolFilter)",
 			r.tool, ptr, types)}
@@ -179,7 +179,7 @@ func (r *declarationRenderer) renderMap(ptr string, m map[string]any) string {
 	if ref, ok := m["$ref"].(string); ok && len(ref) > 0 {
 		// $ref siblings apply alongside the target (2020-12); the declaration
 		// renders only the target, so referring-node siblings are diagnosed
-		// rather than silently dropped (ocr medium).
+		// rather than silently dropped.
 		r.noteCompositionSiblings(ptr, "$ref", m)
 		return r.renderRef(ptr, ref)
 	}
@@ -230,8 +230,7 @@ func (r *declarationRenderer) renderMap(ptr string, m map[string]any) string {
 }
 
 // renderArrayItems groups union item types before appending []: without
-// parens, string | null[] parses as string | (null[]) and changes meaning
-// (ocr medium).
+// parens, string | null[] parses as string | (null[]) and changes meaning.
 func (r *declarationRenderer) renderArrayItems(ptr string, items any) string {
 	t := r.render(ptr+"/items", items)
 	if strings.Contains(t, " ") {
@@ -242,7 +241,7 @@ func (r *declarationRenderer) renderArrayItems(ptr string, items any) string {
 
 // noteCompositionSiblings: sibling constraints beside a composition keyword
 // (2020-12 semantics) are not applied by the declaration render; say so
-// instead of implying they were folded in (ocr medium).
+// instead of implying they were folded in.
 func (r *declarationRenderer) noteCompositionSiblings(ptr string, keyword string, m map[string]any) {
 	present := make([]string, 0, 3)
 	for _, key := range []string{"type", "properties", "required", "items", "enum", "const"} {
@@ -297,7 +296,7 @@ func (r *declarationRenderer) renderObject(ptr string, m map[string]any, props m
 	}
 	sort.Strings(names)
 	// required keys without a properties entry are real required members of
-	// unknown type: render them instead of silently omitting (ocr medium).
+	// unknown type: render them instead of silently omitting.
 	for name := range required {
 		if _, ok := props[name]; !ok {
 			names = append(names, name)
@@ -333,7 +332,7 @@ func (r *declarationRenderer) renderObject(ptr string, m map[string]any, props m
 		b.WriteString("; ")
 		// A TS index signature also constrains named properties, while JSON
 		// Schema additionalProperties does not; say so instead of implying
-		// full fidelity (ocr medium).
+		// full fidelity.
 		r.diag(ptr, "index signature does not exempt named properties from the constraint in TypeScript")
 	}
 	b.WriteString("}")
@@ -363,7 +362,7 @@ func (r *declarationRenderer) renderIntersection(ptr string, list any) string {
 	for i, item := range items {
 		part := r.render(fmt.Sprintf("%s/allOf/%d", ptr, i), item)
 		// A multi-alternative part must be grouped or the & precedence
-		// silently changes meaning (ocr medium).
+		// silently changes meaning.
 		if strings.Contains(part, " | ") {
 			part = "(" + part + ")"
 		}
@@ -374,7 +373,7 @@ func (r *declarationRenderer) renderIntersection(ptr string, list any) string {
 
 // validationKeywords are JSON Schema validation vocabularies the TS-ish
 // declaration cannot express; their presence yields a diagnostic so the
-// model and the host know the constraint is documentation only (F18).
+// model and the host know the constraint is documentation only.
 var validationKeywords = map[string]bool{
 	"pattern": true, "format": true, "minimum": true, "maximum": true,
 	"exclusiveMinimum": true, "exclusiveMaximum": true, "multipleOf": true,
@@ -426,7 +425,7 @@ func (r *declarationRenderer) literal(ptr string, v any) string {
 		b, _ := json.Marshal(c)
 		return string(b)
 	case json.Number:
-		return c.String() // UseNumber decoding keeps big integers exact (ocr medium)
+		return c.String() // UseNumber decoding keeps big integers exact
 	case float64:
 		return formatNumber(c)
 	case bool:
@@ -444,7 +443,7 @@ func (r *declarationRenderer) literal(ptr string, v any) string {
 		return "[" + strings.Join(parts, ", ") + "]"
 	case map[string]any:
 		// Object literals cannot be faithfully expressed inside enum/const
-		// unions; degrade with a diagnostic instead of silently (ocr medium).
+		// unions; degrade with a diagnostic instead of silently.
 		r.diag(ptr, "object literal in enum/const is not representable; rendering any")
 		return "any"
 	default:
@@ -464,8 +463,7 @@ func (r *declarationRenderer) note(text, _ string) {
 
 // resolveLocalRef resolves one in-document JSON Pointer ref ("#..." form).
 // URI fragment percent-escapes are decoded per segment before lookup, and
-// the ~0/~1 pointer escapes are unescaped after that (RFC 6901; ocr
-// medium).
+// the ~0/~1 pointer escapes are unescaped after that (RFC 6901).
 func resolveLocalRef(root any, ref string) (any, error) {
 	if ref == "#" {
 		return root, nil
@@ -489,8 +487,7 @@ func resolveLocalRef(root any, ref string) (any, error) {
 		case []any:
 			idx, aerr := strconv.Atoi(seg)
 			if aerr != nil || fmt.Sprint(idx) != seg || idx < 0 || idx >= len(node) {
-				// Exact match required: a prefix like "1x" must not resolve
-				// (ocr medium).
+				// Exact match required: a prefix like "1x" must not resolve.
 				return nil, fmt.Errorf("pointer index %q invalid or out of range", seg)
 			}
 			cur = node[idx]

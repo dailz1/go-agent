@@ -15,17 +15,17 @@ import (
 )
 
 // gojaPinnedVersion is the exact pseudo-version this satellite is built and
-// reviewed against (D17). Upgrades require the full regression set:
+// reviewed against. Upgrades require the full regression set:
 // source-map disabling, the single-owner delivery loop, cancellation and
 // late-result behavior, projection budgeting and the dependency closure.
 const gojaPinnedVersion = "v0.0.0-20261110204830-f493a2b600d6"
 
-// defaultMaxCallStackSize is the explicit D6 default for the goja VM.
+// defaultMaxCallStackSize is the explicit default for the goja VM.
 const defaultMaxCallStackSize = 1024
 
 // GojaExecutor is the default Executor backend: one fresh goja.Runtime per
 // run, single-owner goroutine, no host APIs beyond the tools object, the
-// output helper and a strings-only console (D4/D15).
+// output helper and a strings-only console.
 type GojaExecutor struct {
 	stackSize int
 }
@@ -33,8 +33,8 @@ type GojaExecutor struct {
 // GojaOption configures the goja backend.
 type GojaOption func(*GojaExecutor)
 
-// WithMaxCallStackSize overrides the VM call-stack depth bound (D6 default
-// 1024). It bounds recursion depth; it is not a step or heap meter.
+// WithMaxCallStackSize overrides the VM call-stack depth bound
+// (default 1024). It bounds recursion depth; it is not a step or heap meter.
 func WithMaxCallStackSize(n int) GojaOption {
 	return func(g *GojaExecutor) {
 		if n > 0 {
@@ -106,8 +106,8 @@ type gojaVM struct {
 	parseThis  goja.Value
 	outputMark *goja.Symbol
 	// Output artifacts snapshot their validated image tokens here at
-	// output() time; later guest mutation cannot change the projection
-	// (ocr high). Owner-goroutine only.
+	// output() time; later guest mutation cannot change the projection.
+	// Owner-goroutine only.
 	outputTokens map[string][]ImageRef
 	outputSeq    int
 
@@ -119,14 +119,14 @@ type gojaVM struct {
 	aborted         bool
 }
 
-// Run is the VM-owner entry (D4/D13): it creates the runtime, disables
+// Run is the VM-owner entry: it creates the runtime, disables
 // source maps on every parse entry, wires the tools namespace, runs the
 // wrapped async body, installs the host continuation through the original
 // Promise.prototype.then, and pumps reserved deliveries into their one
 // resolver entry each. It returns only once the interpreter has stopped and
 // can no longer submit calls or process callbacks. Any panic escaping the
 // script value walk (null.ToObject, throwing getters, host conversion) is
-// recovered here into a soft failure — it must never kill the process (F1).
+// recovered here into a soft failure — it must never kill the process.
 func (g *GojaExecutor) Run(ctx context.Context, req RunRequest) (outcome RunOutcome, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -148,10 +148,10 @@ func (g *GojaExecutor) run(_ context.Context, req RunRequest) (RunOutcome, error
 	rt.SetMaxCallStackSize(g.stackSize)
 	// Every parse entry (RunString/RunScript/eval/function constructors)
 	// inherits these options; source-map resolution reads files and is
-	// disabled before any code runs (D15).
+	// disabled before any code runs.
 	rt.SetParserOptions(parser.WithDisableSourceMaps)
 	// Stop hook before any code: a non-blocking interrupt request; the stop
-	// path already closed admission and the delivery gate (D4/D13).
+	// path already closed admission and the delivery gate.
 	req.Control.RegisterInterrupt(func() { rt.Interrupt(&gojaInterrupt{}) })
 
 	vm := &gojaVM{rt: rt, req: req, resolvers: make(map[uint64]resolverEntry), outputTokens: make(map[string][]ImageRef)}
@@ -182,8 +182,7 @@ func (g *GojaExecutor) run(_ context.Context, req RunRequest) (RunOutcome, error
 
 	// Host continuation through the original then: the script can rewrite
 	// Promise.prototype or the instance, but the settled notification and
-	// ScriptSettled always go through what we captured before any code ran
-	// (D13 step 6).
+	// ScriptSettled always go through what we captured before any code ran.
 	fulfill := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) > 0 {
 			vm.settle(false, call.Arguments[0])
@@ -206,8 +205,8 @@ func (g *GojaExecutor) run(_ context.Context, req RunRequest) (RunOutcome, error
 
 	// A script that completed or failed synchronously has already settled
 	// its promise; the continuation reaction only runs on the next top-level
-	// entry. Drain once before blocking on deliveries (D13 step 7's
-	// completion criterion is the continuation, not the queue).
+	// entry. Drain once before blocking on deliveries (the completion
+	// criterion is the continuation, not the queue).
 	vm.drainJobs()
 
 	for !vm.settled && !vm.aborted {
@@ -248,14 +247,14 @@ func (vm *gojaVM) captureOriginals(global *goja.Object) bool {
 // hardenPromise freezes the Promise[Symbol.species] accessor before any
 // guest code runs: then() reads the species to build its derived promise, so
 // a guest rewrite could otherwise intercept or break the host continuation
-// registration even though the original then was captured (ocr high).
+// registration even though the original then was captured.
 func (vm *gojaVM) hardenPromise(global *goja.Object) {
 	rt := vm.rt
 	promiseObj := global.Get("Promise").ToObject(rt)
 	// Re-write the current accessor/value with default attributes: species is
 	// initially writable+configurable, and SetSymbol stores a plain value
 	// property with both flags off. The guest can no longer rewrite species,
-	// which then() reads to build its derived promise (ocr high). The
+	// which then() reads to build its derived promise. The
 	// iterator symbol gets the same treatment.
 	species := promiseObj.GetSymbol(goja.SymSpecies)
 	_ = promiseObj.SetSymbol(goja.SymSpecies, species)
@@ -264,7 +263,7 @@ func (vm *gojaVM) hardenPromise(global *goja.Object) {
 }
 
 // installConsole wires console.log/info/warn/error/debug: strings only,
-// runes streamed into the StdoutBytes budget via Control.PrintString (D5).
+// runes streamed into the StdoutBytes budget via Control.PrintString.
 func (vm *gojaVM) installConsole(global *goja.Object) {
 	rt := vm.rt
 	logNative := func(call goja.FunctionCall) goja.Value {
@@ -286,7 +285,7 @@ func (vm *gojaVM) installConsole(global *goja.Object) {
 
 // writeConsoleString streams one guest string into the stdout budget via
 // the goja RuneReader, so a large guest string never materializes as a
-// single host allocation after the budget is already gone (ocr medium).
+// single host allocation after the budget is already gone.
 func writeConsoleString(control Control, arg goja.Value) {
 	if sv, ok := arg.(goja.String); ok {
 		reader := sv.Reader()
@@ -316,9 +315,9 @@ func writeConsoleString(control Control, arg goja.Value) {
 // installOutput wires the output(value, imageRef...) helper. The returned
 // object carries a host-created Symbol property no plain business object
 // can have by accident, so same-named value/images fields on ordinary
-// objects are never misdetected (D11.2). The validated image tokens are
+// objects are never misdetected. The validated image tokens are
 // snapshotted into a Go-side table immediately: later guest mutation of the
-// returned object cannot change what gets projected (ocr high).
+// returned object cannot change what gets projected.
 func (vm *gojaVM) installOutput(global *goja.Object) {
 	rt := vm.rt
 	symbolCtor := global.Get("Symbol")
@@ -362,7 +361,7 @@ func (vm *gojaVM) installOutput(global *goja.Object) {
 
 // installTools builds the no-prototype frozen tools namespace: every name is
 // the exact registered name, JSON-string escaped in declarations; global
-// Promise/JSON/console are never shadowed (D7).
+// Promise/JSON/console are never shadowed.
 func (vm *gojaVM) installTools(global *goja.Object) {
 	rt := vm.rt
 	objCtor := global.Get("Object").ToObject(rt)
@@ -385,7 +384,7 @@ func (vm *gojaVM) installTools(global *goja.Object) {
 
 // submitBinding validates the single object argument, bounded-encodes it and
 // hands the call to Host.Submit. It never runs Get/Info/approval/Execute and
-// returns immediately with a Promise (D13 step 3).
+// returns immediately with a Promise.
 func (vm *gojaVM) submitBinding(name string, call goja.FunctionCall) goja.Value {
 	rt := vm.rt
 	argsVal := call.Argument(0)
@@ -398,9 +397,9 @@ func (vm *gojaVM) submitBinding(name string, call goja.FunctionCall) goja.Value 
 		}
 	}
 	// Bounded incremental encoding: the args are walked once inside the
-	// ArgsBytes budget — no full Export/Marshal before the check (D5/F10).
+	// ArgsBytes budget — no full Export/Marshal before the check.
 	// A goja exception from a throwing getter is recovered here so the call
-	// rejects instead of throwing into the script (ocr medium).
+	// rejects instead of throwing into the script.
 	if et := argsVal.ExportType(); et == nil || et.Kind() != reflect.Map {
 		return vm.rejectedPromise(&Failure{Kind: FailureArgsInvalid, Message: fmt.Sprintf("tool %q expects one JSON object argument", name)})
 	}
@@ -437,7 +436,7 @@ func (vm *gojaVM) rejectedPromise(f *Failure) goja.Value {
 	return vm.rt.ToValue(promise)
 }
 
-// abortOrScriptFail routes a delivery error (ocr high): only uncatchable
+// abortOrScriptFail routes a delivery error: only uncatchable
 // interrupts abort the run; anything else settles as a rejected script
 // failure so the outer result carries the real cause instead of an empty
 // outcome.
@@ -457,10 +456,9 @@ func (vm *gojaVM) abortOrScriptFail(err error) {
 // deliver feeds one reserved completion into its one resolver entry, then
 // re-enters the runtime so the pending promise jobs run to quiescence
 // (leave() drains the job queue on every top-level return). Resolver calls
-// and job execution happen outside every bridge lock (D13 step 5).
+// and job execution happen outside every bridge lock.
 // FinishDelivery runs even if reply construction or the resolver entry
-// panics — the reservation is settled exactly once, on every path (ocr
-// medium).
+// panics — the reservation is settled exactly once, on every path.
 func (vm *gojaVM) deliver(reply CallReply) {
 	entry, ok := vm.resolvers[reply.CallID]
 	if !ok {
@@ -538,7 +536,7 @@ func (vm *gojaVM) parseJSON(raw json.RawMessage) (result goja.Value) {
 }
 
 // failureValue builds the script-facing rejection object {kind, message,
-// result?} (D11.1); result carries the bounded ToolValue of recoverable
+// result?}; result carries the bounded ToolValue of recoverable
 // tool failures.
 func (vm *gojaVM) failureValue(f *Failure) goja.Value {
 	rt := vm.rt
@@ -553,8 +551,8 @@ func (vm *gojaVM) failureValue(f *Failure) goja.Value {
 	return obj
 }
 
-// buildOutcome folds the settled state into the executor-level outcome
-// (D11.2): script rejections and incompatible terminal values become
+// buildOutcome folds the settled state into the executor-level outcome:
+// script rejections and incompatible terminal values become
 // failures; everything else is bounded-encoded within OutputBytes.
 func (vm *gojaVM) buildOutcome() RunOutcome {
 	if vm.aborted {
@@ -569,20 +567,19 @@ func (vm *gojaVM) buildOutcome() RunOutcome {
 	value := vm.settledValue
 	var images []ImageRef
 	// Non-JSON-compatible primitives are rejected before any ToObject walk:
-	// null has no object form and Symbol/BigInt cannot enter JSON (D11/F1/F11).
+	// null has no object form and Symbol/BigInt cannot enter JSON.
 	// goja's Symbol.String() returns just the description, so the type is
 	// checked via ExportType.
 	if goja.IsNull(value) {
 		return RunOutcome{Value: json.RawMessage("null")}
 	}
 	// A bare return (undefined) is rejected before any ToObject walk so it
-	// reports a clean result_encoding failure instead of a converted panic
-	// (ocr medium).
+	// reports a clean result_encoding failure instead of a converted panic.
 	if goja.IsUndefined(value) {
 		return RunOutcome{Failure: &Failure{Kind: FailureEncoding, Message: "script returned undefined; return a JSON-compatible value"}}
 	}
 	// A goja Symbol is the one value whose ExportType is string while the
-	// value itself is not a string primitive; it cannot enter JSON (F11).
+	// value itself is not a string primitive; it cannot enter JSON.
 	if et := value.ExportType(); et != nil && et.Kind() == reflect.String && !goja.IsString(value) {
 		return RunOutcome{Failure: &Failure{Kind: FailureEncoding, Message: "script returned a Symbol"}}
 	}
@@ -597,7 +594,7 @@ func (vm *gojaVM) buildOutcome() RunOutcome {
 			value = obj.Get("value")
 			// Tokens come from the Go-side snapshot taken at output() time —
 			// the id is read from the object, the list cannot be rewritten by
-			// the guest afterwards (ocr high).
+			// the guest afterwards.
 			if idV := obj.Get("output_id"); idV != nil && goja.IsString(idV) {
 				images = vm.outputTokens[idV.String()]
 			}
@@ -632,7 +629,7 @@ func truncateMessage(s string) string {
 
 // boundedEncoder walks a goja.Value incrementally into a fixed-capacity
 // JSON writer: no full Stringify-then-truncate, no full Export of the whole
-// tree (D5). Property access may run script getters; that stays on the
+// tree. Property access may run script getters; that stays on the
 // owner goroutine inside the execution deadline.
 type boundedEncoder struct {
 	rt          *goja.Runtime
@@ -698,7 +695,7 @@ func (enc *boundedEncoder) value(v goja.Value, depth int) *Failure {
 		return nil
 	}
 	// Boolean by type, not truthiness: objects are truthy but must encode
-	// as composites (F11).
+	// as composites.
 	if et := v.ExportType(); et != nil && et.Kind() == reflect.Bool {
 		if v.ToBoolean() {
 			enc.write("true")
@@ -708,7 +705,7 @@ func (enc *boundedEncoder) value(v goja.Value, depth int) *Failure {
 		return nil
 	}
 	// Symbols are the one non-string value whose ExportType is string;
-	// BigInt is detected via its Go type. Neither can enter JSON (F11).
+	// BigInt is detected via its Go type. Neither can enter JSON.
 	if et := v.ExportType(); et != nil && et.Kind() == reflect.String && !goja.IsString(v) {
 		return &Failure{Kind: FailureEncoding, Message: "value contains a Symbol"}
 	}
@@ -736,8 +733,7 @@ func (enc *boundedEncoder) composite(v goja.Value, depth int) *Failure {
 	isArray := v.ExportType() != nil && v.ExportType().Kind() == reflect.Slice
 	if isArray {
 		// Arrays iterate by index up to length: holes become null and extra
-		// non-index properties are not silently reshaped into elements
-		// (F11).
+		// non-index properties are not silently reshaped into elements.
 		enc.write("[")
 		length := arrayLength(obj)
 		for i := range length {
@@ -794,8 +790,7 @@ func (enc *boundedEncoder) composite(v goja.Value, depth int) *Failure {
 		return !enc.over
 	}) {
 		// Enumeration failed mid-walk (throwing getter): the partial buffer
-		// is discarded and the run settles as an encoding failure (ocr
-		// follow-up).
+		// is discarded and the run settles as an encoding failure.
 		return &Failure{Kind: FailureEncoding, Message: "value could not be enumerated"}
 	}
 	if compErr != nil {
@@ -811,7 +806,7 @@ func (enc *boundedEncoder) composite(v goja.Value, depth int) *Failure {
 // forEachOwnKey streams the object's own enumerable keys through visit
 // without materializing the full key list: a wide guest object cannot force
 // a host-sized slice before the budget can stop the walk. visit returning
-// false stops iteration early (ocr high).
+// false stops iteration early.
 func (enc *boundedEncoder) forEachOwnKey(obj *goja.Object, visit func(key string) bool) bool {
 	rt := enc.rt
 	ownFn, _ := goja.AssertFunction(rt.GlobalObject().Get("Object").ToObject(rt).Get("prototype").ToObject(rt).Get("hasOwnProperty"))
@@ -855,7 +850,7 @@ func (enc *boundedEncoder) forEachOwnKey(obj *goja.Object, visit func(key string
 
 // writeStringValue streams the string through goja's RuneReader instead of
 // materializing the whole Go string first: a guest-built large UTF-16
-// string never lands as one host allocation (D5/F10).
+// string never lands as one host allocation.
 func (enc *boundedEncoder) writeStringValue(v goja.Value) {
 	if enc.over || !enc.write(`"`) {
 		return
@@ -880,7 +875,7 @@ func (enc *boundedEncoder) writeStringValue(v goja.Value) {
 }
 
 // writeStringJSON escapes an already-materialized Go string rune by rune
-// inside the remaining budget (D5).
+// inside the remaining budget.
 func (enc *boundedEncoder) writeStringJSON(s string) {
 	if enc.over || !enc.write(`"`) {
 		return

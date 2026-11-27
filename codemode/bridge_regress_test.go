@@ -81,7 +81,7 @@ func (t *dataTool) Execute(ctx context.Context, _ json.RawMessage) (*tool.ToolRe
 }
 
 func TestDrainWindowHardErrorStaysSoft(t *testing.T) {
-	// R2 regression: the timeout selects the terminal cause first; a hard
+	// Regression: the timeout selects the terminal cause first; a hard
 	// Go error arriving during the drain window is diagnostics only — the
 	// outer result stays the timeout soft error and never propagates.
 	dt := &dataTool{block: make(chan struct{}), hardLate: true}
@@ -119,7 +119,7 @@ func TestDrainWindowHardErrorStaysSoft(t *testing.T) {
 }
 
 func TestTimeoutWithLateDataOverrunKeepsCause(t *testing.T) {
-	// F2 regression: a late completion that trips the cumulative budget
+	// Regression: a late completion that trips the cumulative budget
 	// after the timeout already stopped the run must not re-close stopCh.
 	block := make(chan struct{})
 	dt := &dataTool{block: block, data: []byte("ok")}
@@ -151,7 +151,7 @@ func TestTimeoutWithLateDataOverrunKeepsCause(t *testing.T) {
 }
 
 func TestHardErrorDuringDrainKeepsLedgerAndPropagates(t *testing.T) {
-	// F3/F5 regression: a hard error while another tool is still blocked
+	// Regression: a hard error while another tool is still blocked
 	// must propagate as a Go error AND keep the ledger slot until the
 	// blocked tool really exits.
 	release := make(chan struct{})
@@ -230,7 +230,7 @@ func (t *blockingTool) Execute(_ context.Context, _ json.RawMessage) (*tool.Tool
 }
 
 func TestGetterSideEffectAfterSettleRejected(t *testing.T) {
-	// F7 regression: terminal-value encoding runs getters, and getters must
+	// Regression: terminal-value encoding runs getters, and getters must
 	// not be able to admit new side effects after the script settled.
 	writes := 0
 	write := &counterTool{name: "w", onCall: func() { writes++ }}
@@ -270,7 +270,7 @@ func (t *counterTool) Execute(_ context.Context, _ json.RawMessage) (*tool.ToolR
 }
 
 func TestCumulativeImageCap(t *testing.T) {
-	// F12 regression: MaxImages caps the accepted images of one execution:
+	// Regression: MaxImages caps the accepted images of one execution:
 	// two calls of two images each with a cap of two fail on the second.
 	img := &imageTool{}
 	source := tool.NewRegistry()
@@ -292,7 +292,7 @@ func TestCumulativeImageCap(t *testing.T) {
 }
 
 func TestRepeatedImageOmissionWithinBudget(t *testing.T) {
-	// F13 regression: repeated refs of an omitted image must not multiply
+	// Regression: repeated refs of an omitted image must not multiply
 	// markers past OutputBytes.
 	img := &imageTool{}
 	source := tool.NewRegistry()
@@ -318,7 +318,7 @@ return output("x", r.images[0], r.images[0], r.images[0], r.images[0], r.images[
 }
 
 func TestWrapperNotAdvertisedToScripts(t *testing.T) {
-	// F14 regression: a second CodeMode's wrapper registered into the source
+	// Regression: a second CodeMode's wrapper registered into the source
 	// registry is never exposed to scripts.
 	source := tool.NewRegistry()
 	model := tool.NewRegistry()
@@ -353,7 +353,7 @@ func TestWrapperNotAdvertisedToScripts(t *testing.T) {
 }
 
 func TestRecursiveCallRejected(t *testing.T) {
-	// D7: a ctx-forwarding alias in the source registry that re-enters
+	// A ctx-forwarding alias in the source registry that re-enters
 	// run_code is rejected by the nested-execution ctx marker.
 	apply := &applyTagTool{}
 	m, _, wrapper := setupPair(t, apply)
@@ -391,7 +391,7 @@ func (t *aliasTool) Execute(ctx context.Context, args json.RawMessage) (*tool.To
 }
 
 func TestConcurrentCloseAndExecuteNoPanic(t *testing.T) {
-	// F4 regression: Close concurrent with in-flight executions and their
+	// Regression: Close concurrent with in-flight executions and their
 	// emits must never send on the closed observer queue (run under -race).
 	for i := range 5 {
 		apply := &applyTagTool{}

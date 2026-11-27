@@ -18,7 +18,7 @@ import (
 // passed to both agent.WithApprovalFn and codemode.WithApproval.
 type ApprovalFunc func(tool.ToolInfo, json.RawMessage) bool
 
-// CallObserver receives metadata-only lifecycle events (裁决 B). Events
+// CallObserver receives metadata-only lifecycle events. Events
 // never carry code, arguments, Data, Content or image payloads. Delivery is
 // best-effort: the queue is bounded and overflow is counted, never blocking
 // execution paths. It is a UI signal, not a reliable audit log.
@@ -57,8 +57,8 @@ type CallEvent struct {
 	Note       string
 }
 
-// Defaults from the design decision table (D6). They are conservative
-// initial values, not measured performance conclusions.
+// Defaults are conservative initial values, not measured performance
+// conclusions.
 const (
 	DefaultWallClock          = 60 * time.Second
 	DefaultVMExitTimeout      = 1 * time.Second
@@ -75,7 +75,7 @@ const (
 	DefaultOutputBytes        = 1 << 20
 	DefaultProjectionDepth    = 32
 	DefaultProjectionElements = 100000
-	DefaultDescriptionBudget  = 4096 // runes, skills' 2048 precedent widened by design (D8)
+	DefaultDescriptionBudget  = 4096 // runes; widened from skills' 2048 precedent by design
 )
 
 // DefaultToolName is the outer tool name unless WithToolName overrides it.
@@ -83,10 +83,10 @@ const DefaultToolName = "run_code"
 
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// Config carries every budget and bound (D6). Zero means default; negative
+// Config carries every budget and bound. Zero means default; negative
 // values are rejected by Connect. GuestSteps/GuestMemoryBytes are capability
 // gates: setting them on a backend whose Profile does not declare the
-// corresponding domain is a hard error, never a silent no-op (D5).
+// corresponding domain is a hard error, never a silent no-op.
 type Config struct {
 	WallClock          time.Duration
 	VMExitTimeout      time.Duration
@@ -145,13 +145,13 @@ type Option func(*option)
 
 // WithApproval installs the nested-call approval policy. The same function
 // shape is accepted by agent.WithApprovalFn; hosts sharing one terminal or
-// UI must serialize policy invocations themselves (D10).
+// UI must serialize policy invocations themselves.
 func WithApproval(fn ApprovalFunc) Option {
 	return func(o *option) { o.approval = fn }
 }
 
 // WithApprovalRequired controls only the outer run_code approval (blob
-// approval of the whole code, D10). It defaults to true; nested tool
+// approval of the whole code). It defaults to true; nested tool
 // approvals always apply regardless of this option.
 func WithApprovalRequired(required bool) Option {
 	return func(o *option) { o.approvalReq = required }
@@ -185,7 +185,7 @@ func WithCallObserver(fn CallObserver) Option {
 
 // WithExecutor replaces the default goja backend. The executor must honor
 // the Executor contract; the satellite maintains only the default
-// implementation (D16).
+// implementation.
 func WithExecutor(exec Executor) Option {
 	return func(o *option) { o.executor = exec }
 }
@@ -280,7 +280,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 	return r, nil
 }
 
-// generation is one immutable tool catalog version (D9). A wrapper is bound
+// generation is one immutable tool catalog version. A wrapper is bound
 // to exactly one generation for its whole life; execution reads only the
 // generation it was started with, never the CodeMode's current pointer.
 type generation struct {
@@ -313,16 +313,16 @@ type CodeMode struct {
 
 	// live executions ledger: admitted runs count against MaxLiveRuns and
 	// keep their slots until real exit, including after the response
-	// returned (C).
+	// returned.
 	liveMu sync.Mutex
 	live   map[*execution]struct{}
 	lifeWG sync.WaitGroup
 
-	// approvalSlot serializes nested approvals for this CodeMode (D10).
+	// approvalSlot serializes nested approvals for this CodeMode.
 	approvalSlot chan struct{}
 
 	// obsMu guards obsQueue sends against the close in Close: emit and the
-	// close are mutually excluded, so no send can hit a closed channel (F4).
+	// close are mutually excluded, so no send can hit a closed channel.
 	obsMu    sync.Mutex
 	obsClose bool
 	obsQueue chan CallEvent
@@ -335,7 +335,7 @@ type CodeMode struct {
 }
 
 // Connect builds the first generation from source, registers run_code into
-// exposed, and returns the lifecycle owner. source==exposed is rejected (D0):
+// exposed, and returns the lifecycle owner. source==exposed is rejected:
 // the tool-face reduction only exists when the model registry is separate.
 // Nothing is registered on failure.
 func Connect(_ context.Context, source, exposed *tool.Registry, cfg Config, opts ...Option) (*CodeMode, error) {
@@ -371,7 +371,7 @@ func Connect(_ context.Context, source, exposed *tool.Registry, cfg Config, opts
 		approvalSlot:          make(chan struct{}, 1),
 		obsQueue:              make(chan CallEvent, 1024),
 	}
-	// capability gates (D5): requested guest limits on a backend that does
+	// capability gates: requested guest limits on a backend that does
 	// not declare the domain fail construction.
 	profile := exec.Profile()
 	if rc.guestSteps > 0 && !profile.GuestStepLimit {
@@ -411,7 +411,7 @@ func (m *CodeMode) buildGeneration() (*generation, error) {
 		}
 		if handle, ok := m.source.Get(info.Name); ok {
 			if _, isWrapper := handle.(*runCodeTool); isWrapper {
-				continue // D7: never expose any codemode wrapper to scripts
+				continue // never expose any codemode wrapper to scripts
 			}
 		}
 		schemaBytes, err := json.Marshal(info.Parameters)
@@ -450,7 +450,7 @@ func (m *CodeMode) buildGeneration() (*generation, error) {
 
 // assembleDescription builds the run_code Description within
 // DescriptionBudget (runes). Overflow is a hard error, never a silent
-// truncation that would hide declarations from the model (D8).
+// truncation that would hide declarations from the model.
 func (m *CodeMode) assembleDescription(version string, p ExecutorProfile, docs APIDocument, descs []ToolDescriptor) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Executes a %s script against the business tools. %s\n", p.Language, p.EntrySyntax)
@@ -482,7 +482,7 @@ func (m *CodeMode) ToolInfo() tool.ToolInfo {
 }
 
 // CatalogVersion returns the current generation version: the exact string a
-// run_code call must carry in catalog_version (D9).
+// run_code call must carry in catalog_version.
 func (m *CodeMode) CatalogVersion() string {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
@@ -490,8 +490,8 @@ func (m *CodeMode) CatalogVersion() string {
 }
 
 // Refresh publishes a new generation atomically: build g2 fully, verify we
-// still own the wrapper name, then Replace — the single publication point
-// (D9). Executions started on g1 keep g1's allow-set and declarations.
+// still own the wrapper name, then Replace — the single publication point.
+// Executions started on g1 keep g1's allow-set and declarations.
 func (m *CodeMode) Refresh() error {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
@@ -514,7 +514,7 @@ func (m *CodeMode) Refresh() error {
 	// Post-publication verification: the registry has no CAS, so a concurrent
 	// external Replace after ours is possible; hosts must serialize Refresh
 	// with external mutations (documented contract). The re-check shrinks the
-	// detection window to immediately after publication (ocr high).
+	// detection window to immediately after publication.
 	if current, ok := m.exposed.Get(m.name); !ok || current != tool.Tool(wrapper) {
 		return fmt.Errorf("codemode ownership lost for %q immediately after Replace (replaced or removed externally)", m.name)
 	}
@@ -549,7 +549,7 @@ func (m *CodeMode) Snapshot() Snapshot {
 	}
 }
 
-// Close is a graceful drain (C): close the global admission gate, request
+// Close is a graceful drain: close the global admission gate, request
 // every supervised execution to stop, wait for all VMs, host workers and the
 // observer to exit for real, then unregister the wrapper after an identity
 // check. Close has no timeout guarantee and never reports success with work
@@ -576,8 +576,7 @@ func (m *CodeMode) Close() {
 			m.exposed.Unregister(m.name)
 		}
 		// After lifeWG the supervision paths are done emitting; exclude any
-		// straggler send before closing so no emit can hit a closed channel
-		// (F4).
+		// straggler send before closing so no emit can hit a closed channel.
 		m.obsMu.Lock()
 		m.obsClose = true
 		close(m.obsQueue)
@@ -592,8 +591,8 @@ func (m *CodeMode) Close() {
 func (m *CodeMode) observeLoop() {
 	defer m.obsWG.Done()
 	if m.observer == nil {
-		// drain the queue so emit never blocks and drops stay counted (ocr
-		// medium: a nil observer must not turn every event into a panic).
+		// even with no observer, drain the queue so emit never blocks and drops
+		// stay counted: a nil observer must not turn every event into a panic.
 		for range m.obsQueue {
 			m.dropped.Add(1)
 		}
@@ -603,8 +602,7 @@ func (m *CodeMode) observeLoop() {
 	for ev := range m.obsQueue {
 		if dead {
 			// The callback panicked once and stopped consuming: keep draining
-			// and counting so emit never blocks and drops stay accurate
-			// (ocr medium).
+			// and counting so emit never blocks and drops stay accurate.
 			m.dropped.Add(1)
 			continue
 		}
@@ -630,8 +628,8 @@ func (m *CodeMode) deliverEvent(ev CallEvent) (panicked bool) {
 }
 
 // emit queues one metadata event with a monotonic sequence number. The
-// obsMu section excludes the Close-time close of the queue (F4); queue-full
-// drops are counted, never blocking (裁决 B observation contract).
+// obsMu section excludes the Close-time close of the queue; queue-full
+// drops are counted, never blocking.
 func (m *CodeMode) emit(ev CallEvent) {
 	m.obsMu.Lock()
 	if m.obsClose {

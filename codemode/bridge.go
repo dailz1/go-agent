@@ -12,12 +12,12 @@ import (
 )
 
 // nestedExecKey is the private context marker carried by every nested tool
-// call (D7). It is unexported: host code cannot forge it, only forward it.
+// call. It is unexported: host code cannot forge it, only forward it.
 type nestedExecKey struct{}
 
 // hardAgentError wraps a hard fault for the Agent loop with a bounded,
 // non-blocking Error(): the category text only. The cause stays reachable
-// via Unwrap for diagnostics that choose to format it (D12/F15).
+// via Unwrap for diagnostics that choose to format it.
 type hardAgentError struct {
 	category string
 	cause    error
@@ -39,7 +39,7 @@ type runResult struct {
 	err     error
 }
 
-// hardFault is a D12 hard error: it selects the terminal cause when none is
+// hardFault is a hard error: it selects the terminal cause when none is
 // registered and interrupts the Agent round via a wrapped Go error.
 type hardFault struct {
 	err     error
@@ -62,7 +62,7 @@ type hostJob struct {
 // execution is one admitted run_code run and everything it owns: admission
 // and delivery gates, counters, host workers, the inbox, the image table
 // and the stdout budget. e.mu is the short critical section shared by the
-// stop transition and the delivery reservation (C/D13); it is never held
+// stop transition and the delivery reservation; it is never held
 // across user code, tool calls, approval callbacks or resolver entries.
 type execution struct {
 	id       string
@@ -121,7 +121,7 @@ type execution struct {
 // Execute under the CodeMode ledger lock.
 func (m *CodeMode) newExecution(t *runCodeTool, parent context.Context, code string, wall *time.Timer) *execution {
 	// The nested-execution marker rides the call ctx: any wrapper that
-	// forwards ctx into another run_code Execute is rejected (D7/F14).
+	// forwards ctx into another run_code Execute is rejected.
 	ctx, cancel := context.WithCancel(context.WithValue(parent, nestedExecKey{}, struct{}{}))
 	e := &execution{
 		id:        fmt.Sprintf("exec-%d", m.seq.Add(1)),
@@ -170,7 +170,7 @@ func (m *CodeMode) newExecution(t *runCodeTool, parent context.Context, code str
 		// A panic from any Executor implementation (custom backends included)
 		// must not escape the owner goroutine: the Agent's Tool.Execute
 		// recovery cannot catch it across this boundary. Route it through the
-		// normal completion path as an infrastructure fault (ocr high).
+		// normal completion path as an infrastructure fault.
 		var outcome RunOutcome
 		var runErr error
 		defer func() {
@@ -204,7 +204,7 @@ type hostAdapter struct{ e *execution }
 
 // cloneDescriptors deep-copies the descriptor slice including schema bytes:
 // a custom Executor must not be able to reach or mutate the generation's
-// canonical bytes through RunRequest (ocr medium).
+// canonical bytes through RunRequest.
 func cloneDescriptors(tools []ToolDescriptor) []ToolDescriptor {
 	out := make([]ToolDescriptor, len(tools))
 	for i, desc := range tools {
@@ -217,7 +217,7 @@ func cloneDescriptors(tools []ToolDescriptor) []ToolDescriptor {
 	return out
 }
 
-// Submit admits one nested call on the VM owner goroutine (D13 step 3). It
+// Submit admits one nested call on the VM owner goroutine. It
 // validates, counts and enqueues without touching the tool.
 func (h hostAdapter) Submit(name string, args json.RawMessage) (uint64, *Failure) {
 	e := h.e
@@ -252,14 +252,13 @@ func (h hostAdapter) Submit(name string, args json.RawMessage) (uint64, *Failure
 		return 0, &Failure{Kind: FailureInternal, Message: "host job queue full"}
 	}
 	// queued is emitted while still holding e.mu so its sequence number is
-	// assigned before any worker can emit approving/started for this job
-	// (F17).
+	// assigned before any worker can emit approving/started for this job.
 	e.mode.emit(CallEvent{ExecID: e.id, Generation: e.gen.version, CallID: id, Tool: name, State: CallQueued})
 	e.mu.Unlock()
 	return id, nil
 }
 
-// workerLoop pulls jobs until stop. Every job runs the exact 裁决 B ordering:
+// workerLoop pulls jobs until stop. Every job runs the same fixed ordering:
 // resolve the live handle once, read Info from that same handle once,
 // authorize from the live metadata, then execute the authorized handle.
 func (e *execution) workerLoop() {
@@ -292,7 +291,7 @@ func (e *execution) runJob(job hostJob) {
 		return
 	}
 	if _, isWrapper := t.(*runCodeTool); isWrapper {
-		// D7 recursion guard: no codemode wrapper of any instance is callable
+		// Recursion guard: no codemode wrapper of any instance is callable
 		// from script, even under a custom name.
 		e.rejectJob(job, &Failure{Kind: FailureNotFound, Message: "codemode wrappers cannot be called from scripts"})
 		return
@@ -325,7 +324,7 @@ func (e *execution) runJob(job hostJob) {
 		}
 		// If cancellation and the slot were both ready, the select may have
 		// granted the slot to an already-cancelled job: re-check before the
-		// callback so a dying run never prompts the user (ocr medium).
+		// callback so a dying run never prompts the user.
 		if e.ctx.Err() != nil {
 			release()
 			e.cancelBeforeStart(job)
@@ -344,7 +343,7 @@ func (e *execution) runJob(job hostJob) {
 	}
 
 	// Linearization point: the short lock decides whether this approved
-	// call may start (裁决 B step 5). Cancel winning the lock forbids the
+	// call may start. Cancel winning the lock forbids the
 	// start; a cancel arriving after started is an in-flight cancellation
 	// that cannot revoke admitted work.
 	e.mu.Lock()
@@ -368,7 +367,7 @@ func (e *execution) runJob(job hostJob) {
 
 // rejectJob delivers a recoverable rejection to the script and closes the
 // job's host slot. The completion stays pending until its owner-side
-// reservation (D13 step 5): a rejection the script can catch is still a
+// reservation: a rejection the script can catch is still a
 // delivery.
 func (e *execution) rejectJob(job hostJob, failure *Failure) {
 	e.mu.Lock()
@@ -386,7 +385,7 @@ func (e *execution) cancelBeforeStart(job hostJob) {
 	e.mode.emit(CallEvent{ExecID: e.id, Generation: e.gen.version, CallID: job.callID, Tool: job.name, State: CallCancelledBeforeStart})
 }
 
-// hardExit folds a worker-side hard fault into D12: it releases the host
+// hardExit folds a worker-side hard fault into the cause set: it releases the host
 // slot, selects the terminal cause when none is registered (the supervisor
 // then returns the wrapped Go error) and is diagnostics-only afterwards.
 func (e *execution) hardExit(err error, message string) {
@@ -408,7 +407,7 @@ func (e *execution) raiseHard(err error, message string) {
 	if first {
 		// The pending flag is set before the buffered send so a scheduler
 		// pause between stop and send can never downgrade a registered hard
-		// fault to a soft response (ocr high).
+		// fault to a soft response.
 		e.hardPending.Store(true)
 		select {
 		case e.hardErrCh <- hardFault{err: err, message: message}:
@@ -420,7 +419,7 @@ func (e *execution) raiseHard(err error, message string) {
 }
 
 // deliverResult bounds and converts one ToolResult, mints image tokens and
-// hands the completion to the inbox (D5/D11.1). Cumulative budget overrun
+// hands the completion to the inbox. Cumulative budget overrun
 // is terminal: nothing is delivered and the run stops.
 func (e *execution) deliverResult(job hostJob, res *tool.ToolResult) {
 	payload := resultPayloadBytes(res)
@@ -434,7 +433,7 @@ func (e *execution) deliverResult(job hostJob, res *tool.ToolResult) {
 	if e.hostDataBytes+payload > e.limits.HostDataBytes {
 		e.registerCauseLocked(FailureBridgeLimit, fmt.Sprintf("cumulative bridged payload over %d bytes", e.limits.HostDataBytes))
 		e.hostOutstanding--
-		e.pendingCalls-- // terminal: this call is never delivered (F8c)
+		e.pendingCalls-- // terminal: this call is never delivered
 		e.stopLocked()
 		e.mu.Unlock()
 		e.mode.emit(CallEvent{ExecID: e.id, Generation: e.gen.version, CallID: job.callID, Tool: job.name, State: CallFinished})
@@ -460,7 +459,7 @@ func (e *execution) deliverResult(job hostJob, res *tool.ToolResult) {
 	tv, terr := newToolValue(res, refs)
 	if terr != nil {
 		// Quota is consumed only after the result validates: an invalid Data
-		// must not permanently burn image/payload budget (ocr medium).
+		// must not permanently burn image/payload budget.
 		if f, ok := terr.(*Failure); ok {
 			e.rejectJobAfterSlot(job, f)
 			return
@@ -478,7 +477,7 @@ func (e *execution) deliverResult(job hostJob, res *tool.ToolResult) {
 	}
 	comp := completion{callID: job.callID, value: encoded}
 	if res.IsError() {
-		// D11.1/D12: an errored tool result rejects the script-side promise
+		// An errored tool result rejects the script-side promise
 		// with {kind, message, result} so catch can branch on it.
 		comp.failure = &Failure{
 			Kind:    FailureToolError,
@@ -506,7 +505,7 @@ func (e *execution) rejectJobAfterSlot(job hostJob, failure *Failure) {
 
 // dropOrInbox hands a completion to the inbox without ever blocking a
 // worker. After the delivery gate closed there is no owner left to reserve
-// the data, so it is dropped and its pending slot settled right here (F8):
+// the data, so it is dropped and its pending slot settled right here:
 // every accepted call is settled exactly once, at reservation or drop.
 func (e *execution) dropOrInbox(comp completion) {
 	e.mu.Lock()
@@ -554,7 +553,7 @@ func (e *execution) lookupImage(token string) (tool.Image, bool) {
 	return img, ok
 }
 
-// Reserve runs on the VM owner goroutine (D13 step 5): it blocks for one
+// Reserve runs on the VM owner goroutine: it blocks for one
 // completion and, under the shared short lock, either reserves a delivery
 // (incrementing DeliveriesInFlight and removing the call from PendingCalls)
 // or drops the data because the gate already closed. A reserved completion
@@ -607,7 +606,7 @@ func (e *execution) finishDelivery(callID uint64) {
 }
 
 // registerCauseLocked selects the terminal cause exactly once; the
-// first registration in this short lock wins (D12). Caller holds e.mu.
+// first registration in this short lock wins. Caller holds e.mu.
 func (e *execution) registerCauseLocked(kind FailureKind, msg string) bool {
 	if e.causeSet {
 		return false
@@ -619,7 +618,7 @@ func (e *execution) registerCauseLocked(kind FailureKind, msg string) bool {
 }
 
 // requestStop performs the one-way stop transition inside the shared short
-// critical section (C): close admission, cancel the run context, close the
+// critical section: close admission, cancel the run context, close the
 // delivery gate, and fire the registered non-blocking interrupt. It never
 // waits for user code. Re-registration of a cause after the first is
 // diagnostics-only.
@@ -635,7 +634,7 @@ func (e *execution) requestStop(kind FailureKind, msg string) {
 
 // stopLocked performs the stop transitions; caller holds e.mu. Idempotent:
 // once stopped, later terminal causes and completion paths must not re-close
-// stopCh (F2). Emitting under the lock is safe: the observer queue never
+// stopCh. Emitting under the lock is safe: the observer queue never
 // blocks.
 func (e *execution) stopLocked() {
 	if e.stopReq {
@@ -653,13 +652,13 @@ func (e *execution) stopLocked() {
 }
 
 // observeLateMsg records a post-response or post-cause fact as execution-
-// level metadata with the bounded diagnostic text (F17).
+// level metadata with the bounded diagnostic text.
 func (e *execution) observeLateMsg(message string) {
 	e.mode.emit(CallEvent{ExecID: e.id, Generation: e.gen.version, State: CallLateFinished, Note: truncateMessage(message)})
 }
 
-// acquireApproval serializes nested approvals on one slot per CodeMode
-// (D10). A cancelled run ctx releases the waiter; a job already inside the
+// acquireApproval serializes nested approvals on one slot per CodeMode.
+// A cancelled run ctx releases the waiter; a job already inside the
 // callback keeps it.
 func (m *CodeMode) acquireApproval(ctx context.Context) (release func(), ok bool) {
 	select {
@@ -725,9 +724,9 @@ func (c *executionControl) StopRequested() bool {
 	return c.e.stopReq
 }
 
-// ScriptSettled closes further submissions unconditionally (D13 step 6:
-// after the top-level continuation, terminal-value encoding can still run
-// script getters, and they must not admit new side effects); admitted calls
+// ScriptSettled closes further submissions unconditionally (after the
+// top-level continuation, terminal-value encoding can still run script
+// getters, and they must not admit new side effects); admitted calls
 // that were never awaited select the unawaited_calls cause and stop the run.
 func (c *executionControl) ScriptSettled() {
 	e := c.e
@@ -791,7 +790,7 @@ func copyRaw(raw json.RawMessage) json.RawMessage {
 
 // resultPayloadBytes measures one ToolResult the way the bridge budgets it:
 // Content + Data bytes plus per-image payload, URL and MIME bytes and a
-// fixed 128-byte per-image accounting overhead (D5).
+// fixed 128-byte per-image accounting overhead.
 func resultPayloadBytes(res *tool.ToolResult) int {
 	n := len(res.Content) + len(res.Data)
 	for _, img := range res.Images {

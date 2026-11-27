@@ -7,15 +7,15 @@ import (
 )
 
 // ImageRef is an opaque reference to one image produced by a nested tool
-// call inside the current execution (D11.1). The token is a handle minted
+// call inside the current execution. The token is a handle minted
 // per execution; it grants no access to any host resource. Cross-execution
 // or forged refs fail projection with a soft error.
 type ImageRef struct {
 	Token string `json:"ref"`
 }
 
-// ToolValue is the script-facing projection of one nested ToolResult
-// (D11.1). The exact logic fields are Content, optional JSON Data, ordered
+// ToolValue is the script-facing projection of one nested ToolResult.
+// The exact logic fields are Content, optional JSON Data, ordered
 // Images and the original Status:
 //
 //   - Data present and valid JSON: Data and Value both carry that JSON

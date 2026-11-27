@@ -10,7 +10,7 @@ import (
 )
 
 // runCodeTool is the single model-facing tool bound to one immutable
-// generation (D9). It never reads the CodeMode's current pointer at
+// generation. It never reads the CodeMode's current pointer at
 // execution time; Refresh swaps whole wrappers, so an in-flight g1 wrapper
 // keeps running with g1's catalog, allow-set and declarations.
 type runCodeTool struct {
@@ -28,7 +28,7 @@ func (t *runCodeTool) Info() tool.ToolInfo {
 }
 
 // outerParameters is fixed for every generation: exactly code and
-// catalog_version, no additional properties (D8). Limits are not exposed to
+// catalog_version, no additional properties. Limits are not exposed to
 // the model.
 func outerParameters() tool.ParameterSchema {
 	ps := tool.NewParameterSchema()
@@ -53,7 +53,7 @@ type outerArgs struct {
 
 func (t *runCodeTool) Execute(ctx context.Context, args json.RawMessage) (*tool.ToolResult, error) {
 	if ctx.Value(nestedExecKey{}) != nil {
-		// D7 recursion guard: a call that carries a codemode execution marker
+		// Recursion guard: a call that carries a codemode execution marker
 		// is already running inside a script; alias wrappers forwarding ctx
 		// cannot re-enter.
 		return tool.NewErrorResult("recursive codemode call is rejected"), nil
@@ -68,7 +68,7 @@ func (t *runCodeTool) Execute(ctx context.Context, args json.RawMessage) (*tool.
 		// Trailing JSON values or garbage after the object must be rejected,
 		// not silently ignored. A second Decode is the reliable probe: a
 		// well-formed stream ends with io.EOF, and Decoder.More can report
-		// false for an invalid trailing token (ocr medium).
+		// false for an invalid trailing token.
 		var extra json.RawMessage
 		if err := dec.Decode(&extra); err == nil {
 			return tool.NewErrorResult("run_code arguments must be exactly one {code, catalog_version} object"), nil
@@ -81,7 +81,7 @@ func (t *runCodeTool) Execute(ctx context.Context, args json.RawMessage) (*tool.
 		return tool.NewErrorResult("script source is %d bytes, over the %d-byte limit", len(in.Code), t.mode.cfg.sourceBytes), nil
 	}
 	if in.CatalogVersion != t.gen.version {
-		// D2-1 boundary: the rejection carries the wrapper's own version
+		// Boundary: the rejection carries the wrapper's own version
 		// only — never another generation's declarations.
 		return tool.NewErrorResult(
 			"catalog_version %q is not current for this description (%s); re-read the run_code description and resubmit with its catalog_version",
@@ -89,7 +89,7 @@ func (t *runCodeTool) Execute(ctx context.Context, args json.RawMessage) (*tool.
 	}
 	m := t.mode
 	// WallClock covers the whole accepted execution, starting before any
-	// goroutine is spawned (D6).
+	// goroutine is spawned.
 	wall := time.NewTimer(m.cfg.wallClock)
 	m.liveMu.Lock()
 	if m.closed.Load() {
@@ -112,15 +112,15 @@ func (t *runCodeTool) Execute(ctx context.Context, args json.RawMessage) (*tool.
 	return resp.result, resp.hardErr
 }
 
-// supervise drives one execution to its response under C's three clocks and
-// D12's first-registered-cause rule; it then keeps supervising in the
-// background until real cleanup completes. Execute returns as soon as the
-// response is settled.
+// supervise drives one execution to its response under the three
+// execution clocks and the first-registered-cause rule (the first cause
+// registered wins); it then keeps supervising in the background until real
+// cleanup completes. Execute returns as soon as the response is settled.
 func (e *execution) supervise() execResponse {
 	ownerDone := e.ownerDone
 
 	// Hard faults win whenever they are already buffered: the cause was
-	// registered before the clock/cancel stop ran (F5).
+	// registered before the clock/cancel stop ran.
 	select {
 	case h := <-e.hardErrCh:
 		return e.hardResponse(h)
@@ -138,21 +138,21 @@ func (e *execution) supervise() execResponse {
 		e.requestStop(FailureTimeout, "wall clock deadline")
 		e.awaitBoundedDrain()
 	case h := <-e.hardErrCh:
-		// Hard error before any terminal cause interrupts the Agent round
-		// (D12); stop everything, then propagate.
+		// Hard error before any terminal cause interrupts the Agent round;
+		// stop everything, then propagate.
 		return e.hardResponse(h)
 	}
 
 	// A hard fault may have landed during the drain window; it registered
-	// the first cause, so it wins over the assembled soft response (D12).
+	// the first cause, so it wins over the assembled soft response.
 	if h, ok := e.takeHardFault(); ok {
 		return e.hardResponse(h)
 	}
 
 	// The response settles here; cleanup may still be draining and keeps
-	// its ledger slot (C). The response_returned event is emitted before
+	// its ledger slot. The response_returned event is emitted before
 	// the ledger slot can be released, so Close can never close the queue
-	// under a pending emit (F4).
+	// under a pending emit.
 	resp := e.assembleResponse()
 	e.mode.emit(CallEvent{ExecID: e.id, Generation: e.gen.version, State: CallResponseReturned})
 	e.mu.Lock()
@@ -161,7 +161,7 @@ func (e *execution) supervise() execResponse {
 
 	if !resp.cleanupIncomplete {
 		// Finalize only after owner and workers have actually joined: the
-		// counter snapshot alone does not prove the pool exited (ocr high).
+		// counter snapshot alone does not prove the pool exited.
 		go e.awaitRealExit(false)
 	} else {
 		go e.awaitRealExit(true)
@@ -170,8 +170,8 @@ func (e *execution) supervise() execResponse {
 }
 
 // hardResponse turns a buffered hard fault into the outer Go error via the
-// bounded-category wrapper (D12/F15), releases response bookkeeping, and
-// keeps the ledger slot until real cleanup (F3).
+// bounded-category wrapper, releases response bookkeeping, and
+// keeps the ledger slot until real cleanup.
 func (e *execution) hardResponse(h hardFault) execResponse {
 	e.raiseHard(h.err, h.message)
 	e.mode.emit(CallEvent{ExecID: e.id, Generation: e.gen.version, State: CallResponseReturned})
@@ -194,7 +194,7 @@ func (e *execution) takeHardFault() (hardFault, bool) {
 }
 
 // onRunReturned folds a completed Executor.Run into the cause set: script
-// and encoding failures are registrable causes (D12) competing in the same
+// and encoding failures are registrable causes competing in the same
 // short lock with deadline/cancel/host faults.
 func (e *execution) onRunReturned(res runResult) {
 	e.mu.Lock()
@@ -242,8 +242,8 @@ func (e *execution) drainWorkers() {
 
 // awaitBoundedDrain runs the VM-exit wait and the host-drain wait in
 // parallel, each with its own clock, so the response waits at most
-// max(VMExitTimeout, HostDrainTimeout) after the stop, never their sum
-// (C/F6). Each wait's own expiry clears its pending flag; the overall bound
+// max(VMExitTimeout, HostDrainTimeout) after the stop, never their sum.
+// Each wait's own expiry clears its pending flag; the overall bound
 // returns early. It never claims a stopped VM or drained host that has not
 // stopped.
 func (e *execution) awaitBoundedDrain() {
@@ -283,7 +283,7 @@ func (e *execution) awaitBoundedDrain() {
 			if sig.hasRes {
 				late = sig.res
 			}
-			vmWaiting = false // its own expiry or delivery clears the flag (F6)
+			vmWaiting = false // its own expiry or delivery clears the flag
 		case <-hostDone:
 			hostWaiting = false
 		case <-boundTimer.C:
@@ -297,8 +297,7 @@ func (e *execution) awaitBoundedDrain() {
 }
 
 // drainAbandonedJobs settles the pendingCalls of jobs still queued when the
-// workers exited on stop: they are cancelled before start and never execute
-// (F8).
+// workers exited on stop: they are cancelled before start and never execute.
 func (e *execution) drainAbandonedJobs() {
 	for {
 		select {
@@ -323,7 +322,7 @@ func maxDuration(a, b time.Duration) time.Duration {
 // awaitRealCleanup runs after a cleanup_incomplete response: it waits for
 // the VM, reserved deliveries and host work to really exit, then reports
 // cleanup_complete and releases the ledger slot. There is no deadline on
-// this wait — Close waits with it (C).
+// this wait — Close waits with it.
 func (e *execution) awaitRealCleanup() {
 	e.awaitRealExit(true)
 }
@@ -331,8 +330,7 @@ func (e *execution) awaitRealCleanup() {
 // awaitRealExit waits for the owner goroutine and the worker pool to
 // actually join, marks cleanup complete, optionally reports the
 // cleanup_complete event, and only then releases the ledger slot: the
-// counter snapshot used for the response does not prove the pool exited
-// (ocr high).
+// counter snapshot used for the response does not prove the pool exited.
 func (e *execution) awaitRealExit(reportCleanup bool) {
 	e.ownerWG.Wait()
 	e.workersWG.Wait()
