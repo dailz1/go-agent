@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,9 @@ type Bridge struct {
 	namespace        string
 	approvalRequired bool
 	dataLimit        int64
+	toolFilter       ToolFilter
 	owned            map[string]*remoteTool
+	rejections       *bridgeRejections
 	lc               *lifecycle
 }
 
@@ -81,7 +84,8 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 	if err != nil {
 		return nil, fmt.Errorf("list MCP tools: %w", err)
 	}
-	wrappers, err := prepareTools(remote, cfg.Namespace, options.approvalRequired, options.resultDataLimit, registry)
+	rejections := newBridgeRejections()
+	wrappers, err := prepareTools(remote, cfg.Namespace, options.approvalRequired, options.resultDataLimit, registry, options.toolFilter, rejections)
 	if err != nil {
 		return nil, err
 	}
@@ -94,13 +98,20 @@ func Connect(ctx context.Context, registry *tool.Registry, transport sdk.Transpo
 		owned[wrapper.info.Name] = wrapper
 	}
 	closeOnError = false
+	if options.toolFilter != nil {
+		skipped, total := rejections.summary()
+		slog.Debug("mcp: tool filter summary", "namespace", cfg.Namespace,
+			"skipped", skipped, "total", total)
+	}
 	return &Bridge{
 		session:          session,
 		registry:         registry,
 		namespace:        cfg.Namespace,
 		approvalRequired: options.approvalRequired,
 		dataLimit:        options.resultDataLimit,
+		toolFilter:       options.toolFilter,
 		owned:            owned,
+		rejections:       rejections,
 		lc:               lc,
 	}, nil
 }
@@ -124,7 +135,95 @@ func listTools(ctx context.Context, session *sdk.ClientSession) ([]*sdk.Tool, er
 	}
 }
 
-func prepareTools(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, registry *tool.Registry) ([]*remoteTool, error) {
+func prepareTools(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, registry *tool.Registry, filter ToolFilter, rs *bridgeRejections) ([]*remoteTool, error) {
+	if filter == nil {
+		wrappers, err := prepareToolsUnfiltered(remote, namespace, approvalRequired, dataLimit, registry)
+		return wrappers, err
+	}
+	existing := make(map[string]struct{})
+	for _, info := range registry.List() {
+		existing[info.Name] = struct{}{}
+	}
+	// Pass 1: name validation, retention, and filtering classify every
+	// entry; the first surviving entry of a name is its projected candidate.
+	accepted := make(map[string]*sdk.Tool, len(remote))
+	nameEntries := make(map[string]int)
+	var errs []error
+	valid := 0
+	rs.beginListing(int64(len(remote)))
+	for _, item := range remote {
+		remoteName := ""
+		if item != nil {
+			remoteName = item.Name
+		}
+		name := namespace + "__" + remoteName
+		if _, nameErr := finalName(namespace, remoteName); nameErr != nil {
+			errs = append(errs, nameErr)
+			continue
+		}
+		valid++
+		nameEntries[name]++
+		if item == nil {
+			_, schemaErr := projectSchema(item)
+			errs = append(errs, schemaErr)
+			continue
+		}
+		if rs.retained(name) {
+			continue
+		}
+		probe := deepCopyToolForFilter(item)
+		if !filter(probe) {
+			rs.add(name)
+			continue
+		}
+		if _, claimed := accepted[name]; !claimed {
+			accepted[name] = item
+		}
+	}
+	// Pass 2: a name rejected in this listing is excluded listing-wide, even
+	// when an earlier entry survived the filter.
+	for name := range accepted {
+		if rs.retained(name) {
+			delete(accepted, name)
+		}
+	}
+	// Duplicate errors are emitted only for names that survive filtering.
+	for name, entries := range nameEntries {
+		if entries > 1 {
+			if _, keep := accepted[name]; keep {
+				errs = append(errs, &NameNotRepresentableError{Remote: name[len(namespace)+2:], Final: name, Reason: "duplicate final name"})
+			}
+		}
+	}
+	// Pass 3: project the surviving candidates in sorted name order.
+	wrappers := make([]*remoteTool, 0, len(accepted))
+	for _, name := range sortedAcceptedNames(accepted) {
+		item := accepted[name]
+		if _, collision := existing[name]; collision {
+			errs = append(errs, &NameNotRepresentableError{Remote: item.Name, Final: name, Reason: "already registered"})
+			continue
+		}
+		schema, err := projectSchema(item)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		wrapper := newRemoteTool(item, name, schema, approvalRequired)
+		wrapper.dataLimit = dataLimit
+		wrappers = append(wrappers, wrapper)
+	}
+	if err := sortedErrors(errs); err != nil {
+		return nil, err
+	}
+	return wrappers, nil
+}
+
+// prepareToolsUnfiltered preserves the exact projection and error-aggregation
+// semantics that predate the filter option: name-validation, duplicate,
+// collision, and schema errors for every entry are aggregated together, and
+// each representable entry produces a wrapper gated only by the final-name
+// pattern.
+func prepareToolsUnfiltered(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, registry *tool.Registry) ([]*remoteTool, error) {
 	existing := make(map[string]struct{})
 	for _, info := range registry.List() {
 		existing[info.Name] = struct{}{}
@@ -164,6 +263,36 @@ func prepareTools(remote []*sdk.Tool, namespace string, approvalRequired bool, d
 		return nil, err
 	}
 	return wrappers, nil
+}
+
+// sortedAcceptedNames returns the accepted entries' projected names in
+// ascending order.
+func sortedAcceptedNames(accepted map[string]*sdk.Tool) []string {
+	names := make([]string, 0, len(accepted))
+	for name := range accepted {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// deepCopyToolForFilter isolates the filter's input: the SDK decodes
+// InputSchema as any-typed JSON, and Annotations carries pointer fields, so
+// a shallow struct copy would still share nested state with the listing
+// entry. The whole-tool JSON round trip is faithful because every sdk.Tool
+// field carries a json tag.
+func deepCopyToolForFilter(item *sdk.Tool) *sdk.Tool {
+	b, err := json.Marshal(item)
+	if err != nil {
+		probe := *item
+		return &probe
+	}
+	var probe sdk.Tool
+	if err := json.Unmarshal(b, &probe); err != nil {
+		fallback := *item
+		return &fallback
+	}
+	return &probe
 }
 
 // Names returns sorted copies of the names in the bridge's owned set whose

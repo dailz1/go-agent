@@ -76,7 +76,7 @@ func TestSDKSchemaProjectionPreservesTypedAndCarriedFields(t *testing.T) {
 
 func TestSchemaRejectionIsTypedAndAtomic(t *testing.T) {
 	registry := tool.NewRegistry()
-	_, err := prepareTools([]*sdk.Tool{{Name: "same", InputSchema: []any{}}, {Name: "same", InputSchema: map[string]any{"type": "object"}}}, "remote", true, defaultResultDataLimit, registry)
+	_, err := prepareTools([]*sdk.Tool{{Name: "same", InputSchema: []any{}}, {Name: "same", InputSchema: map[string]any{"type": "object"}}}, "remote", true, defaultResultDataLimit, registry, nil, newBridgeRejections())
 	if err == nil || len(registry.List()) != 0 {
 		t.Fatalf("error=%v registered=%d", err, len(registry.List()))
 	}
@@ -90,7 +90,7 @@ func TestAllInvalidInventoryIsSorted(t *testing.T) {
 		{Name: "z", InputSchema: []any{}},
 		{Name: "a.dot", InputSchema: []any{}},
 		{Name: "z", InputSchema: map[string]any{"type": "object"}},
-	}, "remote", true, defaultResultDataLimit, tool.NewRegistry())
+	}, "remote", true, defaultResultDataLimit, tool.NewRegistry(), nil, newBridgeRejections())
 	if err == nil {
 		t.Fatal("all-invalid inventory succeeded")
 	}
@@ -110,7 +110,7 @@ func TestSchemaPresenceAndCarrierValues(t *testing.T) {
 		"type": "object", "a-custom": map[string]any{"v": 1}, "z-custom": true,
 		"properties": map[string]any{"absent": map[string]any{}, "ref": map[string]any{"$ref": ""}},
 	}}
-	wrappers, err := prepareTools([]*sdk.Tool{remote}, "remote", true, defaultResultDataLimit, tool.NewRegistry())
+	wrappers, err := prepareTools([]*sdk.Tool{remote}, "remote", true, defaultResultDataLimit, tool.NewRegistry(), nil, newBridgeRejections())
 	if err != nil {
 		t.Fatal(err)
 	}

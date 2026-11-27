@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/dailz1/go-agent/tool"
@@ -38,9 +39,9 @@ func (b *Bridge) Refresh(ctx context.Context) (*RefreshSummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list MCP tools: %w", err)
 	}
-	fresh, err := projectRemoteTools(remote, b.namespace, b.approvalRequired, b.dataLimit, b.session, b.lc)
-	if err != nil {
-		return nil, err
+	fresh, skipped, perr := projectRemoteTools(remote, b.namespace, b.approvalRequired, b.dataLimit, b.session, b.lc, b.toolFilter, b.rejections)
+	if perr != nil {
+		return nil, perr
 	}
 
 	summary := &RefreshSummary{}
@@ -88,13 +89,97 @@ func (b *Bridge) Refresh(ctx context.Context) (*RefreshSummary, error) {
 		return nil, fmt.Errorf("apply MCP tool changes: %w", err)
 	}
 	b.owned = next
+
+	if b.toolFilter != nil {
+		slog.Debug("mcp: tool filter summary", "namespace", b.namespace,
+			"skipped", skipped, "total", len(remote))
+	}
 	return summary, nil
 }
 
 // projectRemoteTools builds one wrapper per representable remote tool keyed
 // by its projected name. Unrepresentable names, duplicate projected names,
 // and unprojectable schemas fail the whole set, mirroring Connect.
-func projectRemoteTools(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, session *sdk.ClientSession, lc *lifecycle) (map[string]*remoteTool, error) {
+func projectRemoteTools(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, session *sdk.ClientSession, lc *lifecycle, filter ToolFilter, rs *bridgeRejections) (map[string]*remoteTool, int, error) {
+	if filter == nil {
+		fresh, err := projectRemoteToolsUnfiltered(remote, namespace, approvalRequired, dataLimit, session, lc)
+		return fresh, 0, err
+	}
+	var errs []error
+	// Pass 1: name validation, retention, and filtering classify every
+	// entry; the first surviving entry of a name is its projected candidate.
+	accepted := make(map[string]*sdk.Tool, len(remote))
+	nameEntries := make(map[string]int)
+	valid := 0
+	for _, item := range remote {
+		remoteName := ""
+		if item != nil {
+			remoteName = item.Name
+		}
+		name := namespace + "__" + remoteName
+		if _, nameErr := finalName(namespace, remoteName); nameErr != nil {
+			errs = append(errs, nameErr)
+			continue
+		}
+		valid++
+		nameEntries[name]++
+		if item == nil {
+			_, schemaErr := projectSchema(item)
+			errs = append(errs, schemaErr)
+			continue
+		}
+		if rs.retained(name) {
+			continue
+		}
+		probe := deepCopyToolForFilter(item)
+		if !filter(probe) {
+			rs.add(name)
+			continue
+		}
+		if _, claimed := accepted[name]; !claimed {
+			accepted[name] = item
+		}
+	}
+	// A name rejected in this listing is excluded listing-wide, even when an
+	// earlier entry survived the filter.
+	for name := range accepted {
+		if rs.retained(name) {
+			delete(accepted, name)
+		}
+	}
+	// Duplicate errors are emitted only for names that survive filtering.
+	for name, entries := range nameEntries {
+		if entries > 1 {
+			if _, keep := accepted[name]; keep {
+				errs = append(errs, &NameNotRepresentableError{Remote: name[len(namespace)+2:], Final: name, Reason: "duplicate final name"})
+			}
+		}
+	}
+	skipped := valid - len(accepted)
+	// Pass 3: project the surviving candidates in sorted name order.
+	fresh := make(map[string]*remoteTool, len(accepted))
+	for _, name := range sortedAcceptedNames(accepted) {
+		item := accepted[name]
+		schema, err := projectSchema(item)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		wrapper := newRemoteTool(item, name, schema, approvalRequired)
+		wrapper.dataLimit = dataLimit
+		wrapper.session = session
+		wrapper.lc = lc
+		fresh[name] = wrapper
+	}
+	if err := sortedErrors(errs); err != nil {
+		return nil, 0, err
+	}
+	return fresh, skipped, nil
+}
+
+// projectRemoteToolsUnfiltered preserves the exact projection and
+// error-aggregation semantics that predate the filter option.
+func projectRemoteToolsUnfiltered(remote []*sdk.Tool, namespace string, approvalRequired bool, dataLimit int64, session *sdk.ClientSession, lc *lifecycle) (map[string]*remoteTool, error) {
 	var errs []error
 	fresh := make(map[string]*remoteTool, len(remote))
 	for _, item := range remote {
