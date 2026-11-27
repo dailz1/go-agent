@@ -485,11 +485,11 @@ agenttest 可依赖 llm/codex/auth 和 llm/codex，内核不得反向依赖。
 - 公开测试替身包（脚本化 Provider、录制回放），让使用者零成本测试自己的 agent——已落地（P2-3，冻结契约见下）
 #### 工具并行执行（P2-2 冻结契约）
 
-`WithToolConcurrency(n int)` 设置同一模型回复内的工具执行并发度；`agent.New` 将 `n <= 0` 归一为 `1`，默认也是 `1`。`n=1` 保持今天的可观察行为：逐调用、live `Get -> approval -> Execute`，且现有 panic 仍按原路径逃逸。`n>1` 是显式 opt-in，工具的同轮副作用可重叠。
+`WithToolConcurrency(n int)` 设置同一模型回复内的工具执行并发度；`agent.New` 将 `n <= 0` 归一为 `1`，默认也是 `1`。`n=1` 逐调用进行 live `Get -> Info -> approval -> Execute`，每个已找到的调用在执行阶段读取一次 `Info`。`Info()` 或 approval callback panic 在对应调用边界转为 hardError，错误消息与并行规划边界一致。`n>1` 是显式 opt-in，工具的同轮副作用可重叠。
 
 默认（未开 `WithDynamicTools`）所有并发度下，模型可见的 tools 都是一次 run 开始时 `registry.List()` 取得的快照，后续模型轮不得刷新该列表。开启 `WithDynamicTools()` 后，该快照改为每轮迭代顶部（compaction 之前）重新获取；同轮内的全部 provider attempt 复用同一快照，单次请求进行中永不刷新。执行解析与并发度无关：`n=1` 逐调用 live `Get`，`n>1` 在每个工具轮规划时冻结执行 handle 和 `Info`；规划后注册/替换/移除的工具不影响本轮，后续工具轮的 live `Get` 按注册表现势解析。Registry 的 `Unregister`/`Replace`/`Apply` 与执行并发安全：在飞 Execute 自然跑完、结果如实入史，变更在下一个解析点生效；对已消失名字的调用是软错误 ToolResult，不是 Go error。
 
-`n>1` 在任何 dispatch 前按声明顺序完成 handle/`Info` 规划和整批 approval。unknown tool、无 callback 与拒绝是对应声明槽位的软结果；callback 或 planner `Info()` panic 在该边界 recover 为 hardError，停止后续规划和全部 Execute。`n=1` 的 approval/`Info` panic 行为不变。
+`n>1` 在任何 dispatch 前按声明顺序完成 handle/`Info` 规划和整批 approval。unknown tool、无 callback 与拒绝是对应声明槽位的软结果；callback 或 planner `Info()` panic 在该边界 recover 为 hardError，停止后续规划和全部 Execute。`n=1` 保留逐调用审批与执行的交错顺序，准备阶段 panic 结束当前 run，已结算结果继续保留。
 
 每个声明有一个槽位，终态为 resolved、hardError 或 missing。worker 与预计算软结果在发布槽位前立即执行 `applyToolResultLimit`；完成顺序绝不泄漏到 history、事件或 Store。共享 settlement/materialization routine 供两种模式使用，只有规划/dispatch 不同：
 

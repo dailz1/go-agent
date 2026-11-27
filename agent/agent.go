@@ -1193,7 +1193,11 @@ func (a *Agent) executeTool(ctx context.Context, call *llm.ToolUseBlock) (result
 		return tool.NewErrorResult("tool %q not found", call.Name), nil
 	}
 
-	if t.Info().RequiresApproval {
+	info, err := toolInfoAtPlannerBoundary(t)
+	if err != nil {
+		return nil, err
+	}
+	if info.RequiresApproval {
 		if a.approvalFn == nil {
 			return tool.NewErrorResult("tool %q requires approval but no approval callback is configured", call.Name), nil
 		}
@@ -1201,7 +1205,11 @@ func (a *Agent) executeTool(ctx context.Context, call *llm.ToolUseBlock) (result
 			"tool_name", call.Name,
 			"tool_call_id", call.ID,
 		)
-		if !a.approvalFn(t.Info(), call.Input) {
+		approved, err := a.approveAtPlannerBoundary(info, call.Input)
+		if err != nil {
+			return nil, err
+		}
+		if !approved {
 			a.logger.Warn("tool execution rejected",
 				"tool_name", call.Name,
 				"tool_call_id", call.ID,
