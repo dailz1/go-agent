@@ -7,6 +7,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestRecoveryCheckpointReserializesConfigAfterConflict(t *testing.T) {
@@ -15,7 +16,7 @@ func TestRecoveryCheckpointReserializesConfigAfterConflict(t *testing.T) {
 	if _, err := st.Append(t.Context(), "t", 0, log...); err != nil {
 		t.Fatal(err)
 	}
-	a := New(nil, nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	p, history, err := a.openSession(t.Context(), st, "t", "", true, false)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +43,7 @@ func TestRecoveryCheckpointReserializesConfigAfterConflict(t *testing.T) {
 
 func TestRecoveryRunStartRebasePreservesConfigSeqZero(t *testing.T) {
 	st := &injectBeforeStore{Store: store.NewMemory()}
-	a := New(nil, nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	p, _, err := a.openSession(t.Context(), st, "t", "input", false, false)
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +72,7 @@ func TestRecoveryCheckpointScanUsesLatestHead(t *testing.T) {
 				t.Fatal(err)
 			}
 			concurrent := &enqueueAfterLatestStore{Store: st}
-			a := New(nil, nil, WithStore(concurrent))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(concurrent))
 			v, err := a.replayThread(t.Context(), "t")
 			if err != nil || v.head != int64(len(log)) || len(v.queue) != 0 {
 				t.Fatalf("scan crossed Latest head: %+v, %v", v, err)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestSettleCodecCheckpointVersions(t *testing.T) {
@@ -27,7 +28,7 @@ func TestSettleCodecCheckpointVersions(t *testing.T) {
 			cancel := settleCodecCancel(t)
 			cancel.Payload = []byte(`{"run_id":"r","open_round":null,"results":[]}`)
 			st := settleCodecStore([]store.Record{start, cp, cancel})
-			a := New(nil, nil, WithStore(st))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 			v, err := a.replayThread(t.Context(), "t")
 			if schema < store.SchemaV3 {
 				// D9: pre-v3 snapshots are not trusted; full-log fallback
@@ -57,7 +58,7 @@ func TestSettleCodecCheckpointAfterCancellation(t *testing.T) {
 	if _, err := st.Append(t.Context(), "t", 0, records...); err != nil {
 		t.Fatal(err)
 	}
-	a := New(nil, nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	history := []llm.Message{llm.SystemMessage("frozen"), llm.UserMessage("compacted after cancel")}
 	p := &persistence{a: a, thread: "t", head: 4, cfgRead: 4, system: "frozen", runID: "next", lastRound: -1, open: -1, cfgSeq: -1}
 	before, err := a.replayThread(t.Context(), "t")
@@ -113,7 +114,7 @@ func TestSettleCodecRejectsFutureVersions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cp := store.Record{Kind: store.KindCheckpoint, Schema: tc.schema, ID: "cp", Payload: []byte(tc.payload)}
 			records := []store.Record{settleCodecPrefix(t)[0], cp}
-			a := New(nil, nil, WithStore(settleCodecStore(records)))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(settleCodecStore(records)))
 			if _, err := a.replayThread(t.Context(), "t"); !errors.Is(err, ErrIncompatibleLog) {
 				t.Fatalf("future checkpoint = %v, want incompatible", err)
 			}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestMeasurementReplacementClearsSameFold(t *testing.T) {
@@ -47,7 +48,7 @@ func TestMeasurementReplacementClearsSameFold(t *testing.T) {
 				if checkpoint {
 					records = append(records, cp)
 				}
-				a := New(nil, nil, WithStore(&scriptStore{records: records}))
+				a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: records}))
 				got, err := a.replayThread(t.Context(), "thread")
 				if err != nil || got.anchor != nil || measurementEstimate(got) != estimateRunes(short) {
 					t.Fatalf("checkpoint=%v replacement estimate: %+v, %v", checkpoint, got, err)
@@ -99,7 +100,7 @@ func TestMeasurementLiveReplacementAndCheckpointParity(t *testing.T) {
 			if !errors.Is(runErr, errMeasurementCrash) {
 				t.Fatal(runErr)
 			}
-			a = New(nil, nil, WithStore(reopen()))
+			a = New(NewMockProvider(), tool.NewRegistry(), WithStore(reopen()))
 			v, err := a.replayThread(t.Context(), "thread")
 			if err != nil || measurementEstimate(v) != liveEstimate || liveEstimate != estimateRunes(short) {
 				t.Fatalf("replacement live/replay estimate = %d/%d: %v", liveEstimate, measurementEstimate(v), err)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestSettleCodecCorruptCheckpointsFallBack(t *testing.T) {
@@ -19,7 +20,7 @@ func TestSettleCodecCorruptCheckpointsFallBack(t *testing.T) {
 				records := append(settleCodecPrefix(t), store.Record{
 					Kind: store.KindCheckpoint, Schema: schema, ID: "bad-cp", Payload: []byte(payload),
 				}, settleCodecCancel(t))
-				a := New(nil, nil, WithStore(settleCodecStore(records)))
+				a := New(NewMockProvider(), tool.NewRegistry(), WithStore(settleCodecStore(records)))
 				v, err := a.replayThread(t.Context(), "t")
 				if err != nil || !v.cancelled || v.open != nil || len(v.history) != 4 {
 					t.Fatalf("corrupt checkpoint fallback = %+v, %v", v, err)
@@ -34,7 +35,7 @@ func TestSettleCodecCorruptCheckpointsFallBack(t *testing.T) {
 
 func TestSettleCodecCheckpointCannotMasqueradeAsV1(t *testing.T) {
 	st := store.NewMemory()
-	a := New(nil, nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	p := &persistence{a: a, thread: "t", runID: "r", lastRound: -1, open: -1}
 	if err := p.checkpoint(t.Context(), []llm.Message{llm.UserMessage("compacted")}); err != nil {
 		t.Fatal(err)

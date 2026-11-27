@@ -10,6 +10,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestSettleCodecTornCancellationLine(t *testing.T) {
@@ -42,7 +43,7 @@ func TestSettleCodecTornCancellationLine(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { reopened.Close() })
-			a := New(nil, nil, WithStore(reopened))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(reopened))
 			v, err := a.replayThread(t.Context(), "t")
 			if err != nil {
 				t.Fatal(err)
@@ -89,7 +90,7 @@ func TestSettleCodecDetachedSnapshot(t *testing.T) {
 			} else if _, err := st.Append(t.Context(), "t", 0, append(settleCodecPrefix(t), settleCodecCancel(t))...); err != nil {
 				t.Fatal(err)
 			}
-			a := New(nil, nil, WithStore(st))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 			original, err := st.History(t.Context(), "t", 0)
 			if err != nil {
 				t.Fatal(err)

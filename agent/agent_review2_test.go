@@ -41,7 +41,7 @@ func TestReview2RejectedCompactionPreservesDurableHistory(t *testing.T) {
 	if _, err := st.Append(t.Context(), "thread", 0, log...); err != nil {
 		t.Fatal(err)
 	}
-	a := New(NewMockStreamingProvider(nil), nil, WithStore(st), WithLogger(discardLogger()),
+	a := New(NewMockStreamingProvider(nil), tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()),
 		WithCompactor(CompactFunc(func(_ context.Context, h []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 			// A successful custom strategy can return a valid partial reduction.
 			return CompactionResult{History: append(h[:1:1], h[2:]...), Changed: true}, nil
@@ -89,7 +89,7 @@ func TestReview2UnanchoredCompactionSizesHistoryOnce(t *testing.T) {
 		encodes := 0
 		block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)}, encodes: &encodes}
 		history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
-		a := New(NewMockProvider(), nil, WithLogger(discardLogger()))
+		a := New(NewMockProvider(), tool.NewRegistry(), WithLogger(discardLogger()))
 		if _, ok := a.compactHistoryRound(t.Context(), history, a.provider, nil,
 			func(AgentEvent, error) bool { return true }, nil, 100000, &contextRuntime{}); !ok {
 			t.Fatal("non-triggering window must keep the run alive")
@@ -109,7 +109,7 @@ func TestReview2UnanchoredCompactionSizesHistoryOnce(t *testing.T) {
 		history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{
 			&llm.TextBlock{Type: "text", Text: strings.Repeat("x", 1000)},
 		}}}
-		a := New(NewMockProvider(), nil, WithLogger(discardLogger()), WithCompactor(compactor))
+		a := New(NewMockProvider(), tool.NewRegistry(), WithLogger(discardLogger()), WithCompactor(compactor))
 		got, ok := a.compactHistoryRound(t.Context(), history, a.provider, nil,
 			func(AgentEvent, error) bool { return true }, nil, 100, &contextRuntime{})
 		if !ok {
@@ -188,7 +188,7 @@ func TestReview2SteeringHeadFitsExactAppendDelta(t *testing.T) {
 			if _, err := st.Append(t.Context(), "thread", 0, log...); err != nil {
 				t.Fatal(err)
 			}
-			a := New(NewMockProvider(), nil, WithStore(st))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 			p, history, err := a.openSession(t.Context(), st, "thread", "", true, false)
 			if err != nil {
 				t.Fatal(err)

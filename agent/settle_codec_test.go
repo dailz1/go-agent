@@ -49,7 +49,7 @@ func settleCodecStore(records []store.Record) *scriptStore {
 
 func TestSettleCodecClosesDeclaration(t *testing.T) {
 	records := append(settleCodecPrefix(t), settleCodecCancel(t))
-	a := New(nil, nil, WithStore(settleCodecStore(records)))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(settleCodecStore(records)))
 	v, err := a.replayThread(t.Context(), "t")
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestSettleCodecPreservesCommittedResults(t *testing.T) {
 	cancel := settleCodecCancel(t)
 	cancel.Payload = []byte(`{"run_id":"r","open_round":null,"results":[]}`)
 	records = append(records, cancel)
-	a := New(nil, nil, WithStore(settleCodecStore(records)))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(settleCodecStore(records)))
 	v, err := a.replayThread(t.Context(), "t")
 	if err != nil {
 		t.Fatal(err)

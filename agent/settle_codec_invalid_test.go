@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func TestSettleCodecRejectsMalformedCancellation(t *testing.T) {
@@ -93,7 +94,7 @@ func TestSettleCodecRejectsMalformedCancellation(t *testing.T) {
 				p["results"] = []byte("null")
 			}
 			r.Payload = mustJSON(t, p)
-			a := New(nil, nil, WithStore(settleCodecStore(append(prefix, r))))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(settleCodecStore(append(prefix, r))))
 			if _, err := a.ResumeThread(t.Context(), "t"); !errors.Is(err, ErrIncompatibleLog) {
 				t.Fatalf("malformed cancellation = %v, want ErrIncompatibleLog", err)
 			}

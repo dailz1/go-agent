@@ -9,6 +9,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 type measurementRetryStore struct {
@@ -78,7 +79,7 @@ func TestMeasurementRebaseRetriesImmutablePayload(t *testing.T) {
 				if matches != 1 {
 					t.Fatalf("response records = %d, want one", matches)
 				}
-				a = New(nil, nil, WithStore(reopened))
+				a = New(NewMockProvider(), tool.NewRegistry(), WithStore(reopened))
 				v, err := a.replayThread(t.Context(), "thread")
 				if err != nil || measurementEstimate(v) != 3000 {
 					t.Fatalf("retry/reopen measurement: %d, %v", measurementEstimate(v), err)

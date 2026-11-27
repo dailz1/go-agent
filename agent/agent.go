@@ -338,8 +338,21 @@ type RunResult struct {
 	ThreadID string
 }
 
-// New creates an Agent with the given LLM provider and tool registry.
+// New creates an Agent with the given LLM provider and tool registry. Both
+// positional arguments are required: New panics with "agent: nil provider"
+// or "agent: nil registry" before running any Option when either is nil
+// (issue #27). The check is a plain nil comparison — a typed-nil provider
+// (an interface holding a nil *T) passes this check, and construction still
+// calls Name(), so the implementation must be safe to invoke there. A
+// no-tools configuration passes tool.NewRegistry(), not nil.
+// WithProviders entries that are nil remain skipped as before.
 func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent {
+	if provider == nil {
+		panic("agent: nil provider")
+	}
+	if registry == nil {
+		panic("agent: nil registry")
+	}
 	a := &Agent{
 		provider:                   provider,
 		registry:                   registry,
@@ -374,9 +387,7 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	// is registered under its own Name first, WithProviders entries follow,
 	// and a later same-name registration replaces the earlier entry.
 	a.providers = make(map[string]llm.Provider, 1+len(a.altProviders))
-	if provider != nil {
-		a.providers[provider.Name()] = provider
-	}
+	a.providers[provider.Name()] = provider
 	for _, p := range a.altProviders {
 		if p != nil {
 			a.providers[p.Name()] = p

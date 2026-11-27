@@ -19,6 +19,106 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
+// altTestProvider renames an embedded MockProvider so TestNew can register a
+// second, differently named provider without leaving the package's own doubles.
+type altTestProvider struct {
+	*MockProvider
+	name string
+}
+
+func (p altTestProvider) Name() string { return p.name }
+
+// catchNewPanic runs fn and reports whether it panicked, plus the panic value.
+func catchNewPanic(fn func()) (value any, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			value, panicked = r, true
+		}
+	}()
+	fn()
+	return nil, false
+}
+
+func TestNew(t *testing.T) {
+	t.Run("nil provider", func(t *testing.T) {
+		t.Parallel()
+		optRan := false
+		value, panicked := catchNewPanic(func() {
+			New(nil, tool.NewRegistry(), func(*Agent) { optRan = true })
+		})
+		if !panicked {
+			t.Fatalf("New(nil, registry) did not panic")
+		}
+		if value != "agent: nil provider" {
+			t.Fatalf("panic value = %v, want \"agent: nil provider\"", value)
+		}
+		if optRan {
+			t.Fatalf("option ran before the nil-provider check")
+		}
+	})
+	t.Run("nil registry", func(t *testing.T) {
+		t.Parallel()
+		optRan := false
+		value, panicked := catchNewPanic(func() {
+			New(NewMockProvider(), nil, func(*Agent) { optRan = true })
+		})
+		if !panicked {
+			t.Fatalf("New(provider, nil) did not panic")
+		}
+		if value != "agent: nil registry" {
+			t.Fatalf("panic value = %v, want \"agent: nil registry\"", value)
+		}
+		if optRan {
+			t.Fatalf("option ran before the nil-registry check")
+		}
+	})
+	t.Run("both nil report provider first", func(t *testing.T) {
+		t.Parallel()
+		value, panicked := catchNewPanic(func() { New(nil, nil) })
+		if !panicked {
+			t.Fatalf("New(nil, nil) did not panic")
+		}
+		if value != "agent: nil provider" {
+			t.Fatalf("panic value = %v, want \"agent: nil provider\"", value)
+		}
+	})
+	t.Run("valid arguments", func(t *testing.T) {
+		t.Parallel()
+		provider := NewMockProvider()
+		registry := tool.NewRegistry()
+		a := New(provider, registry)
+		if a.provider != llm.Provider(provider) || a.registry != registry {
+			t.Fatalf("New dropped the positional arguments: provider=%v registry=%v", a.provider, a.registry)
+		}
+		if len(a.providers) != 1 || a.providers["mock"] != llm.Provider(provider) {
+			t.Fatalf("provider table = %v, want only the default under \"mock\"", a.providers)
+		}
+	})
+	t.Run("nil alternate skipped", func(t *testing.T) {
+		t.Parallel()
+		def := NewMockProvider()
+		alt := altTestProvider{NewMockProvider(), "alt"}
+		a := New(def, tool.NewRegistry(), WithProviders(nil, alt, nil))
+		if len(a.providers) != 2 {
+			t.Fatalf("provider table has %d entries, want 2 (nil entries skipped)", len(a.providers))
+		}
+		if a.providers["mock"] != llm.Provider(def) || a.providers["alt"] != llm.Provider(alt) {
+			t.Fatalf("provider table entries do not preserve the original instances: %v", a.providers)
+		}
+	})
+	t.Run("typed nil provider constructs", func(t *testing.T) {
+		t.Parallel()
+		var typedNil *MockProvider
+		a := New(typedNil, tool.NewRegistry())
+		if a.provider != llm.Provider(typedNil) {
+			t.Fatalf("a.provider = %v, want the typed-nil interface value", a.provider)
+		}
+		if len(a.providers) != 1 || a.providers["mock"] != llm.Provider(typedNil) {
+			t.Fatalf("provider table = %v, want the typed nil under \"mock\"", a.providers)
+		}
+	})
+}
+
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

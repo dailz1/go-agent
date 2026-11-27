@@ -51,7 +51,7 @@ func TestRecoveryCheckpointRoundTrip(t *testing.T) {
 				got.ConfigSeq == nil || *got.ConfigSeq != -1 {
 				t.Fatalf("checkpoint round trip = %+v, %v", got, err)
 			}
-			a := New(nil, nil, WithStore(&scriptStore{records: append(log, cp)}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: append(log, cp)}))
 			replayed, err := a.replayThread(t.Context(), "t")
 			if err != nil || !reflect.DeepEqual(replayed.recovery, v.recovery) || replayed.cfgSeq != -1 ||
 				!reflect.DeepEqual(replayed.history, v.history) {
@@ -146,7 +146,7 @@ func TestRecoveryCheckpointEntireProjectionMatchesCanonicalPrefix(t *testing.T) 
 					t.Fatalf("fixture is not structurally valid: %v", err)
 				}
 			}
-			a := New(nil, nil, WithStore(&scriptStore{records: append(log, cp)}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: append(log, cp)}))
 			got, err := a.replayThread(t.Context(), "t")
 			if err != nil || !reflect.DeepEqual(got.history, v.history) || got.system != v.system ||
 				!reflect.DeepEqual(got.cfg, v.cfg) || len(got.queue) != 0 ||
@@ -179,7 +179,7 @@ func TestRecoveryDamagedCheckpointCodecCannotPoisonFullReplay(t *testing.T) {
 					cp.ID, cp.Seq = "newer", int64(len(log))
 					log = append(log, cp)
 				}
-				a := New(nil, nil, WithStore(&scriptStore{records: log}))
+				a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: log}))
 				got, err := a.replayThread(t.Context(), "t")
 				if err != nil || !reflect.DeepEqual(got.recovery, v.recovery) || !reflect.DeepEqual(got.history, v.history) {
 					t.Fatalf("damaged optional codec poisoned replay: %+v, %v", got, err)
@@ -258,7 +258,7 @@ func TestRecoveryLegacyCheckpointCannotHideV4(t *testing.T) {
 				cp.Schema = store.SchemaV4
 				cp.Payload = []byte(`{"codec_version":4,"history":"corrupt"}`)
 			}
-			a := New(nil, nil, WithStore(&scriptStore{records: append(log, cp)}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: append(log, cp)}))
 			v, err := a.replayThread(t.Context(), "t")
 			if err != nil || v.recovery == nil || v.recovery.Phase != "ready" ||
 				len(v.history) != 1 || len(messageString(v.history[0])) != 600 {
@@ -288,7 +288,7 @@ func TestRecoveryConfigSequenceZero(t *testing.T) {
 				r.Schema, r.Seq = version, 2
 				log = append(log, r)
 			}
-			a := New(nil, nil, WithStore(&scriptStore{records: log}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: log}))
 			v, err := a.replayThread(t.Context(), "t")
 			if err != nil || v.cfgSeq != 0 || v.cfg.Model == nil || *v.cfg.Model != model {
 				t.Fatalf("seq zero lost: %+v, %v", v, err)
@@ -302,7 +302,7 @@ func TestRecoveryConfigSequenceZero(t *testing.T) {
 			}
 		})
 	}
-	a := New(nil, nil, WithStore(store.NewMemory()))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(store.NewMemory()))
 	v, err := a.replayThread(t.Context(), "empty")
 	if err != nil || v.cfgSeq != -1 {
 		t.Fatalf("no config must be -1: %d, %v", v.cfgSeq, err)
@@ -315,7 +315,7 @@ func TestRecoveryCheckpointWriterCarriesLiveProjection(t *testing.T) {
 	if _, err := st.Append(t.Context(), "t", 0, log...); err != nil {
 		t.Fatal(err)
 	}
-	a := New(nil, nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	v, err := a.replayThread(t.Context(), "t")
 	if err != nil {
 		t.Fatal(err)

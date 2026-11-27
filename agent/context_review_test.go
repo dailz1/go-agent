@@ -94,7 +94,7 @@ func TestReviewFinishRoundCopyIsolatesReasoningSummary(t *testing.T) {
 
 func TestReviewUnanchoredZeroTargetWarnsAndContinues(t *testing.T) {
 	called := false
-	a := New(NewMockProvider(), nil, WithCompactionThresholdPercent(60), WithCompactor(CompactFunc(
+	a := New(NewMockProvider(), tool.NewRegistry(), WithCompactionThresholdPercent(60), WithCompactor(CompactFunc(
 		func(context.Context, []llm.Message, CompactionBudget, llm.Provider, []llm.Option) (CompactionResult, error) {
 			called = true
 			return CompactionResult{}, errMeasurementCrash
@@ -126,7 +126,7 @@ func TestReviewUnnamedProviderRoundTrip(t *testing.T) {
 				if _, err := st.Append(t.Context(), "thread", v.head, measurementCheckpoint(t, v)); err != nil {
 					t.Fatal(err)
 				}
-				a = New(p, nil, WithStore(reopen()))
+				a = New(p, tool.NewRegistry(), WithStore(reopen()))
 				v, err = a.replayThread(t.Context(), "thread")
 				if err != nil {
 					t.Fatalf("checkpoint replay: %v", err)
@@ -183,7 +183,7 @@ func TestReviewUnanchoredOverlayKeepsCanonicalCap(t *testing.T) {
 	for _, changed := range []bool{false, true} {
 		t.Run(map[bool]string{true: "changed", false: "unchanged"}[changed], func(t *testing.T) {
 			history := []llm.Message{llm.UserMessage(strings.Repeat("x", 650))}
-			a := New(NewMockProvider(), nil, WithCompactionThresholdPercent(60),
+			a := New(NewMockProvider(), tool.NewRegistry(), WithCompactionThresholdPercent(60),
 				WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) { return "overlay", nil }),
 				WithCompactor(CompactFunc(func(_ context.Context, h []llm.Message, _ CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 					if changed {
@@ -216,7 +216,7 @@ func (b *reviewMutableBlock) MarshalJSON() ([]byte, error) {
 func TestReviewUnknownEncoderFreshCandidate(t *testing.T) {
 	block := &reviewMutableBlock{TextBlock: &llm.TextBlock{Type: "text", Text: "small"}}
 	history := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{block}}}
-	a := New(NewMockProvider(), nil, WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
+	a := New(NewMockProvider(), tool.NewRegistry(), WithRoundContextProvider(func(context.Context, RoundContextRequest) (string, error) {
 		block.Text = strings.Repeat("grown", 500)
 		return "snapshot", nil
 	}))
@@ -258,7 +258,7 @@ func TestReviewDrainRecomputesAfterConfigAbsorption(t *testing.T) {
 			if _, err := base.Append(t.Context(), "thread", 0, log...); err != nil {
 				t.Fatal(err)
 			}
-			a := New(NewMockProvider(), nil, WithStore(st))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 			p, history, err := a.openSession(t.Context(), st, "thread", "", true, false)
 			if err != nil {
 				t.Fatal(err)
@@ -393,7 +393,7 @@ func TestReviewDefaultToSameNamedAlternateDropsAnchor(t *testing.T) {
 }
 
 func aReviewView(ctx context.Context, st store.Store) (threadView, error) {
-	return New(nil, nil, WithStore(st)).replayThread(ctx, "thread")
+	return New(NewMockProvider(), tool.NewRegistry(), WithStore(st)).replayThread(ctx, "thread")
 }
 
 func TestReviewV3CheckpointV4TailUsesCanonicalRounds(t *testing.T) {
@@ -410,7 +410,7 @@ func TestReviewV3CheckpointV4TailUsesCanonicalRounds(t *testing.T) {
 	}
 	log[1].Schema = store.SchemaV3
 	log = sequenceRecoveryLog(log)
-	a := New(nil, nil, WithStore(&scriptStore{records: log}))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: log}))
 	v, err := a.replayThread(t.Context(), "thread")
 	if err != nil || v.lastRound != -1 || !historyContainsText(v.history, "canonical summary") {
 		t.Fatalf("stale v3 snapshot interpreted v4 tail: round=%d err=%v", v.lastRound, err)
@@ -434,7 +434,7 @@ func TestReviewWideUsageCompactionAndOverlayBudgets(t *testing.T) {
 				want.Quo(want, new(big.Int).SetUint64(e))
 				expected := min(w, runes-1, int(want.Int64()))
 				seen := -1
-				a := New(NewMockProvider(), nil, WithCompactionThresholdPercent(100),
+				a := New(NewMockProvider(), tool.NewRegistry(), WithCompactionThresholdPercent(100),
 					WithCompactor(CompactFunc(func(_ context.Context, h []llm.Message, b CompactionBudget, _ llm.Provider, _ []llm.Option) (CompactionResult, error) {
 						seen = b.MaxRunes
 						return CompactionResult{History: h}, nil
@@ -482,7 +482,7 @@ func TestReviewDispatchReusesIdentityAndSkipsUnusedEstimate(t *testing.T) {
 		{stream: true, err: llm.ErrStreamingNotSupported},
 		{msg: &llm.Message{Role: llm.RoleAssistant}},
 	}}}
-	a := New(provider, nil, WithRetryConfig(AgentRetryConfig{MaxRetries: 1, BaseDelay: time.Nanosecond}))
+	a := New(provider, tool.NewRegistry(), WithRetryConfig(AgentRetryConfig{MaxRetries: 1, BaseDelay: time.Nanosecond}))
 	measurement := requestMeasurement(provider, nil, nil)
 	provider.names, encodes = 0, 0
 	r := &overflowRecovery{a: a, provider: provider, window: 8192, context: &contextRuntime{}, measurement: measurement}
@@ -546,7 +546,7 @@ func TestReviewAppendRetainsUnreadControlTail(t *testing.T) {
 	}
 	// A preceding idempotent write returned head=2 while only its own
 	// record through seq=0 was folded. The control at seq=1 is unread.
-	p := &persistence{a: New(nil, nil, WithStore(st)), thread: "thread", head: 2, cfgRead: 1, cfgSeq: -1}
+	p := &persistence{a: New(NewMockProvider(), tool.NewRegistry(), WithStore(st)), thread: "thread", head: 2, cfgRead: 1, cfgSeq: -1}
 	reply := mustRecord(t, store.KindRoundDeclared, "r-d0", roundDeclaredPayload{
 		RunID: "r", Round: 0, Kind: terminalTextDeclaration, Message: llm.AssistantMessage("reply"),
 	})

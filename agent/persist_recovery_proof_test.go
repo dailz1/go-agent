@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func recoverySupersededFixture(t *testing.T, checkpoint bool) []store.Record {
@@ -61,7 +62,7 @@ func TestRecoverySupersededUsesFrozenVersion(t *testing.T) {
 	for _, checkpoint := range []bool{false, true} {
 		t.Run(map[bool]string{false: "full log", true: "checkpoint tail"}[checkpoint], func(t *testing.T) {
 			log := recoverySupersededFixture(t, checkpoint)
-			a := New(nil, nil, WithStore(&scriptStore{records: log}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: log}))
 			v, err := a.replayThread(t.Context(), "t")
 			if err != nil || v.recovery != nil || v.cfg.Model == nil || *v.cfg.Model != "C" ||
 				v.cfgSeq != int64(len(log)-2) {
@@ -166,7 +167,7 @@ func TestRecoverySupersededRejectsUnprovedSelection(t *testing.T) {
 			}
 			log = tc.mutate(log, &p)
 			log[len(log)-1].Payload = mustJSON(t, p)
-			a := New(nil, nil, WithStore(&scriptStore{records: log}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: log}))
 			v, err := a.replayThread(t.Context(), "t")
 			if !errors.Is(err, ErrIncompatibleLog) || v.recovery == nil {
 				t.Fatalf("unproved supersession = %+v, %v", v.recovery, err)
@@ -228,7 +229,7 @@ func TestRecoverySettlementConfirmationSupersededPrefix(t *testing.T) {
 			if _, err := st.Append(t.Context(), "t", 0, append(log, cancel)...); err != nil {
 				t.Fatal(err)
 			}
-			a := New(nil, nil, WithStore(st))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 			target := SettlementToken{ThreadID: "t", RunID: "r", ExpectedHead: h}
 			err = a.confirmSettlement(t.Context(), target)
 			switch {

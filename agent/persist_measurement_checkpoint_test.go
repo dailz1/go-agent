@@ -50,7 +50,7 @@ func TestMeasurementCheckpointCanonicalParity(t *testing.T) {
 					if _, err := st.Append(t.Context(), "thread", 0, append(log, cp)...); err != nil {
 						t.Fatal(err)
 					}
-					a := New(nil, nil, WithStore(reopen()))
+					a := New(NewMockProvider(), tool.NewRegistry(), WithStore(reopen()))
 					replayed, err := a.replayThread(t.Context(), "thread")
 					if err != nil {
 						t.Fatal(err)
@@ -92,7 +92,7 @@ func TestMeasurementCorruptCheckpointProjectionFallsBack(t *testing.T) {
 				raw := mutateRecoveryJSON(t, store.Record{Payload: mustJSON(t, v.anchor)}, tc.key, value)
 				cp = mutateRecoveryJSON(t, cp, "context_anchor", raw.Payload)
 			}
-			a := New(nil, nil, WithStore(&scriptStore{records: append(log, cp)}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: append(log, cp)}))
 			replayed, err := a.replayThread(t.Context(), "thread")
 			if err != nil || measurementEstimate(replayed) != 2000 {
 				t.Fatalf("corrupt checkpoint overrode canonical usage: %d, %v", measurementEstimate(replayed), err)
@@ -122,7 +122,7 @@ func TestMeasurementOldCheckpointCannotHideSchemaV5(t *testing.T) {
 			}
 			cp := mustRecord(t, store.KindCheckpoint, "old", payload)
 			cp.Schema, cp.Seq = version, int64(len(log))
-			a := New(nil, nil, WithStore(&scriptStore{records: append(log, cp)}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: append(log, cp)}))
 			replayed, err := a.replayThread(t.Context(), "thread")
 			if err != nil || measurementEstimate(replayed) != 2000 || historyContainsText(replayed.history, "stale") {
 				t.Fatalf("old checkpoint hid schema 5: %+v, %v", replayed, err)

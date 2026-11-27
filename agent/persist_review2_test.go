@@ -10,6 +10,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 // Simulate an ambiguous write whose identical retry is confirmed only after
@@ -55,7 +56,7 @@ func TestReview2ResponseConfirmationConfigOrder(t *testing.T) {
 					recordKind = store.KindAgentEvent
 				}
 				st := &review2LaterHeadStore{Store: store.NewMemory(), kind: recordKind, change: cp}
-				a := New(NewMockProvider(), nil, WithStore(st), WithLLMOptions(llm.WithModel("x")))
+				a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st), WithLLMOptions(llm.WithModel("x")))
 				p, history, err := a.openSession(t.Context(), st, "thread", "q", false, false)
 				if err != nil {
 					t.Fatal(err)
@@ -133,7 +134,7 @@ func TestReview2OpeningAppendFoldsControlTail(t *testing.T) {
 				kind = store.KindRoundCommitted
 			}
 			st := &review2LaterHeadStore{Store: base, kind: kind, change: configChangedPayload{Thinking: strptr("enabled")}}
-			a := New(NewMockProvider(), nil, WithStore(st))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 			p, history, err := a.openSession(t.Context(), st, "thread", "next", resume, false)
 			if err != nil {
 				t.Fatal(err)
@@ -160,7 +161,7 @@ func TestReview2OpeningAppendFoldsControlTail(t *testing.T) {
 
 func TestReview2CheckpointFoldsControlTail(t *testing.T) {
 	st := &review2LaterHeadStore{Store: store.NewMemory(), kind: store.KindCheckpoint, change: configChangedPayload{Thinking: strptr("enabled")}}
-	a := New(NewMockProvider(), nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	p, history, err := a.openSession(t.Context(), st, "thread", "q", false, false)
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +195,7 @@ func TestReview2DurableInputSuffixMatchesReplay(t *testing.T) {
 	if _, err := st.Append(t.Context(), "thread", 0, append(log, closed)...); err != nil {
 		t.Fatal(err)
 	}
-	a := New(NewMockProvider(), nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	p, history, err := a.openSession(t.Context(), st, "thread", "invalid\xff\xfeinput", false, false)
 	if err != nil {
 		t.Fatal(err)

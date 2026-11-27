@@ -10,6 +10,7 @@ import (
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/store"
+	"github.com/dailz1/go-agent/tool"
 )
 
 func episodeIndexLog(t *testing.T, n int) []store.Record {
@@ -57,7 +58,7 @@ func TestRecoveryEpisodeReuseRejectedAcrossCheckpoint(t *testing.T) {
 			pending.BeforeRunes = estimateRunes(append(deepCopyMessages(v.history), llm.UserMessage("next")))
 			pending.RejectedOutboundRunes = pending.BeforeRunes
 			log = sequenceRecoveryLog(append(log, cancel, start, recoveryRecord(t, store.KindContextRecovery, pending)))
-			a := New(nil, nil, WithStore(&scriptStore{records: log}))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: log}))
 			if _, err := a.replayThread(t.Context(), "t"); !errors.Is(err, ErrIncompatibleLog) {
 				t.Fatalf("episode index lost at checkpoint boundary: %v", err)
 			}
@@ -102,7 +103,7 @@ func TestRecoverySessionIndexesAvoidEpisodeLogReads(t *testing.T) {
 			if _, err := st.Append(t.Context(), "t", 0, episodeIndexLog(t, 3)...); err != nil {
 				t.Fatal(err)
 			}
-			a := New(nil, nil, WithStore(st), WithLogger(discardLogger()))
+			a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st), WithLogger(discardLogger()))
 			sess, history, err := a.openSession(t.Context(), st, "t", "next", false, false)
 			if err != nil {
 				t.Fatal(err)
@@ -165,7 +166,7 @@ func TestRecoveryReplacementRetryIdentityAcrossCheckpoint(t *testing.T) {
 					retry = mutateRecoveryJSON(t, retry, "history", mustJSON(t, []llm.Message{llm.UserMessage("conflicting")}))
 				}
 				retry.Seq = int64(len(log))
-				a := New(nil, nil, WithStore(&scriptStore{records: append(log, retry)}))
+				a := New(NewMockProvider(), tool.NewRegistry(), WithStore(&scriptStore{records: append(log, retry)}))
 				got, err := a.replayThread(t.Context(), "t")
 				if conflict {
 					if !errors.Is(err, ErrIncompatibleLog) {

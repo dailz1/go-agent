@@ -139,7 +139,7 @@ func TestRecoveryLegacyCheckpointWriteAnchorsBeforeV5(t *testing.T) {
 	if _, err := st.Append(t.Context(), "recovery", 0, records...); err != nil {
 		t.Fatal(err)
 	}
-	a := New(nil, nil, WithStore(st))
+	a := New(NewMockProvider(), tool.NewRegistry(), WithStore(st))
 	p, h, err := a.openSession(t.Context(), st, "recovery", "", true, false)
 	if err != nil {
 		t.Fatal(err)

@@ -55,6 +55,7 @@
 
 ## 4. 设计原则
 
+- **Agent 构造契约（issue #27）。** `agent.New(provider, registry, opts...)` 要求位置参数 provider 和 registry 非 nil；检查在创建 Agent 默认配置、执行 opts 和归一数值之前完成。provider 为 nil 时 panic 值为 `"agent: nil provider"`，registry 为 nil 时为 `"agent: nil registry"`；两者均为 nil 时先报告 provider。检查使用直接 nil 比较，不检测 Provider 接口中携带的 nil 指针（typed-nil），调用方须保证具体实现可用，构造过程仍会调用其 `Name()`。无工具配置使用非 nil 空注册表 `tool.NewRegistry()`，nil registry 不表示关闭工具。`WithProviders` 中为 nil 的接口元素继续跳过，其他注册顺序和同名覆盖行为保持不变。
 - **内核装机制，扩展包装策略。** 压缩算法、记忆整理、进化方法都是策略；存储接口、事件模型、截断边界都是机制。
 - **观察用事件，改行为用包装。** 事件流只读；要改变行为就包装 `Tool` 或 `Provider`（中间件模式），不给 hook 随意改写流量的权限。
   - 包装器守则（P2-1）:

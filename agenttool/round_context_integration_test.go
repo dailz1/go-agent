@@ -92,7 +92,8 @@ func TestAgentToolRoundContextProviderDoesNotInherit(t *testing.T) {
 
 func TestAgentToolNestedRunInterruptedErrorKeepsParentThread(t *testing.T) {
 	childErr := errors.New("child snapshot failed")
-	child := agent.New(nil, tool.NewRegistry(),
+	childProvider := &roundContextSequenceProvider{}
+	child := agent.New(childProvider, tool.NewRegistry(),
 		agent.WithStore(store.NewMemory()),
 		agent.WithRoundContextProvider(func(context.Context, agent.RoundContextRequest) (string, error) {
 			return "", childErr
@@ -116,6 +117,9 @@ func TestAgentToolNestedRunInterruptedErrorKeepsParentThread(t *testing.T) {
 	}
 	if !errors.Is(err, childErr) || len(threadIDs) != 2 || threadIDs[0] != "parent-thread" || threadIDs[1] == "parent-thread" {
 		t.Fatalf("error chain = %v, thread IDs = %v; want parent then distinct child wrapper", err, threadIDs)
+	}
+	if len(childProvider.requests) != 0 {
+		t.Fatalf("child provider got %d model requests; want 0 (round context callback fails before the request)", len(childProvider.requests))
 	}
 }
 
