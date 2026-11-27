@@ -78,6 +78,8 @@ func rankTools(infos []tool.ToolInfo, query []string) []rankedTool {
 	if len(infos) == 0 || len(query) == 0 {
 		return nil
 	}
+	// Duplicate query tokens would double-count in the score sum; keep
+	// one copy per token, in first-seen order.
 	unique := make([]string, 0, len(query))
 	seenQuery := make(map[string]struct{}, len(query))
 	for _, q := range query {
@@ -120,9 +122,14 @@ func rankTools(infos []tool.ToolInfo, query []string) []rankedTool {
 			if tf == 0 {
 				continue
 			}
+			// Standard BM25 term: Lucene-variant IDF times TF saturation
+			// with document-length normalization (dl/avgdl).
 			idf := math.Log(1 + (float64(len(infos))-float64(df[q])+0.5)/(float64(df[q])+0.5))
 			score += idf * tf * (bm25K1 + 1) / (tf + bm25K1*(1-bm25B+bm25B*dl/avgdl))
 		}
+		// Under this IDF variant a term present in more than half the
+		// catalog scores negative and can only drag a document down;
+		// skipping non-positive scores keeps matches positive-only.
 		if score <= 0 {
 			continue
 		}
