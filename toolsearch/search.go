@@ -88,6 +88,26 @@ func marshalInfo(info tool.ToolInfo) ([]byte, error) {
 	return normalizeJSON(b), nil
 }
 
+// logRecord carries the completion-log payload out of publish so Execute
+// logs after the lock is released, preserving today's unlock-then-log order.
+type logRecord struct {
+	names     []string
+	refreshed []string
+	total     int
+}
+
+// publication is planPublication's output: what publish would apply to
+// exposed and owned if executed. It only references fresh allocations, so
+// an abandoned plan (soft error, failed Apply) leaves no trace.
+type publication struct {
+	added          []tool.Tool
+	removed        []string
+	pending        map[string]*forwardTool
+	newNames       []string
+	refreshedNames []string
+	newSet         map[string]struct{}
+}
+
 func (t *searchTool) Execute(ctx context.Context, args json.RawMessage) (*tool.ToolResult, error) {
 	s := t.s
 	query, limit, perr := parseSearchArgs(args, s.cfg.limit)
@@ -101,97 +121,112 @@ func (t *searchTool) Execute(ctx context.Context, args json.RawMessage) (*tool.T
 	if muWaitHook != nil {
 		muWaitHook()
 	}
-	s.mu.Lock()
-	if err := ctx.Err(); err != nil {
-		s.mu.Unlock()
+	result, rec, err := t.publish(ctx, query, limit)
+	if err != nil {
 		return nil, err
+	}
+	if rec != nil {
+		s.cfg.logger.Info("toolsearch loaded",
+			slog.Any("tool_names", rec.names),
+			slog.Any("refreshed_names", rec.refreshed),
+			slog.Int("loaded_total", rec.total))
+	}
+	return result, nil
+}
+
+// publish holds s.mu for its entire body; the deferred Unlock covers every
+// exit, so early returns below never unlock by hand. Soft failures return
+// (result, nil, nil); cancellation returns (nil, nil, err). rec is nil
+// unless the publication changed the exposed registry.
+func (t *searchTool) publish(ctx context.Context, query string, limit int) (*tool.ToolResult, *logRecord, error) {
+	s := t.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	infos := s.source.List()
 	if runes := catalogRunes(infos, int64(s.cfg.catalogLimit)); runes > int64(s.cfg.catalogLimit) {
-		s.mu.Unlock()
-		return tool.NewErrorResult("toolsearch catalog uses %d runes over the %d limit; shrink the deferred pool or raise WithCatalogLimit", runes, s.cfg.catalogLimit), nil
+		return tool.NewErrorResult("toolsearch catalog uses %d runes over the %d limit; shrink the deferred pool or raise WithCatalogLimit", runes, s.cfg.catalogLimit), nil, nil
 	}
 	tokens := tokenize(query)
 	if len(tokens) == 0 {
-		s.mu.Unlock()
-		return tool.NewErrorResult("query produced no search tokens; use English words or at least two adjacent CJK characters"), nil
+		return tool.NewErrorResult("query produced no search tokens; use English words or at least two adjacent CJK characters"), nil, nil
 	}
 	ranked := rankTools(infos, tokens)
 	if len(ranked) > limit {
 		ranked = ranked[:limit]
 	}
 
-	var added []tool.Tool
-	var removed []string
-	var newNames, refreshedNames []string
-	pending := make(map[string]*forwardTool)
-	newSet := make(map[string]struct{})
+	plan, soft := planPublication(s, ranked)
+	if soft != nil {
+		return soft, nil, nil
+	}
+	if len(plan.added) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if err := s.exposed.Apply(plan.removed, plan.added); err != nil {
+			return tool.NewErrorResult("toolsearch publish failed: %v", err), nil, nil
+		}
+		for name, wrapper := range plan.pending {
+			s.owned[name] = wrapper
+		}
+	}
+	var rec *logRecord
+	if len(plan.added) > 0 {
+		rec = &logRecord{names: plan.newNames, refreshed: plan.refreshedNames, total: len(s.owned)}
+	}
+	return searchResult(ranked, plan.newSet, len(infos) == 0), rec, nil
+}
+
+// planPublication decides, per ranked candidate, fresh load, in-place
+// refresh, or skip, and reports conflicts or MaxLoaded overflow as a soft
+// error. It reads s.exposed, s.owned and s.cfg, so the caller must hold
+// s.mu; every write targets fresh allocations inside the returned plan.
+func planPublication(s *Search, ranked []rankedTool) (*publication, *tool.ToolResult) {
+	plan := &publication{
+		pending: make(map[string]*forwardTool),
+		newSet:  make(map[string]struct{}),
+	}
 	for _, r := range ranked {
 		current, registered := s.exposed.Get(r.name)
 		wrapper, wasOwned := s.owned[r.name]
 		if wasOwned && (!registered || current != tool.Tool(wrapper)) {
-			s.mu.Unlock()
-			return tool.NewErrorResult("toolsearch cannot load %q: the loaded name was taken over or removed outside this instance", r.name), nil
+			return nil, tool.NewErrorResult("toolsearch cannot load %q: the loaded name was taken over or removed outside this instance", r.name)
 		}
 		if registered && !wasOwned {
-			s.mu.Unlock()
-			return tool.NewErrorResult("toolsearch cannot load %q: the name is registered outside this instance", r.name), nil
+			return nil, tool.NewErrorResult("toolsearch cannot load %q: the name is registered outside this instance", r.name)
 		}
 		if registered {
 			infoJSON, merr := marshalInfo(r.info)
 			if merr != nil {
-				s.mu.Unlock()
-				return tool.NewErrorResult("toolsearch cannot load %q: %v", r.name, merr), nil
+				return nil, tool.NewErrorResult("toolsearch cannot load %q: %v", r.name, merr)
 			}
 			if !bytes.Equal(infoJSON, wrapper.infoJSON) {
 				fresh := &forwardTool{source: s.source, name: r.name, searchName: s.cfg.toolName, frozenInfo: r.info, infoJSON: infoJSON}
-				removed = append(removed, r.name)
-				added = append(added, fresh)
-				refreshedNames = append(refreshedNames, r.name)
-				pending[r.name] = fresh
+				plan.removed = append(plan.removed, r.name)
+				plan.added = append(plan.added, fresh)
+				plan.refreshedNames = append(plan.refreshedNames, r.name)
+				plan.pending[r.name] = fresh
 			}
 			continue
 		}
-		if len(s.owned)+len(newNames) >= s.cfg.maxLoaded {
-			s.mu.Unlock()
-			return tool.NewErrorResult("toolsearch would exceed MaxLoaded (%d); raise the limit or start a fresh exposed registry", s.cfg.maxLoaded), nil
+		if len(s.owned)+len(plan.newNames) >= s.cfg.maxLoaded {
+			return nil, tool.NewErrorResult("toolsearch would exceed MaxLoaded (%d); raise the limit or start a fresh exposed registry", s.cfg.maxLoaded)
 		}
 		infoJSON, merr := marshalInfo(r.info)
 		if merr != nil {
-			s.mu.Unlock()
-			return tool.NewErrorResult("toolsearch cannot load %q: %v", r.name, merr), nil
+			return nil, tool.NewErrorResult("toolsearch cannot load %q: %v", r.name, merr)
 		}
-		newNames = append(newNames, r.name)
-		newSet[r.name] = struct{}{}
+		plan.newNames = append(plan.newNames, r.name)
+		plan.newSet[r.name] = struct{}{}
 		fresh := &forwardTool{source: s.source, name: r.name, searchName: s.cfg.toolName, frozenInfo: r.info, infoJSON: infoJSON}
-		added = append(added, fresh)
-		pending[r.name] = fresh
+		plan.added = append(plan.added, fresh)
+		plan.pending[r.name] = fresh
 	}
-
-	if len(added) > 0 {
-		if err := ctx.Err(); err != nil {
-			s.mu.Unlock()
-			return nil, err
-		}
-		if err := s.exposed.Apply(removed, added); err != nil {
-			s.mu.Unlock()
-			return tool.NewErrorResult("toolsearch publish failed: %v", err), nil
-		}
-		for name, wrapper := range pending {
-			s.owned[name] = wrapper
-		}
-	}
-	total := len(s.owned)
-	s.mu.Unlock()
-
-	if len(added) > 0 {
-		s.cfg.logger.Info("toolsearch loaded",
-			slog.Any("tool_names", newNames),
-			slog.Any("refreshed_names", refreshedNames),
-			slog.Int("loaded_total", total))
-	}
-
-	return searchResult(ranked, newSet, len(infos) == 0), nil
+	return plan, nil
 }
 
 // searchResult renders the ranked candidates as the model-visible summary.
