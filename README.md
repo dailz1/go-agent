@@ -71,9 +71,10 @@ explicit opt-in. Codex omits output-cap fields even for positive `WithMaxTokens`
 so the configured cap is **not guaranteed**. It does not fall back to paid API-key
 requests. Live service acceptance is separate from deterministic protocol tests.
 
-Recording v3 preserves `APIError.NonRetryable` and Codex/auth error chains; its
-reader remains strictly compatible with v1/v2 recordings. The added APIError
-field requires updating any external unkeyed struct literals.
+Recording v4 preserves `APIError.NonRetryable` and Codex/auth error chains, and
+adds `stream_incomplete`/`unexpected_eof` error kinds; its reader remains
+strictly compatible with v1/v2/v3 recordings. The added APIError field requires
+updating any external unkeyed struct literals.
 
 ## Coding assistant harness
 

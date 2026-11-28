@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"net"
 	"net/url"
@@ -15,7 +16,7 @@ import (
 	"github.com/dailz1/go-agent/tool"
 )
 
-// Replayer implements llm.Provider from strict v1, v2, and v3 Recorder payloads.
+// Replayer implements llm.Provider from strict v1, v2, v3, and v4 Recorder payloads.
 type Replayer struct{ script *ScriptedProvider }
 
 func NewReplayer(recording []byte) (*Replayer, error) {
@@ -132,6 +133,10 @@ func decodeError(encoded *dtoError) (error, error) {
 		return context.DeadlineExceeded, nil
 	case "streaming_not_supported":
 		return llm.ErrStreamingNotSupported, nil
+	case "stream_incomplete":
+		return replaySentinelError{message: encoded.Message, cause: llm.ErrStreamIncomplete}, nil
+	case "unexpected_eof":
+		return replaySentinelError{message: encoded.Message, cause: io.ErrUnexpectedEOF}, nil
 	case "api":
 		return &llm.APIError{StatusCode: encoded.StatusCode, RetryAfter: encoded.RetryAfter, Body: encoded.Body, NonRetryable: encoded.NonRetryable}, nil
 	case "codex", "codex_auth":
@@ -166,6 +171,14 @@ func decodeError(encoded *dtoError) (error, error) {
 		return nil, incompatiblef("unknown error type %q", encoded.Kind)
 	}
 }
+
+type replaySentinelError struct {
+	message string
+	cause   error
+}
+
+func (e replaySentinelError) Error() string { return e.message }
+func (e replaySentinelError) Unwrap() error { return e.cause }
 
 type replayNetError struct {
 	message            string

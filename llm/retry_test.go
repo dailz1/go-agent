@@ -2,10 +2,14 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"syscall"
 	"testing"
@@ -53,6 +57,17 @@ func TestIsNetworkError(t *testing.T) {
 		{"wrapped connection refused", fmt.Errorf("dial: %w", syscall.ECONNREFUSED), true},
 		{"wrapped connection reset", fmt.Errorf("read: %w", syscall.ECONNRESET), true},
 		{"wrapped broken pipe", fmt.Errorf("write: %w", syscall.EPIPE), true},
+		{"unexpected EOF", io.ErrUnexpectedEOF, true},
+		{"wrapped unexpected EOF", fmt.Errorf("read: %w", io.ErrUnexpectedEOF), true},
+		{"incomplete stream", ErrStreamIncomplete, true},
+		{"wrapped incomplete stream", fmt.Errorf("provider: %w", ErrStreamIncomplete), true},
+		{"clean EOF", io.EOF, false},
+		{"JSON decode", &json.SyntaxError{Offset: 1}, false},
+		{"URL-wrapped cancellation", &url.Error{Err: context.Canceled}, false},
+		{"URL-wrapped deadline", &url.Error{Err: context.DeadlineExceeded}, false},
+		{"cancellation before incomplete", errors.Join(ErrStreamIncomplete, context.Canceled), false},
+		{"capability before incomplete", errors.Join(ErrStreamIncomplete, ErrStreamingNotSupported), false},
+		{"API before unexpected EOF", errors.Join(io.ErrUnexpectedEOF, &APIError{StatusCode: 500}), false},
 		{"APIError 429", &APIError{StatusCode: 429}, false},
 		{"APIError 500", &APIError{StatusCode: 500}, false},
 		{"context.Canceled", context.Canceled, false},
@@ -64,6 +79,49 @@ func TestIsNetworkError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsNetworkError(tt.err); got != tt.want {
 				t.Errorf("IsNetworkError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsNetworkErrorHTTPTimeoutExcluded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	for _, name := range []string{"client timeout", "parent timeout"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			client := *srv.Client()
+			if name == "client timeout" {
+				client.Timeout = 20 * time.Millisecond
+			} else {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
+				defer cancel()
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, readErr := io.ReadAll(response.Body)
+			if err := response.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !errors.Is(readErr, context.DeadlineExceeded) || IsNetworkError(readErr) {
+				t.Fatalf("timeout classification = %v, network = %v", readErr, IsNetworkError(readErr))
+			}
+			if name == "client timeout" && ctx.Err() != nil {
+				t.Fatalf("client timeout canceled parent: %v", ctx.Err())
+			}
+			if name == "parent timeout" && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				t.Fatalf("parent timeout did not expire parent: %v", ctx.Err())
 			}
 		})
 	}

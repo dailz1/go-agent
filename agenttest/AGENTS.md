@@ -10,7 +10,7 @@ Public deterministic test doubles for downstream consumers (the kernel's own in-
 | Record real provider | record.go:34 — `Recorder` (`NewRecorder` :42); wraps a real Provider, Name = "agenttest_recorder(<inner>)" :41 |
 | Replay recordings | replay.go:17 — `Replayer` (`NewReplayer` :19); order-strict incl. stream position |
 | Tool doubles | tool.go — ToolFunc/ToolCall recording |
-| Wire decode | wire_decode.go:15-38 — hand-rolled strict decoder; version gate accepts 1|recordingVersion |
+| Wire decode | wire_decode.go:15-38 — hand-rolled strict decoder; version gate accepts v1–v4 (recordingVersion=4) |
 
 ## CONVENTIONS (differs from parent)
 - Recording grammar is pointer-form only (single-form sealed unions, issue #24); `UnsupportedChunkError` was removed — pointer chunks encode normally.

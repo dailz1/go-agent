@@ -8,7 +8,7 @@ import (
 
 func decodeWireError(raw json.RawMessage, version int, parent string) (*dtoError, error) {
 	fields := []string{"kind", "message", "status_code", "retry_after", "body", "errno"}
-	if version == 3 {
+	if version == 3 || version == 4 {
 		fields = append(fields, "non_retryable", "category", "code", "retry_at", "stage", "temporary", "login_required", "cause")
 		if err := scanV2SchemaValue(json.NewDecoder(bytes.NewReader(raw))); err != nil {
 			return nil, incompatiblef("error object: %v", err)
@@ -28,15 +28,19 @@ func decodeWireError(raw json.RawMessage, version int, parent string) (*dtoError
 		"network_timeout": {"kind", "message"}, "network_temporary": {"kind", "message"},
 		"network_url": {"kind", "message"}, "network_errno": {"kind", "errno"}, "generic": {"kind", "message"},
 	}
-	if version == 3 {
+	if version == 3 || version == 4 {
 		allowed["api"] = append(allowed["api"], "non_retryable")
 		allowed["codex"] = []string{"kind", "category", "code", "retry_at", "cause"}
 		allowed["codex_auth"] = []string{"kind", "stage", "code", "temporary", "login_required", "message", "cause"}
 	}
+	if version == 4 {
+		allowed["stream_incomplete"] = []string{"kind", "message"}
+		allowed["unexpected_eof"] = []string{"kind", "message"}
+	}
 	if !wireOnly(object, allowed[kind]) || !validErrorCause(parent, kind) {
 		return nil, incompatiblef("invalid error type, field, or cause %q", kind)
 	}
-	if version == 3 {
+	if version == 3 || version == 4 {
 		for _, field := range allowed[kind] {
 			value, err := wireRaw(object, field)
 			if err != nil {
@@ -57,10 +61,10 @@ func decodeWireError(raw json.RawMessage, version int, parent string) (*dtoError
 		if err == nil {
 			err = wireValue(object, "body", &out.Body)
 		}
-		if err == nil && version == 3 {
+		if err == nil && (version == 3 || version == 4) {
 			err = wireValue(object, "non_retryable", &out.NonRetryable)
 		}
-	case "network_timeout", "network_temporary", "network_url", "generic":
+	case "network_timeout", "network_temporary", "network_url", "generic", "stream_incomplete", "unexpected_eof":
 		err = wireValue(object, "message", &out.Message)
 	case "network_errno":
 		err = wireValue(object, "errno", &out.Errno)

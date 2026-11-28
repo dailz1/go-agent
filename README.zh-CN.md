@@ -71,9 +71,9 @@ go test ./examples/approval -count=1
 **不保证输出低于配置值**。不会回退到按 API-key 计费的请求。
 真实服务验收与确定性协议测试分开。
 
-录制 v3 保留 `APIError.NonRetryable` 及 Codex/auth 错误链；新 reader
-继续严格兼容 v1/v2。APIError 新增字段要求外部无字段名的结构体字面量
-同步调整。
+录制 v4 保留 `APIError.NonRetryable` 及 Codex/auth 错误链，并新增
+`stream_incomplete`/`unexpected_eof` 错误类别；新 reader 继续严格兼容
+v1/v2/v3。APIError 新增字段要求外部无字段名的结构体字面量同步调整。
 
 ## 编码助手 harness
 

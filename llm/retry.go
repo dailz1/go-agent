@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -157,6 +158,9 @@ func IsNetworkError(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrStreamIncomplete) {
+		return true
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr != nil && (netErr.Timeout() || netErr.Temporary()) {

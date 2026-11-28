@@ -115,11 +115,25 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		yieldedDone := false
 		for frame, err := range sse.Scan(ctx, result.Body) {
 			if err != nil {
+				if cancel := ctx.Err(); cancel != nil {
+					yield(nil, cancel)
+					return
+				}
+				if yieldedDone {
+					return
+				}
 				yield(nil, err)
 				return
 			}
 			chunks, err := p.parseStreamEvent(frame.Data, delivered)
 			if err != nil {
+				if cancel := ctx.Err(); cancel != nil {
+					yield(nil, cancel)
+					return
+				}
+				if yieldedDone {
+					return
+				}
 				var overflow *llm.ContextOverflowError
 				if errors.As(err, &overflow) && !frame.CompleteJSON() {
 					err = overflow.Err
@@ -128,16 +142,20 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 				return
 			}
 			for _, c := range chunks {
-				if _, ok := c.(*llm.DoneChunk); ok {
-					yieldedDone = true
-				}
 				if !yield(c, nil) {
 					return
 				}
+				if done, ok := c.(*llm.DoneChunk); ok && done != nil && done.FinishReason != "" {
+					yieldedDone = true
+				}
 			}
 		}
+		if cancel := ctx.Err(); cancel != nil {
+			yield(nil, cancel)
+			return
+		}
 		if !yieldedDone {
-			yield(nil, fmt.Errorf("openairesponses: stream ended without a completed response"))
+			yield(nil, fmt.Errorf("openairesponses: stream ended without a completed response: %w", llm.ErrStreamIncomplete))
 		}
 	}, nil
 }

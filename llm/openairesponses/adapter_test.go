@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
@@ -516,5 +518,190 @@ func TestToolOutputItemImageParts(t *testing.T) {
 	}
 	if out.parts[2].Type != "input_image" || out.parts[2].ImageURL != "data:image/png;base64,cG5n" {
 		t.Errorf("parts[2] = %+v, want inline data-URL form", out.parts[2])
+	}
+}
+
+func TestChatStreamCompletionWindow(t *testing.T) {
+	const text = "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\n"
+	const tool = "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"lookup\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{}\"}\n\n"
+	const complete = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
+	const badJSON = "data: invalid-json\n\n"
+	for _, tc := range []struct {
+		name, payload              string
+		tail, want                 error
+		completed, content, cancel bool
+	}{
+		{name: "clean close control", payload: text + tool + complete, tail: io.EOF, completed: true, content: true},
+		{name: "reset after completion with usage", payload: text + tool + complete, tail: syscall.ECONNRESET, completed: true, content: true},
+		{name: "bad JSON after completion", payload: text + tool + complete + badJSON, tail: io.EOF, completed: true, content: true},
+		{name: "bad JSON before completion", payload: text + tool + badJSON, tail: io.EOF, want: errCompletionJSON, content: true},
+		{name: "empty EOF", tail: io.EOF, want: llm.ErrStreamIncomplete},
+		{name: "partial text EOF", payload: text + tool, tail: io.EOF, want: llm.ErrStreamIncomplete, content: true},
+		{name: "usage without completion", payload: "data: {\"type\":\"response.created\",\"response\":{\"usage\":{\"input_tokens\":7}}}\n\n", tail: io.EOF, want: llm.ErrStreamIncomplete},
+		{name: "DONE only", payload: "data: [DONE]\n\n", tail: io.EOF, want: llm.ErrStreamIncomplete},
+		{name: "reset before completion", payload: text + tool, tail: syscall.ECONNRESET, want: syscall.ECONNRESET, content: true},
+		{name: "cancel after completion with reset", payload: text + tool + complete, tail: syscall.ECONNRESET, want: context.Canceled, completed: true, content: true, cancel: true},
+		{name: "cancel after completion with EOF", payload: text + tool + complete, tail: io.EOF, want: context.Canceled, completed: true, content: true, cancel: true},
+		{name: "cancel after completion with bad JSON", payload: text + tool + complete + badJSON, tail: io.EOF, want: context.Canceled, completed: true, content: true, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			body := &completionBody{Reader: strings.NewReader(tc.payload), tail: tc.tail}
+			transport := &completionTransport{body: body}
+			p := NewProvider("key", "model", WithHTTPClient(&http.Client{Transport: transport}))
+			seq, err := p.ChatStream(ctx, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got error
+			var text, args string
+			var dones, starts int
+			var tokens int64
+			for chunk, err := range seq {
+				if err != nil {
+					got = err
+					continue
+				}
+				switch c := chunk.(type) {
+				case *llm.TextDeltaChunk:
+					text += c.Text
+				case *llm.ToolCallStartChunk:
+					starts++
+					if c.ID != "call" || c.Name != "lookup" {
+						t.Fatalf("tool start = %#v", c)
+					}
+				case *llm.ToolCallArgsChunk:
+					args += c.Delta
+				case *llm.DoneChunk:
+					dones++
+					if c.Usage != nil {
+						tokens = c.Usage.InputTokens
+					}
+					if tc.cancel {
+						cancel()
+					}
+				}
+			}
+			if tc.want == errCompletionJSON {
+				var syntax *json.SyntaxError
+				if !errors.As(got, &syntax) || llm.IsNetworkError(got) {
+					t.Fatalf("JSON error = %v", got)
+				}
+			} else if tc.want == nil {
+				if got != nil {
+					t.Fatalf("tail error escaped completion: %v", got)
+				}
+			} else if !errors.Is(got, tc.want) {
+				t.Fatalf("error = %v, want %v", got, tc.want)
+			}
+			wantDone, wantTokens := 0, int64(0)
+			if tc.completed {
+				wantDone, wantTokens = 1, 7
+			}
+			if dones != wantDone || tokens != wantTokens {
+				t.Fatalf("done=%d tokens=%d, want %d/%d", dones, tokens, wantDone, wantTokens)
+			}
+			if tc.content && (text != "hello" || args != "{}" || starts != 1) {
+				t.Fatalf("text=%q args=%q starts=%d", text, args, starts)
+			}
+			if transport.calls != 1 {
+				t.Fatalf("requests = %d", transport.calls)
+			}
+			if tc.tail == syscall.ECONNRESET && !tc.cancel && body.tailReads != 1 {
+				t.Fatalf("injected error not read: %d", body.tailReads)
+			}
+		})
+	}
+}
+
+var errCompletionJSON = errors.New("expected JSON decode failure")
+
+type completionBody struct {
+	*strings.Reader
+	tail      error
+	tailReads int
+}
+
+func (b *completionBody) Read(p []byte) (int, error) {
+	if b.Reader.Len() != 0 {
+		return b.Reader.Read(p)
+	}
+	b.tailReads++
+	return 0, b.tail
+}
+func (*completionBody) Close() error { return nil }
+
+type completionTransport struct {
+	body  io.ReadCloser
+	calls int
+}
+
+func (r *completionTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.calls++
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: r.body}, nil
+}
+
+func TestChatStreamCompletionPrecedesFailureFrames(t *testing.T) {
+	const completed = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":7}}}\n\n"
+	for _, failure := range []struct {
+		name, payload, message string
+		overflow               bool
+	}{
+		{"failed", "{\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"boom\"}}}", "response failed", false},
+		{"failed overflow", "{\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"boom\"}}}", "response failed", true},
+		{"incomplete", "{\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}", "response incomplete: max_output_tokens", false},
+		{"error", "{\"type\":\"error\",\"code\":\"server_error\",\"message\":\"boom\"}", "stream error", false},
+		{"error overflow", "{\"type\":\"error\",\"code\":\"context_length_exceeded\",\"message\":\"boom\"}", "stream error", true},
+	} {
+		for _, stage := range []string{"before completion", "after completion", "canceled after completion"} {
+			t.Run(failure.name+"/"+stage, func(t *testing.T) {
+				payload := "data: " + failure.payload + "\n\n"
+				if stage != "before completion" {
+					payload = completed + payload
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				transport := &completionTransport{body: &completionBody{Reader: strings.NewReader(payload), tail: io.EOF}}
+				p := NewProvider("key", "model", WithHTTPClient(&http.Client{Transport: transport}))
+				seq, err := p.ChatStream(ctx, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got error
+				var dones int
+				for chunk, err := range seq {
+					if err != nil {
+						got = err
+					}
+					if _, ok := chunk.(*llm.DoneChunk); ok {
+						dones++
+						if stage == "canceled after completion" {
+							cancel()
+						}
+					}
+				}
+				switch stage {
+				case "before completion":
+					if got == nil || !strings.Contains(got.Error(), failure.message) || errors.Is(got, llm.ErrContextOverflow) != failure.overflow || errors.Is(got, llm.ErrStreamIncomplete) || llm.IsNetworkError(got) {
+						t.Fatalf("failure classification = %v", got)
+					}
+					if dones != 0 {
+						t.Fatalf("done chunks = %d", dones)
+					}
+				case "after completion":
+					if got != nil || dones != 1 {
+						t.Fatalf("done=%d error=%v", dones, got)
+					}
+				case "canceled after completion":
+					if !errors.Is(got, context.Canceled) || dones != 1 {
+						t.Fatalf("done=%d error=%v", dones, got)
+					}
+				}
+				if transport.calls != 1 {
+					t.Fatalf("requests = %d", transport.calls)
+				}
+			})
+		}
 	}
 }

@@ -227,25 +227,43 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 		yieldedDone := false
 		for payload, err := range llm.ScanSSEEvents(ctx, result.Body) {
 			if err != nil {
+				if cancel := ctx.Err(); cancel != nil {
+					yield(nil, cancel)
+					return
+				}
+				if yieldedDone {
+					return
+				}
 				yield(nil, err)
 				return
 			}
 			chunks, err := parseStreamPayload(payload)
 			if err != nil {
+				if cancel := ctx.Err(); cancel != nil {
+					yield(nil, cancel)
+					return
+				}
+				if yieldedDone {
+					return
+				}
 				yield(nil, fmt.Errorf("openai: %w", err))
 				return
 			}
 			for _, c := range chunks {
-				if _, ok := c.(*llm.DoneChunk); ok {
-					yieldedDone = true
-				}
 				if !yield(c, nil) {
 					return
 				}
+				if done, ok := c.(*llm.DoneChunk); ok && done != nil && done.FinishReason != "" {
+					yieldedDone = true
+				}
 			}
 		}
+		if cancel := ctx.Err(); cancel != nil {
+			yield(nil, cancel)
+			return
+		}
 		if !yieldedDone {
-			yield(nil, fmt.Errorf("openai: stream ended without completion"))
+			yield(nil, fmt.Errorf("openai: stream ended without completion: %w", llm.ErrStreamIncomplete))
 		}
 	}, nil
 }

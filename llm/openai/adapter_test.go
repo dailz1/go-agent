@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -242,7 +243,7 @@ func TestProvider_ChatStreamEmptyPayloadAtEOFStillSentinel(t *testing.T) {
 			lastErr = streamErr
 		}
 	}
-	if lastErr == nil || !strings.Contains(lastErr.Error(), "stream ended without completion") {
+	if !errors.Is(lastErr, llm.ErrStreamIncomplete) || !strings.Contains(lastErr.Error(), "stream ended without completion") {
 		t.Fatalf("final error = %v, want stream-ended-without-completion sentinel", lastErr)
 	}
 }
@@ -367,8 +368,8 @@ func TestProvider_ChatStreamWithoutCompletionYieldsError(t *testing.T) {
 			gotErr = streamErr
 		}
 	}
-	if gotErr == nil || gotErr.Error() != "openai: stream ended without completion" {
-		t.Fatalf("stream error = %v, want openai: stream ended without completion", gotErr)
+	if !errors.Is(gotErr, llm.ErrStreamIncomplete) || !strings.HasPrefix(gotErr.Error(), "openai: stream ended without completion: ") {
+		t.Fatalf("stream error = %v, want wrapped ErrStreamIncomplete", gotErr)
 	}
 }
 
@@ -1786,4 +1787,125 @@ func TestConvertToolDefs_ExtendedSchemaWire(t *testing.T) {
 	if string(got) != want {
 		t.Fatalf("wire JSON = %s\nwant %s", got, want)
 	}
+}
+
+// Issue 29: completion retains all delivered content despite a broken tail.
+func TestChatStreamCompletionWindow(t *testing.T) {
+	const text = `data: {"choices":[{"delta":{"content":"hello","tool_calls":[{"index":0,"id":"call","function":{"name":"lookup","arguments":"{}"}}]}}]}` + "\n\n"
+	const finish = `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"
+	const usage = `data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}` + "\n\n"
+	const sameFrame = `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}` + "\n\n"
+	const badJSON = "data: invalid-json\n\n"
+	for _, tc := range []struct {
+		name, payload   string
+		tail, want      error
+		dones, tokens   int
+		content, cancel bool
+	}{
+		{name: "clean close control", payload: text + finish, tail: io.EOF, dones: 1, content: true},
+		{name: "reset after finish before usage", payload: text + finish, tail: syscall.ECONNRESET, dones: 1, content: true},
+		{name: "finish and usage same frame then reset", payload: text + sameFrame, tail: syscall.ECONNRESET, dones: 1, tokens: 7, content: true},
+		{name: "usage after finish then reset", payload: text + finish + usage, tail: syscall.ECONNRESET, dones: 2, tokens: 7, content: true},
+		{name: "bad JSON after finish", payload: text + finish + badJSON, tail: io.EOF, dones: 1, content: true},
+		{name: "bad JSON before finish", payload: text + badJSON, tail: io.EOF, want: errCompletionJSON, content: true},
+		{name: "empty EOF", tail: io.EOF, want: llm.ErrStreamIncomplete},
+		{name: "partial text EOF", payload: text, tail: io.EOF, want: llm.ErrStreamIncomplete, content: true},
+		{name: "usage only EOF", payload: usage, tail: io.EOF, want: llm.ErrStreamIncomplete, dones: 1, tokens: 7},
+		{name: "DONE only", payload: "data: [DONE]\n\n", tail: io.EOF, want: llm.ErrStreamIncomplete},
+		{name: "reset before finish", payload: text, tail: syscall.ECONNRESET, want: syscall.ECONNRESET, content: true},
+		{name: "cancel after finish with reset", payload: text + finish, tail: syscall.ECONNRESET, want: context.Canceled, dones: 1, content: true, cancel: true},
+		{name: "cancel after finish with EOF", payload: text + finish, tail: io.EOF, want: context.Canceled, dones: 1, content: true, cancel: true},
+		{name: "cancel after finish with bad JSON", payload: text + finish + badJSON, tail: io.EOF, want: context.Canceled, dones: 1, content: true, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			body := &completionBody{Reader: strings.NewReader(tc.payload), tail: tc.tail}
+			transport := &completionTransport{body: body}
+			p := NewProvider("key", "model", WithHTTPClient(&http.Client{Transport: transport}))
+			seq, err := p.ChatStream(ctx, []llm.Message{llm.UserMessage("hi")}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got error
+			var text, args string
+			var dones, tokens, starts int
+			for chunk, err := range seq {
+				if err != nil {
+					got = err
+					continue
+				}
+				switch c := chunk.(type) {
+				case *llm.TextDeltaChunk:
+					text += c.Text
+				case *llm.ToolCallStartChunk:
+					starts++
+					if c.ID != "call" || c.Name != "lookup" {
+						t.Fatalf("tool start = %#v", c)
+					}
+				case *llm.ToolCallArgsChunk:
+					args += c.Delta
+				case *llm.DoneChunk:
+					dones++
+					if c.Usage != nil {
+						tokens = int(c.Usage.InputTokens)
+					}
+					if tc.cancel {
+						cancel()
+					}
+				}
+			}
+			if tc.want == errCompletionJSON {
+				var syntax *json.SyntaxError
+				if !errors.As(got, &syntax) || llm.IsNetworkError(got) {
+					t.Fatalf("JSON error = %v", got)
+				}
+			} else if tc.want == nil {
+				if got != nil {
+					t.Fatalf("tail error escaped completion: %v", got)
+				}
+			} else if !errors.Is(got, tc.want) {
+				t.Fatalf("error = %v, want %v", got, tc.want)
+			}
+			if dones != tc.dones || tokens != tc.tokens {
+				t.Fatalf("done=%d tokens=%d, want %d/%d", dones, tokens, tc.dones, tc.tokens)
+			}
+			if tc.content && (text != "hello" || args != "{}" || starts != 1) {
+				t.Fatalf("text=%q args=%q starts=%d", text, args, starts)
+			}
+			if transport.calls != 1 {
+				t.Fatalf("requests = %d, want 1", transport.calls)
+			}
+			if tc.tail == syscall.ECONNRESET && !tc.cancel && body.tailReads != 1 {
+				t.Fatalf("injected read error not reached: %d", body.tailReads)
+			}
+		})
+	}
+}
+
+var errCompletionJSON = errors.New("expected JSON decode failure")
+
+type completionBody struct {
+	*strings.Reader
+	tail      error
+	tailReads int
+}
+
+func (b *completionBody) Read(p []byte) (int, error) {
+	if b.Reader.Len() != 0 {
+		return b.Reader.Read(p)
+	}
+	b.tailReads++
+	return 0, b.tail
+}
+func (*completionBody) Close() error { return nil }
+
+type completionTransport struct {
+	body  io.ReadCloser
+	calls int
+}
+
+func (r *completionTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.calls++
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: r.body}, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"net"
 	"net/url"
@@ -127,7 +128,7 @@ func (r *Recorder) Bytes() ([]byte, error) {
 	return json.Marshal(dtoRecording{Version: recordingVersion, Exchanges: append([]dtoExchange(nil), r.exchanges...)})
 }
 
-const recordingVersion = 3
+const recordingVersion = 4
 
 type dtoRecording struct {
 	Version   int           `json:"version"`
@@ -243,6 +244,12 @@ func encodeLegacyError(err error) *dtoError {
 	var api *llm.APIError
 	if errors.As(err, &api) && api != nil {
 		return &dtoError{Kind: "api", StatusCode: api.StatusCode, RetryAfter: api.RetryAfter, Body: api.Body, NonRetryable: api.NonRetryable}
+	}
+	if errors.Is(err, llm.ErrStreamIncomplete) {
+		return &dtoError{Kind: "stream_incomplete", Message: err.Error()}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return &dtoError{Kind: "unexpected_eof", Message: err.Error()}
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr != nil && llm.IsNetworkError(err) && (netErr.Timeout() || netErr.Temporary()) {

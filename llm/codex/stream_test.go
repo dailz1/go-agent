@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/dailz1/go-agent/llm"
@@ -105,4 +107,59 @@ func sse(events ...string) string {
 		fmt.Fprintf(&b, "data: %s\n\n", event)
 	}
 	return b.String()
+}
+
+func TestStreamCompletionAndReadFailure(t *testing.T) {
+	const completed = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}"
+	for _, tc := range []struct {
+		name, payload string
+		tail, want    error
+		done          bool
+	}{
+		{"completed never reads broken tail", sse(completed), syscall.ECONNRESET, nil, true},
+		{"read error before completion", "", syscall.ECONNRESET, syscall.ECONNRESET, false},
+		{"empty EOF", "", io.EOF, llm.ErrStreamIncomplete, false},
+		{"DONE only", sse("[DONE]"), io.EOF, llm.ErrStreamIncomplete, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &completionReader{Reader: strings.NewReader(tc.payload), tail: tc.tail}
+			var got error
+			var dones int
+			for chunk, err := range scanResponse(t.Context(), body) {
+				if err != nil {
+					got = err
+				}
+				if c, ok := chunk.(*llm.DoneChunk); ok {
+					dones++
+					if c.Usage == nil || c.Usage.InputTokens != 7 {
+						t.Fatalf("usage = %#v", c.Usage)
+					}
+				}
+			}
+			if tc.done {
+				if got != nil || dones != 1 || body.tailReads != 0 {
+					t.Fatalf("done=%d error=%v tailReads=%d", dones, got, body.tailReads)
+				}
+			} else {
+				var protocol *Error
+				if !errors.Is(got, tc.want) || !errors.As(got, &protocol) || protocol.Kind != KindProtocol || !llm.IsNetworkError(got) || dones != 0 {
+					t.Fatalf("done=%d error=%v", dones, got)
+				}
+			}
+		})
+	}
+}
+
+type completionReader struct {
+	*strings.Reader
+	tail      error
+	tailReads int
+}
+
+func (r *completionReader) Read(p []byte) (int, error) {
+	if r.Reader.Len() != 0 {
+		return r.Reader.Read(p)
+	}
+	r.tailReads++
+	return 0, r.tail
 }

@@ -20,8 +20,7 @@
 一个 round 内消费者可见事件的顺序是全序：
 
 ```
-RetryEvent*                    （仅当本轮模型调用发生流前重试；每次尝试前一条）
-CompactionEvent?               （仅当本轮顶部压缩实际生效；至多一条）
+(RetryEvent / CompactionEvent)* （首次 delta 前，按实际执行顺序；Retry 表示传输重试）
 ThinkingDeltaEvent* / TextDeltaEvent*   （按 provider 流的原始交错顺序）
 ToolCallEvent{N}               （连续批次，declaration order，无 ctx 检查）
 ToolResultEvent{N}             （与 TC 一一配对，declaration order）
@@ -52,7 +51,7 @@ DoneEvent                      （恒为最后一个事件）
 - **break 行为**：普通轮 break 保持 resumable；恢复保留已记录结果，只对未记录调用补 outcome-unknown，不重投历史 TR。最后一个 TR 上 break 也可能留下未关闭轮，此时恢复只补轮关闭。终端 skip 批 break 只停投递。
 
 ### RetryEvent
-- **何时发**：仅流前失败（连接/鉴权/非 2xx）触发的每次重试尝试前一条。流内 SSE 错误永不重试、永不发 RetryEvent。
+- **何时发**：流前可重试失败，或零交付带内网络分类失败，在剩余额度内每次重试前一条。已有 chunk 的失败不重试。压缩恢复不发 RetryEvent。
 - **到达保证**：尽力通知；重试最终结果（每次尝试的完整明细）以 `DoneEvent.Retries` 为准，消费者可以完全不处理 RetryEvent。
 - **break 行为**：在 RetryEvent 上 break 会中止整个 run（包括挂起中的重试）。
 

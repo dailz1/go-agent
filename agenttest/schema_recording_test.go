@@ -68,7 +68,7 @@ func TestReplayerV3RetainsV2SchemaGrammar(t *testing.T) {
 	}
 }
 
-func TestRecorderWritesV3ExtendedSchema(t *testing.T) {
+func TestRecorderWritesV4ExtendedSchema(t *testing.T) {
 	var schema tool.ParameterSchema
 	if err := schema.UnmarshalJSON([]byte(extendedRecordingSchema)); err != nil {
 		t.Fatalf("unmarshal schema: %v", err)
@@ -82,7 +82,7 @@ func TestRecorderWritesV3ExtendedSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recording bytes: %v", err)
 	}
-	if !strings.Contains(string(recording), `"version":3`) {
+	if !strings.Contains(string(recording), `"version":4`) {
 		t.Fatalf("recording version = %s", recording)
 	}
 	replay, err := NewReplayer(recording)

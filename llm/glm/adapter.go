@@ -322,13 +322,28 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 
 	return func(yield func(llm.Chunk, error) bool) {
 		defer result.Cleanup()
+		yieldedDone := false
 		for frame, err := range sse.Scan(ctx, result.Body) {
 			if err != nil {
+				if cancel := ctx.Err(); cancel != nil {
+					yield(nil, cancel)
+					return
+				}
+				if yieldedDone {
+					return
+				}
 				yield(nil, err)
 				return
 			}
 			chunks, err := parseStreamPayload(frame.Data)
 			if err != nil {
+				if cancel := ctx.Err(); cancel != nil {
+					yield(nil, cancel)
+					return
+				}
+				if yieldedDone {
+					return
+				}
 				var overflow *llm.ContextOverflowError
 				if errors.As(err, &overflow) && !frame.CompleteJSON() {
 					err = overflow.Err
@@ -340,7 +355,17 @@ func (p *Provider) ChatStream(ctx context.Context, messages []llm.Message, tools
 				if !yield(c, nil) {
 					return
 				}
+				if done, ok := c.(*llm.DoneChunk); ok && done != nil && done.FinishReason != "" {
+					yieldedDone = true
+				}
 			}
+		}
+		if cancel := ctx.Err(); cancel != nil {
+			yield(nil, cancel)
+			return
+		}
+		if !yieldedDone {
+			yield(nil, fmt.Errorf("glm: stream ended without completion: %w", llm.ErrStreamIncomplete))
 		}
 	}, nil
 }

@@ -487,8 +487,9 @@ func TestReviewDispatchReusesIdentityAndSkipsUnusedEstimate(t *testing.T) {
 	provider.names, encodes = 0, 0
 	r := &overflowRecovery{a: a, provider: provider, window: 8192, context: &contextRuntime{}, measurement: measurement}
 	request := RoundContextRequest{}
+	retry := a.newProviderRetryState()
 	var retries []RetryInfo
-	result := r.chatWithRetryAndFallback(t.Context(), history, nil, &request,
+	result := r.chatWithRetryAndFallback(t.Context(), history, nil, &request, &retry,
 		func(AgentEvent, error) bool { return true }, &retries)
 	if result.err != nil || result.stream == nil || request.Attempt != 3 {
 		t.Fatalf("fallback failed: attempts=%d err=%v", request.Attempt, result.err)

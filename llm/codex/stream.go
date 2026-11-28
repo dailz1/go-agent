@@ -60,7 +60,7 @@ func scanResponse(ctx context.Context, body io.Reader) iter.Seq2[llm.Chunk, erro
 			yield(nil, ctx.Err())
 			return
 		}
-		yield(nil, protocolError("stream ended without completed response"))
+		yield(nil, protocolError("stream ended without completed response: %w", llm.ErrStreamIncomplete))
 	}
 }
 

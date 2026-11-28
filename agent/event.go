@@ -89,7 +89,8 @@ type RetryInfo struct {
 }
 
 // RetryEvent is emitted before each retry attempt in RunStream.
-// It is ONLY emitted for pre-stream connection errors. Mid-stream SSE errors are NOT retried.
+// It covers retryable setup failures and zero-delivery in-band network failures.
+// Failures after any delivered chunk are not retried.
 type RetryEvent struct {
 	RetryInfo
 }

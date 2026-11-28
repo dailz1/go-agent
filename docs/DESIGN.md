@@ -77,7 +77,7 @@ Agent 不保存对话进度，Run 不修改构造策略；实例允许诊断缓�
     - Provider 包装器原样传递 messages/tools/options/usage 与外层、迭代内错误；流式包装器不得预先 range，保持 `iter.Seq2` 对消费者的惰性与早退安全（本守则约束的是 range 迭代器，不禁止适配器在 ChatStream 调用时同步完成建连）；限流许可横跨迭代器生命周期（自然结束与早退都要释放）。
     - 日志示例只记元数据（名称、ID、长度）或显式截断/脱敏载荷，不逐字复制 prompt/参数/结果。可运行示例见 `examples/middleware`。
     - `agenttool` 是行为包装器：原样传递 ctx；malformed input、子 Agent 截断或无最终文本是软 `ToolResult`，子 `Run` 的 Go error 必须 `%w` 硬传；外层与子层 approval 各自生效，禁止注入子事件。每个 `New` 返回的 adapter 用 context-aware 单槽 gate 串行其子 `Run`；同一 child 的多个 adapter 不互锁，调用方负责共享 Provider、Compactor、Store、Registry 与子 Tool 的并发安全。
-- **ChatStream 建连两形态契约。** 适配器可选择在 ChatStream 调用时同步建连（eager），或推迟到首次 range（lazy）；建连/鉴权/非 2xx 等流前失败 SHOULD 以同步 error 返回，使循环层 pre-stream 重试覆盖它们（仅同步通道可重试，见 "仅 ChatStream 直接返回的可重试 error 触发既有 retry"）；迭代器 yield 的错误仍是带内终态、永不重试（issue #18，2026-11-20）唯一例外：已被主 Provider 边界 `errors.Is(llm.ErrContextOverflow)` 确认的分类超长且本次请求尚未交付任何 chunk——"已交付"按本次调用收到的任何非 nil `llm.Chunk` 判断（typed-nil 指针、包装与未知 chunk 都算，chunk 与 error 同次返回按已有 chunk 处理，未映射为 chunk 的原始 SSE lifecycle 帧不算），不按原始 payload 是否含文字猜测；此时可在当前调用内走反应式恢复（契约见 P1「Provider 超长分类与反应式恢复」），强制交接顺序：消费循环内仅记录 started/原错误/失败请求基线估算 → 退出 range → 原 iterator 与全部同步包装器完成退出与资源释放（响应体关闭、许可释放）→ 复检取消 → 才允许持久化恢复标记、调用 Compactor 或发起下一次请求，其中任何后段不得在 yield 回调或尚未退出的 range 内启动（修订：评审 F4）；其余中流错误照旧终止、永不重试。openai、glm、openairesponses 与 codex 四家仓内适配器固定 eager（codex 的 OAuth 解析与一次性 401 恢复随同步建连完成）；lazy 形态仍是对第三方 Provider 实现开放的合法选择。eager 形态下 ChatStream 成功返回即持有打开的响应体：调用方必须 range 至完成或早退（早退安全），或取消 ctx；推迟首次 range 会持续占用连接并消耗客户端超时预算，从不 range 且不取消会悬挂连接与看门狗 goroutine。
+- **ChatStream 建连两形态契约。** 适配器可选择在 ChatStream 调用时同步建连（eager），或推迟到首次 range（lazy）；建连/鉴权/非 2xx 等流前失败 SHOULD 以同步 error 返回，使循环层 pre-stream 重试覆盖它们（同步失败沿用既有策略；带内失败仅允许下列零交付例外）；迭代器 yield 的错误默认是终态；零交付时有两项例外：网络分类错误共享本轮传输重试额度与通知；分类超长沿既有反应式恢复处理。反应式恢复要求主 Provider 边界 `errors.Is(llm.ErrContextOverflow)` 确认分类超长，且本次请求尚未交付任何 chunk——"已交付"按本次调用收到的任何非 nil `llm.Chunk` 判断（typed-nil 指针、包装与未知 chunk 都算，chunk 与 error 同次返回按已有 chunk 处理，未映射为 chunk 的原始 SSE lifecycle 帧不算），不按原始 payload 是否含文字猜测；此时可在当前调用内走反应式恢复（契约见 P1「Provider 超长分类与反应式恢复」），强制交接顺序：消费循环内仅记录 started/原错误/失败请求基线估算 → 退出 range → 原 iterator 与全部同步包装器完成退出与资源释放（响应体关闭、许可释放）→ 复检取消 → 才允许持久化恢复标记、调用 Compactor 或发起下一次请求，其中任何后段不得在 yield 回调或尚未退出的 range 内启动（修订：评审 F4）；完成后尾部读流、解析或显式协议失败由适配器停止上报，父 ctx 取消优先，usage 只保留已收到部分；有效非空 finish 或 response.completed 才表示完成，usage-only 不算，缺完成的 EOF/`[DONE]` 返回包装后的 `llm.ErrStreamIncomplete`（GLM 同样检查）。其余中流错误照旧终止、永不重试。openai、glm、openairesponses 与 codex 四家仓内适配器固定 eager（codex 的 OAuth 解析与一次性 401 恢复随同步建连完成）；lazy 形态仍是对第三方 Provider 实现开放的合法选择。eager 形态下 ChatStream 成功返回即持有打开的响应体：调用方必须 range 至完成或早退（早退安全），或取消 ctx；推迟首次 range 会持续占用连接并消耗客户端超时预算，从不 range 且不取消会悬挂连接与看门狗 goroutine。
 - **ToolResult 三通道契约。** `tool.ToolResult` 的 `Content` 是模型可见文本；`Images` 是模型可见图片（`tool.Image{URL}` 或 `{MIMEType, Data}`，可并存多张）；`Data` 是调用方 UI/结构化载荷、从不发给模型。`NewTextResult`/`NewDataResult` 语义不变，新增 `NewImageResult(content, images...)`。模型侧块 `llm.ToolResultBlock` 相应增加可选 `Images []llm.ImageBlock`（`json:"images,omitempty"`）——零值时 JSON 字节与现状逐字节一致。
 - **流是执行原语，同步执行是衍生物。** 只维护一条模型/工具执行路径，`Run` 与恢复 active run 的 `ResumeThread` 是事件流的归并。`SettleThread` 是持久生命周期控制操作；`ResumeThread` 在最后一个 run 已 cancelled 时只读取终态快照，不执行循环，不制造 DoneEvent。
 - **默认安全。** 危险工具须审批；工具 panic 不外泄；结果截断；预算可设。
@@ -95,7 +95,7 @@ Agent 不保存对话进度，Run 不修改构造策略；实例允许诊断缓�
 
   `UnmarshalJSON` 是唯一产生 explicit-empty type/description/`$ref` 等 pathological exact-presence state 的路径。
 
-  事件交付契约：七种 sealed 事件是单消费者、同步、单播投递（`iter.Seq2`，break 即停止投递），轮内全序为 Retry* → Compaction* → delta* → TC 连续批 → TR 配对批 →（下一轮或）Done（issue #18，2026-11-20：Compaction 由轮内至多一次放宽为多次——主动压缩与各次恢复压缩各自交付 CompactionEvent，多次之后才是成功回复的 delta/TC/TR/Done；RetryEvent 仍专属传输重试，不表示恢复压缩；已交付 chunk 的超长半条流永不续接或拼接，恢复只出现在下一次 Resume 的新流中）；durable-before-visible（事件到达即状态可回放）；DoneEvent 只保证投递给完整消费流，`DoneEvent.History` 是权威快照；唯一 precommit 例外是 maxIter 终端 skip 批（break 只停投递，线程已 closed）。完整逐事件契约表见 docs/EVENT-CONTRACT.md。
+  事件交付契约：七种 sealed 事件是单消费者、同步、单播投递（`iter.Seq2`，break 即停止投递），首次 delta 前允许 Retry 与 Compaction 按实际请求顺序交错；随后 delta* → TC 连续批 → TR 配对批 →（下一轮或）Done（issue #18，2026-11-20：Compaction 由轮内至多一次放宽为多次——主动压缩与各次恢复压缩各自交付 CompactionEvent，多次之后才是成功回复的 delta/TC/TR/Done；RetryEvent 仍专属传输重试，包含零交付带内网络重试，不表示恢复压缩；已交付 chunk 的超长半条流永不续接或拼接，恢复只出现在下一次 Resume 的新流中）；durable-before-visible（事件到达即状态可回放）；DoneEvent 只保证投递给完整消费流，`DoneEvent.History` 是权威快照；唯一 precommit 例外是 maxIter 终端 skip 批（break 只停投递，线程已 closed）。完整逐事件契约表见 docs/EVENT-CONTRACT.md。
 
 ## 5. 路线图
 
@@ -248,15 +248,17 @@ incomplete 子日志；宿主必须标记清理未确认并负责后续发现/�
 `Provider.ChatStream` 或 `Provider.Chat` 调用前产生当前运行环境快照。
 callback 接收原始 `context.Context` 和 `{Round, Attempt, ThreadID}`：
 Round 为逻辑模型轮（Resume 延续 durable 序号），Attempt 为该轮直接
-Provider method invocation 的一基序号，故不同于只计既有 ChatStream
-retry-loop 的 `RetryInfo.Attempt`。Attempt 的作用域是每个逻辑轮（issue
+Provider method invocation 的一基序号，故不同于计同步失败与零交付带内
+网络失败所共享传输尝试的 `RetryInfo.Attempt`，两者不可互换。Attempt 的作用域是每个逻辑轮（issue
 #18，2026-11-20；修订：评审 F1）：同一逻辑轮内跨 overflow 恢复周期、
 transport retry 与非流式回退的直接调用连续递增；进入下一逻辑轮的首次
 调用与 Resume 的首次调用重新为 1。不设 run 级计数器，该展示计数不是
-持久恢复名额；摘要调用不计入主请求 callback 计数。仅 ChatStream
-**直接返回**的可重试 error 触发既有 retry；iterator yield 的 error
-（含零 chunk）不 retry，唯一例外是已分类超长且零 chunk 的当前调用内
-恢复（见 P1「Provider 超长分类与反应式恢复」）。
+持久恢复名额；摘要调用不计入主请求 callback 计数。同步可重试失败和
+零交付带内网络分类失败共享本轮传输重试额度、退避及通知；已交付 chunk
+的带内失败继续终止。分类超长且零交付仍走既有恢复（见 P1「Provider
+超长分类与反应式恢复」）。overflow 纠正与 Chat 回退各自照常递增
+request.Attempt，每次直接调用前执行一次 callback；这些额外直接调用
+不消耗或重置传输重试额度。
 callback 在单次 run 内串行；同一 Agent 的并发 run 由宿主保证 callback
 并发安全。
 
@@ -466,8 +468,9 @@ NonRetryable=true，未知 429 仍可重试。OAuth 不伪造推理 APIError。
 首次 HTTP 401 关闭响应后 Refresh(&used) 并最多重发一次（恢复随
 ChatStream 调用同步发生，不依赖 range）。建连/鉴权/非 2xx 错误同步
 返回：网络与未知 429/5xx 进入外层 pre-stream retry（Retry-After 被
-消费）；quota 类仍 NonRetryable 不重试；迭代器 yield 的错误仍是带内
-终态（见 §4「ChatStream 建连两形态契约」。）
+消费）；quota 类仍 NonRetryable 不重试；迭代器 yield 的错误默认带内
+终态，唯一例外是零交付网络分类错误共享本轮传输重试额度、已交付
+chunk 后仍终止（见 §4「ChatStream 建连两形态契约」。）
 
 超长分类与统一包装（issue #18，2026-11-20）：overflow 判定只接受原始
 `serverError.Code` 精确命中（`classifyServerError` 的 Code→Type fallback
@@ -490,9 +493,9 @@ configured_max_output_tokens 与 output_limit_mode=server_default。
 消费端启动通知也必须披露配置不是远端硬上限，保持全局正数校验，
 不引入 sentinel。需要强制硬上限的业务不能选择此模式。
 
-#### agenttest 录制 v3
+#### agenttest 录制 v3 错误扩展（v4 继承）
 
-新 writer 写 v3，reader 明确接受 1/2/3。v1/v2 grammar 与旧 fixture
+当前 writer 写 v4，reader 明确接受 1/2/3/4（v4 新错误见公开测试替身节）。v1/v2 grammar 与旧 fixture
 保持不变，旧 APIError 的 NonRetryable=false；v3 继承 v2 schema。
 v3 api error 必填布尔 non_retryable；codex error 必填 category、
 code、retry_at（RFC3339Nano 或 null）、cause；codex_auth 必填
@@ -537,11 +540,11 @@ TC-first 与 materialization：普通轮的全部 TC 连续宣布后才执行；
 
 录制 bytes 的 **v1 grammar** 固定不变：顶层 `version` 与全局有序 exchanges；每项有 canonical Request、method discriminator，以及 chat 或 stream response。stream 记录 chatstream outer error 与 iterator stream error 的独立位置和 completion 状态。六个 chunk DTO 都有 `type` discriminator（DTO 为形态无关的 JSON；录制编码与回放解码自 issue #24 起在内存中使用指针形态，grammar 字节不变），并保留 TextDelta 的 Text/OutputIndex、ReasoningDelta 的 Text、ToolCallStart 的 Index/ID/Name、ToolCallArgs 的 Index/ID/Delta、ReasoningItem 的 OutputIndex/Item、Done 的 FinishReason/Usage；Done Usage 的 nil 与非 nil 必须可区分。自然 iterator exhaustion 总是 COMPLETE（不要求 DoneChunk，Agent 以已装配工具调用判断终态）；已交付 terminal StreamErr 是可回放的 COMPLETE-WITH-ERROR；只有 nil-error chunk 后消费者 early-break、abandoned iterator 或 recorder read failure 是 INTERRUPTED，`NewReplayer` 必以 `ErrInterruptedRecording` 拒绝，绝不可将其回放成成功。`Bytes` 在 active recording 时返回 `ErrActiveRecording`。chunk 一律指针形态（issue #24），照原动态形式交付下游并正常编码进录制；`UnsupportedChunkError`/`ErrUnsupportedChunk` 已随值形态收紧删除。
 
-error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.ErrStreamingNotSupported` 哨兵身份、带 StatusCode/RetryAfter/Body 的 `*llm.APIError`、`llm.IsNetworkError` 所认定的 timeout/temporary `net.Error`、`url.Error` 包装与 ECONNREFUSED/ECONNRESET/EPIPE，以及最后的仅 message generic error。回放必须保留相应 `errors.Is`、`errors.As` 或 `llm.IsNetworkError` 分类。未知 schema version、chunk/error type 或字段、非法 DTO 字段，均以 `ErrIncompatibleRecording` 类型化拒绝；多个 DoneChunk 原样回放；没有 Done 且没有 tool calls 的流按自然 exhaustion 成功。Replayer 同样严格执行全局 exchange 顺序、call-time reservation 和 Verify。
+error DTO 依次编码和重建 `context.Canceled`/`DeadlineExceeded`、`llm.ErrStreamingNotSupported` 哨兵身份、带 StatusCode/RetryAfter/Body 的 `*llm.APIError`、`llm.ErrStreamIncomplete` 与 `io.ErrUnexpectedEOF` 身份、`llm.IsNetworkError` 所认定的 timeout/temporary `net.Error`、`url.Error` 包装与 ECONNREFUSED/ECONNRESET/EPIPE，以及最后的仅 message generic error。回放必须保留相应 `errors.Is`、`errors.As` 或 `llm.IsNetworkError` 分类，包括 Codex 错误外层的 Kind/Code/RetryAt 与递归 cause 中的新身份。取消、capability 与 APIError 的分类优先级保持不变，Client.Timeout 与父 ctx timeout 仍排除；普通 io.EOF 不加入网络分类。未知 schema version、chunk/error type 或字段、非法 DTO 字段，均以 `ErrIncompatibleRecording` 类型化拒绝；多个 DoneChunk 原样回放；没有 Done 且没有 tool calls 的流按自然 exhaustion 成功。Replayer 同样严格执行全局 exchange 顺序、call-time reservation 和 Verify。
 
 `ToolFunc` 直接暴露 `Definition tool.ToolInfo` 与 `ExecuteFunc func(context.Context, json.RawMessage) (*tool.ToolResult, error)`；每次 Execute 先深拷贝记录 args，`Calls` 返回受 mutex 保护的深拷贝快照。nil handler 返回普通 Go error，panic 原样透传，便于测试 Agent 的既有边界。
 
-录制 bytes 是显式版本化契约：既有 **v1/v2** 录制继续按各自冻结 grammar 读取；Recorder 写 **v3**，Replayer 读取 v1/v2/v3（错误扩展见 Codex 节）。v2/v3 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。v3 的 options/usage 键集按可选超集在原版本内演进（2026-11-05 Chat Completions 参数契约）：新增 llm.Options/Usage 字段进入允许清单并以可选键解码，旧 v3 录制缺键照常回放，`recordingVersion` 保持 3。
+录制 bytes 是显式版本化契约：既有 **v1/v2/v3** 录制继续按各自冻结 grammar 读取；Recorder 写 **v4**，Replayer 读取 v1/v2/v3/v4（错误扩展见 Codex 节）。v2/v3/v4 对 parameters 使用 `ParameterSchema.UnmarshalJSON`，重建 carrier、composition、AP-schema、`$ref`、BooleanSchema 与 codec presence state，而不是扩展 v1 allow-list。v3 的 options/usage 键集按可选超集在原版本内演进（2026-11-05 Chat Completions 参数契约）：新增 llm.Options/Usage 字段进入允许清单并以可选键解码，旧 v3 录制缺键照常回放。v4 继承 v3 的请求、schema、options、usage 与 Codex grammar，仅新增 stream_incomplete 与 unexpected_eof 两个 error kind；它们只在 v4 接受，要求非 null 字符串 message，递归 cause 使用相同版本。未知 kind、额外/缺失/重复键或错误类型仍拒绝；旧 generic 文本不反推为新哨兵。
 
 #### 工具热变更（P2-4，已裁决后生效）
 

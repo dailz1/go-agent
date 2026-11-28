@@ -13,6 +13,9 @@ import (
 // to the non-streaming Chat method.
 var ErrStreamingNotSupported = errors.New("streaming not supported by this provider")
 
+// ErrStreamIncomplete means a stream ended without protocol completion.
+var ErrStreamIncomplete = errors.New("stream ended without protocol completion")
+
 // Provider is the interface that every LLM provider (OpenAI, Anthropic, etc.)
 // must implement. It translates provider-agnostic Messages into provider-specific
 // wire formats and back.

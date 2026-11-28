@@ -22,7 +22,7 @@ func decodeRecording(data []byte) (dtoRecording, error) {
 	if err := wireValue(root, "exchanges", &exchanges); err != nil {
 		return dtoRecording{}, err
 	}
-	if version != 1 && version != 2 && version != 3 {
+	if version != 1 && version != 2 && version != 3 && version != 4 {
 		return dtoRecording{}, incompatiblef("unsupported recording version %d", version)
 	}
 	out := dtoRecording{Version: version, Exchanges: make([]dtoExchange, len(exchanges))}

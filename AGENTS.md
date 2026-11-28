@@ -68,7 +68,7 @@ Embeddable Go agent runtime kernel ("net/http of Go agents"): streaming-first to
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - ANY third-party import inside kernel closure (agent, llm, store, tool) — guarded by scripts/kernel-closure-guard.sh; `go list -m all` ≈ 40 lines (harness/ satellite deps incl. bubbletea; kernel adds none — guard is the authority, the old "14 lines" note predates harness/).
-- Retrying mid-stream SSE errors — only pre-stream failures retry (chatWithRetryAndFallback).
+- Retrying in-band failures after any delivered chunk — only zero-delivery network-classified in-band failures share the round's setup retry budget; all other in-band failures stay terminal except classified overflow recovery.
 - Reporting tool failures as Go errors — soft failures are `ToolResult{Status: ResultError}` fed back to the LLM.
 - Deduplicating glm/openai conversion helpers — duplicated by design; change both.
 - `pkg/` directory — packages were promoted to module root; do not reintroduce.

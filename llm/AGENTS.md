@@ -23,7 +23,7 @@ Provider-agnostic LLM seam: Provider iface, Message/ContentBlock/Chunk sealed un
 - Conversion helpers (`convert*`, `firstNonEmpty`, `ptrToString`, `encodeBase64`, `parseStreamPayload`) are duplicated near-verbatim in glm/ and openai/ BY DESIGN — change both, never extract a shared helper.
 - Do not pre-range a ChatStream in wrappers — the returned iterator must stay lazy for the consumer (docs/DESIGN.md:63). The rule governs ranging the iterator, not adapter-internal eager setup at call time.
 - Do not implement the sealed interfaces outside their defining package.
-- Do not wrap/retry mid-stream SSE errors.
+- Preserve in-band error identity: only zero-delivery network-classified failures share the agent's setup retry budget; other in-band failures stay terminal except classified overflow recovery. Adapters suppress tail errors after protocol completion, with parent cancellation taking precedence.
 
 ## NOTES
 - Message constructors live at message.go:95-:158 (System/User/Assistant/AssistantToolCall/ToolResult) — build histories with these, not struct literals.

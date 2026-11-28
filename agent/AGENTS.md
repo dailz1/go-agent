@@ -33,7 +33,7 @@ Core autonomous loop: chat → tool calls → results → chat, streaming `Agent
 - Config hot-update: one channel `SetThreadConfig` → `config_changed` record; provider+model switch atomically per record (provider without model rejected write+decode side); takes effect next round top, never mid-request; unswitched threads byte-identical (Provider field omitempty).
 
 ## ANTI-PATTERNS (THIS PACKAGE)
-- Do not retry mid-stream SSE errors anywhere — only pre-stream failures retry.
+- Do not retry in-band failures after any delivered chunk; zero-delivery network-classified failures share the setup retry budget, while classified overflow keeps its recovery path.
 - Do not grow `runStreamInternal` into parallel Run-vs-RunStream paths — everything folds through it.
 - Do not add channels to public APIs; streaming is `iter.Seq2`.
 - Do not emit events for ReasoningItemChunk (index-ordered assembly only; consumers read DoneEvent.History).

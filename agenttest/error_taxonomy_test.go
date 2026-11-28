@@ -3,12 +3,15 @@ package agenttest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/dailz1/go-agent/llm"
+	"github.com/dailz1/go-agent/llm/codex"
 )
 
 func TestErrorTaxonomyPersistsThroughReplay(t *testing.T) {
@@ -106,3 +109,87 @@ type plainNetworkError struct{}
 func (plainNetworkError) Error() string   { return "network" }
 func (plainNetworkError) Timeout() bool   { return false }
 func (plainNetworkError) Temporary() bool { return false }
+
+func TestStreamErrorIdentitiesPersistThroughReplay(t *testing.T) {
+	for _, sentinel := range []struct {
+		name string
+		err  error
+	}{
+		{"incomplete", llm.ErrStreamIncomplete}, {"unexpected EOF", io.ErrUnexpectedEOF},
+	} {
+		for _, form := range []string{"bare", "wrapped", "Codex cause"} {
+			for _, position := range []string{"outer", "in-band"} {
+				t.Run(sentinel.name+"/"+form+"/"+position, func(t *testing.T) {
+					original := sentinel.err
+					reset := time.Date(2026, 11, 28, 1, 2, 3, 4, time.UTC)
+					if form == "wrapped" {
+						original = fmt.Errorf("provider read: %w", original)
+					}
+					if form == "Codex cause" {
+						original = &codex.Error{Kind: codex.KindProtocol, Code: "read_tail", RetryAt: &reset, Cause: fmt.Errorf("provider read: %w", original)}
+					}
+					request := Request{Messages: []llm.Message{llm.UserMessage("x")}}
+					exchange := Exchange{Method: MethodChatStream, Request: request}
+					if position == "outer" {
+						exchange.StreamOuterErr = original
+					} else {
+						exchange.StreamErr = original
+					}
+					source := NewScriptedProvider(exchange)
+					recorder := NewRecorder(source)
+					seq, got := recorder.ChatStream(t.Context(), request.Messages, nil)
+					if position == "in-band" {
+						if got != nil {
+							t.Fatal(got)
+						}
+						for chunk, err := range seq {
+							if chunk != nil {
+								t.Fatalf("unexpected chunk: %T", chunk)
+							}
+							got = err
+						}
+					}
+					if got == nil || got.Error() != original.Error() {
+						t.Fatalf("record error = %v", got)
+					}
+					if err := source.Verify(); err != nil {
+						t.Fatal(err)
+					}
+					data, err := recorder.Bytes()
+					if err != nil {
+						t.Fatal(err)
+					}
+					replay, err := NewReplayer(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					seq, got = replay.ChatStream(t.Context(), request.Messages, nil)
+					if position == "in-band" {
+						if got != nil {
+							t.Fatal(got)
+						}
+						for chunk, err := range seq {
+							if chunk != nil {
+								t.Fatalf("unexpected replay chunk: %T", chunk)
+							}
+							got = err
+						}
+					}
+					if got == nil || got.Error() != original.Error() || !errors.Is(got, sentinel.err) || !llm.IsNetworkError(got) {
+						t.Fatalf("replayed error = %v, want %v with sentinel identity", got, original)
+					}
+					var typed *codex.Error
+					if errors.As(got, &typed) != (form == "Codex cause") {
+						t.Fatalf("Codex classification changed: %v", got)
+					}
+					if typed != nil && (typed.Kind != codex.KindProtocol || typed.Code != "read_tail" || typed.RetryAt == nil || !typed.RetryAt.Equal(reset) || typed.Cause.Error() != "provider read: "+sentinel.err.Error()) {
+						t.Fatalf("Codex metadata changed: %#v", typed)
+					}
+					if err := replay.Verify(); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	}
+}

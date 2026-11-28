@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/dailz1/go-agent/llm"
 	"github.com/dailz1/go-agent/tool"
@@ -19,20 +20,65 @@ type providerCallResult struct {
 	outboundRunes int
 }
 
+type providerRetryState struct {
+	attempt     int
+	maxAttempts int
+	baseDelay   time.Duration
+	maxDelay    time.Duration
+}
+
+func (a *Agent) newProviderRetryState() providerRetryState {
+	n, base, capDelay := a.resolveRetryConfig()
+	if n < 0 {
+		n = 0
+	}
+	return providerRetryState{1, n + 1, base, capDelay}
+}
+
+func (r *overflowRecovery) retryProvider(
+	ctx context.Context, cause error, retry *providerRetryState,
+	yield func(AgentEvent, error) bool, retries *[]RetryInfo,
+) providerCallResult {
+	if err := ctx.Err(); err != nil {
+		return providerCallResult{err: err}
+	}
+	if retry.attempt >= retry.maxAttempts {
+		return providerCallResult{err: cause, providerError: true}
+	}
+	delay, err := llm.ResolveRetryDelay(ctx, cause, retry.baseDelay, retry.maxDelay, retry.attempt)
+	if err != nil {
+		return providerCallResult{err: err}
+	}
+	info := RetryInfo{
+		Attempt: retry.attempt + 1, MaxAttempts: retry.maxAttempts,
+		Delay: delay, Reason: llm.SanitizeRetryReason(cause), Err: cause,
+	}
+	r.a.logger.Warn("agent retrying stream", "attempt", info.Attempt,
+		"max_attempts", info.MaxAttempts, "error", cause)
+	*retries = append(*retries, info)
+	if !yield(RetryEvent{RetryInfo: info}, nil) {
+		return providerCallResult{stopped: true}
+	}
+	if r.a.retryCfg.OnRetry != nil {
+		r.a.retryCfg.OnRetry(info)
+	}
+	if err := llm.SleepFor(ctx, delay); err != nil {
+		return providerCallResult{err: err}
+	}
+	retry.attempt++
+	return providerCallResult{}
+}
+
 func (r *overflowRecovery) chatWithRetryAndFallback(
 	ctx context.Context,
 	history []llm.Message,
 	tools []tool.ToolInfo,
 	request *RoundContextRequest,
+	retry *providerRetryState,
 	yield func(AgentEvent, error) bool,
 	streamRetries *[]RetryInfo,
 ) providerCallResult {
 	a := r.a
-	maxRetries, baseDelay, maxDelay := a.resolveRetryConfig()
-	maxAttempts := maxRetries + 1
-	if maxRetries < 0 {
-		maxAttempts = 1
-	}
 
 	var stream iter.Seq2[llm.Chunk, error]
 	var lastRetryErr error
@@ -75,7 +121,7 @@ func (r *overflowRecovery) chatWithRetryAndFallback(
 	failed := func(err error) providerCallResult {
 		return providerCallResult{err: err, providerError: true, outboundRunes: outboundRunes}
 	}
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for {
 		outbound, err := prepare()
 		if err != nil {
 			return providerCallResult{err: err}
@@ -119,40 +165,16 @@ func (r *overflowRecovery) chatWithRetryAndFallback(
 		}
 		if !llm.IsRetryableError(lastRetryErr) && !llm.IsNetworkError(lastRetryErr) {
 			return failed(fmt.Errorf("iteration %d: provider chat stream (attempt %d/%d): %w",
-				request.Round, attempt, maxAttempts, lastRetryErr))
+				request.Round, retry.attempt, retry.maxAttempts, lastRetryErr))
 		}
-		a.logger.Warn("agent retrying stream",
-			"attempt", attempt+1,
-			"max_attempts", maxAttempts,
-			"error", lastRetryErr,
-		)
-		if attempt < maxAttempts {
-			delay, rerr := llm.ResolveRetryDelay(ctx, lastRetryErr, baseDelay, maxDelay, attempt)
-			if rerr != nil {
-				return providerCallResult{err: rerr}
-			}
-			info := RetryInfo{
-				Attempt:     attempt + 1,
-				MaxAttempts: maxAttempts,
-				Delay:       delay,
-				Reason:      llm.SanitizeRetryReason(lastRetryErr),
-				Err:         lastRetryErr,
-			}
-			*streamRetries = append(*streamRetries, info)
-			if !yield(RetryEvent{RetryInfo: info}, nil) {
-				return providerCallResult{stopped: true}
-			}
-			if a.retryCfg.OnRetry != nil {
-				a.retryCfg.OnRetry(info)
-			}
-			if werr := llm.SleepFor(ctx, delay); werr != nil {
-				return providerCallResult{err: werr}
-			}
+		next := r.retryProvider(ctx, lastRetryErr, retry, yield, streamRetries)
+		if next.stopped || (next.err != nil && !next.providerError) {
+			return next
 		}
-	}
-	if lastRetryErr != nil {
-		return failed(fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w",
-			request.Round, maxAttempts, lastRetryErr))
+		if next.err != nil {
+			return failed(fmt.Errorf("iteration %d: provider chat stream failed after %d attempt(s): %w",
+				request.Round, retry.maxAttempts, next.err))
+		}
 	}
 	return providerCallResult{stream: stream, outboundRunes: outboundRunes, measurement: measurement}
 }

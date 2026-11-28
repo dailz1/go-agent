@@ -80,7 +80,7 @@ func (e dtoError) MarshalJSON() ([]byte, error) {
 			Message       string    `json:"message"`
 			Cause         *dtoError `json:"cause"`
 		}{e.Kind, e.Stage, e.Code, e.Temporary, e.LoginRequired, e.Message, e.Cause})
-	case "network_timeout", "network_temporary", "network_url", "generic":
+	case "network_timeout", "network_temporary", "network_url", "generic", "stream_incomplete", "unexpected_eof":
 		return json.Marshal(struct {
 			Kind    string `json:"kind"`
 			Message string `json:"message"`

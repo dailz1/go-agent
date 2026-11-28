@@ -18,11 +18,16 @@ func (r *overflowRecovery) receiveRound(
 	yield func(AgentEvent, error) bool,
 	retries *[]RetryInfo,
 ) (*toolCallAccum, bool) {
+	retry := r.a.newProviderRetryState()
+	needsPrepare := true
 	for {
-		if !r.prepare(ctx, history, yield) {
-			return nil, false
+		if needsPrepare {
+			if !r.prepare(ctx, history, yield) {
+				return nil, false
+			}
+			needsPrepare = false
 		}
-		call := r.chatWithRetryAndFallback(ctx, *history, tools, &request, yield, retries)
+		call := r.chatWithRetryAndFallback(ctx, *history, tools, &request, &retry, yield, retries)
 		if call.stopped {
 			return nil, false
 		}
@@ -72,6 +77,22 @@ func (r *overflowRecovery) receiveRound(
 			r.measurement = call.measurement
 			return accum, true
 		}
+		if call.providerError && !started &&
+			!errors.Is(call.err, llm.ErrContextOverflow) && llm.IsNetworkError(call.err) {
+			next := r.retryProvider(ctx, call.err, &retry, yield, retries)
+			if next.stopped {
+				return nil, false
+			}
+			if next.err != nil {
+				if !next.providerError {
+					yield(nil, next.err)
+				} else {
+					yield(nil, r.providerFailed(ctx, *history, next.err))
+				}
+				return nil, false
+			}
+			continue
+		}
 		if !errors.Is(call.err, llm.ErrContextOverflow) {
 			yield(nil, r.providerFailed(ctx, *history, call.err))
 			return nil, false
@@ -92,5 +113,6 @@ func (r *overflowRecovery) receiveRound(
 			yield(nil, call.err)
 			return nil, false
 		}
+		needsPrepare = true
 	}
 }
