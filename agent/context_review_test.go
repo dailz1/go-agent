@@ -348,7 +348,7 @@ func TestReviewIdempotentAppendHeadPreservesResponsePosition(t *testing.T) {
 				}
 				return FinishRoundDecision{}, errMeasurementCrash
 			}
-			seq, err := a.runStreamInternal(t.Context(), history, p)
+			seq, err := a.runStreamInternal(t.Context(), history, p, runConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}

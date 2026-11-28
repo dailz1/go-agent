@@ -20,7 +20,7 @@ Core autonomous loop: chat → tool calls → results → chat, streaming `Agent
 | Durable threads | persist_api.go:14/32/63/105 (RunOption/WithThread/runSequence/ResumeThread); settle.go:58 (`SettleThread`); persist.go (declareRound/commit/absorbTail); persist_dto.go (record codecs, `configState` folding — provider+model pair enforced); persist_replay.go |
 | Cross-provider degradation | adapters own it at outbound conversion (DESIGN.md frozen table): glm strips all reasoning blocks; openai passes CC `ReasoningBlock`, skips `ReasoningItemBlock`; openairesponses/codex replay native rs_ items, drop foreign; codex hard-errors on zero-arg/foreign tool_use — pinned in each adapter's `cross_provider_degrade_test.go` + agent/provider_hotswap_test.go |
 | Provider mocks | mock_provider.go — exported constructors over UNEXPORTED types; external packages use agenttest instead |
-| Options | agent.go — constructor options normalized in New :278 (maxIter<1→10, window<=0→8192, concurrency<1→1); `WithProviders` :227 appends alternates |
+| Options | agent.go — constructor options normalized in New (maxIter<1→25, window<=0→8192, concurrency<1→1); `WithProviders` appends alternates; per-call `RunOption` surface in persist_api.go (WithThread + RunWithMaxIter/RunWithLLMOptions/RunWithSystemPrompt, sentinel ErrRunOptionConflict, issue #28) |
 
 ## CONVENTIONS (differs from parent)
 - TC-first: all ToolCallEvents of a round yield before any executes; the announcement batch has NO context check (splitting strands a partially-announced assistant) — agent.go:526-543.

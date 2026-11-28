@@ -145,7 +145,7 @@ func TestMaxIterTerminalTextOnlyAndNormalization(t *testing.T) {
 	})
 
 	for _, maxIter := range []int{0, -1} {
-		t.Run("normalizes to ten rounds", func(t *testing.T) {
+		t.Run("normalizes to twenty-five rounds", func(t *testing.T) {
 			var executed atomic.Int32
 			registry := tool.NewRegistry()
 			registry.MustRegister(&parallelTestTool{
@@ -155,7 +155,7 @@ func TestMaxIterTerminalTextOnlyAndNormalization(t *testing.T) {
 					return tool.NewTextResult("normal"), nil
 				},
 			})
-			rounds := make([][]llm.Chunk, 10)
+			rounds := make([][]llm.Chunk, 25)
 			for index := range rounds {
 				rounds[index] = parallelToolRound([]*llm.ToolUseBlock{{
 					Type: "tool_use", ID: string(rune('a' + index)), Name: "echo", Input: json.RawMessage(`{}`),
@@ -165,8 +165,8 @@ func TestMaxIterTerminalTextOnlyAndNormalization(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if !result.Truncated || result.ToolCalls != 10 || executed.Load() != 9 {
-				t.Errorf("maxIter=%d result = %#v, executions=%d; want ten calls, nine executions", maxIter, result, executed.Load())
+			if !result.Truncated || result.ToolCalls != 25 || executed.Load() != 24 {
+				t.Errorf("maxIter=%d result = %#v, executions=%d; want 25 calls, 24 executions", maxIter, result, executed.Load())
 			}
 		})
 	}

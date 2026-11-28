@@ -173,7 +173,7 @@ OpenAI Responses 协议的加密推理项（`ReasoningItemBlock{ID, EncryptedCon
 
 ### 4.1 定义与默认
 
-`maxIter` 是**LLM 往返次数上限**（`WithMaxIter` doc："the maximum number of LLM round-trips"，agent/agent.go:161；循环结构 doc agent/agent.go:107-108）。默认 10（`New` 归一，agent/agent.go:282），小于 1 归一回 10（agent/agent.go:292-294）。每一轮 = 一次 provider 调用（含其重试组）+ 其工具执行，reasoning/文本/工具调用都只是这一次响应的组成部分（对照 pi 的回合定义，docs/pi-agent-loop.md:22-27）。
+`maxIter` 是**LLM 往返次数上限**（`WithMaxIter` doc："the maximum number of LLM round-trips"，agent/agent.go:205；循环结构 doc agent/agent.go:401）。默认 25（`New` 归一，agent/agent.go:360），小于 1 归一回 25（agent/agent.go:372-373）。每一轮 = 一次 provider 调用（含其重试组）+ 其工具执行，reasoning/文本/工具调用都只是这一次响应的组成部分（对照 pi 的回合定义，docs/pi-agent-loop.md:22-27）。
 
 ### 4.2 终局轮：确定未执行，零审批零执行
 

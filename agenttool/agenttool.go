@@ -31,10 +31,16 @@ type Config struct {
 	// RequiresApproval delegates outer approval to the parent Agent.
 	RequiresApproval bool
 	// RunOptions are per-call agent.RunOption values passed through to every
-	// child Run. The only supported value is agent.WithThread(""), which
-	// gives each Execute one fresh kernel-generated durable thread (requires
-	// the child to be constructed with agent.WithStore); hosts that want the
-	// parent/child settlement chain configure it here. Passing a fixed
+	// child Run. Supported options are agent.WithThread, agent.RunWithMaxIter,
+	// agent.RunWithLLMOptions, and agent.RunWithSystemPrompt. RunWithMaxIter
+	// works for ephemeral and durable runs, alone or with WithThread("").
+	// RunWithLLMOptions and RunWithSystemPrompt are ephemeral-only; combining
+	// either with any WithThread, even with empty arguments, fails synchronously
+	// with ErrRunOptionConflict (ErrNoStore takes precedence).
+	// WithThread("") explicitly gives each Execute one fresh kernel-generated
+	// durable thread and requires the child to have agent.WithStore; configuring
+	// a Store alone does not create threads. Hosts that want the parent/child
+	// settlement chain configure it here. Passing a fixed
 	// non-empty thread ID is legal but documented against: the thread's
 	// history accumulates across Execute calls, so the child sees earlier
 	// delegations' context and the stateless-per-Execute promise breaks; and

@@ -202,7 +202,8 @@ func WithSystemPrompt(prompt string) Option {
 	return func(a *Agent) { a.system = llm.SystemMessage(prompt) }
 }
 
-// WithMaxIter sets the maximum number of LLM round-trips. Default is 10.
+// WithMaxIter sets the maximum number of LLM round-trips. Default is 25.
+// Values below one normalize to 25.
 func WithMaxIter(n int) Option {
 	return func(a *Agent) { a.maxIter = n }
 }
@@ -356,7 +357,7 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 	a := &Agent{
 		provider:                   provider,
 		registry:                   registry,
-		maxIter:                    10,
+		maxIter:                    25,
 		contextWindowTokens:        DefaultContextWindowTokens,
 		compactor:                  NewStandardCompactor(),
 		overflowRecovery:           true,
@@ -369,7 +370,7 @@ func New(provider llm.Provider, registry *tool.Registry, opts ...Option) *Agent 
 		opt(a)
 	}
 	if a.maxIter < 1 {
-		a.maxIter = 10
+		a.maxIter = 25
 	}
 	if a.contextWindowTokens <= 0 {
 		a.contextWindowTokens = DefaultContextWindowTokens
@@ -462,7 +463,11 @@ func (a *Agent) RunStream(ctx context.Context, input string, opts ...RunOption) 
 	return a.runSequence(ctx, input, newRunConfig(opts))
 }
 
-func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, sess *persistence) (iter.Seq2[AgentEvent, error], error) {
+func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, sess *persistence, rc runConfig) (iter.Seq2[AgentEvent, error], error) {
+	maxIter := a.maxIter
+	if rc.maxIterSet {
+		maxIter = rc.maxIter
+	}
 	tools := a.registry.List()
 	a.logger.Info("agent runstream started", "tools_count", len(tools))
 
@@ -483,7 +488,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			accounting.restoreAnchor(sess.anchor, history)
 			defer func() { sess.context = nil }()
 		}
-		for i := 0; i < a.maxIter; i++ {
+		for i := 0; i < maxIter; i++ {
 			// Check for context cancellation before each LLM round-trip.
 			select {
 			case <-ctx.Done():
@@ -528,6 +533,11 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 				}
 			} else {
 				opts = a.llmOpts
+				if rc.llmOptsSet {
+					opts = make([]llm.Option, 0, len(a.llmOpts)+len(rc.llmOpts))
+					opts = append(opts, a.llmOpts...)
+					opts = append(opts, rc.llmOpts...)
+				}
 			}
 			opts = freezeLLMOptions(opts)
 			measurement := requestMeasurement(prov, opts, tools)
@@ -606,7 +616,7 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			history = append(history, assistantMsg)
 			recovery.measurement.captureConfigSeq = recovery.cfgSeq
 			accounting.activateMeasurement(recovery.measurement, accum.usage(), history, sess)
-			isLast := i == a.maxIter-1
+			isLast := i == maxIter-1
 			finishEnd := false
 			declaredText := false
 
@@ -683,14 +693,14 @@ func (a *Agent) runStreamInternal(ctx context.Context, history []llm.Message, se
 			// The LLM requested tools. At the iteration limit, declare every request
 			// and record a deterministic skipped result without approval or execution.
 			// A Store closes that terminal batch before its TC/TR/Done delivery.
-			if i == a.maxIter-1 {
+			if isLast {
 				if err := ctx.Err(); err != nil {
 					yield(nil, err)
 					return
 				}
 				totalToolCalls += len(toolBlocks)
 				a.logger.Warn("agent runstream truncated",
-					"iterations", a.maxIter,
+					"iterations", maxIter,
 					"tool_calls", totalToolCalls,
 				)
 				var lastUsage llm.Usage
@@ -1118,7 +1128,7 @@ func (a *Agent) RunWithHistory(ctx context.Context, history []llm.Message, input
 	}
 	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
-	seq, err := a.runStreamInternal(ctx, copied, nil)
+	seq, err := a.runStreamInternal(ctx, copied, nil, runConfig{})
 	if err != nil {
 		return nil, err
 	}
@@ -1140,7 +1150,7 @@ func (a *Agent) RunStreamWithHistory(ctx context.Context, history []llm.Message,
 	}
 	copied := deepCopyMessages(history)
 	copied = append(copied, llm.UserMessage(input))
-	return a.runStreamInternal(ctx, copied, nil)
+	return a.runStreamInternal(ctx, copied, nil, runConfig{})
 }
 
 func (a *Agent) resolveRetryConfig() (maxRetries int, baseDelay, maxDelay time.Duration) {

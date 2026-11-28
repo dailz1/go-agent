@@ -123,7 +123,7 @@ func TestMeasurementActivationRequiresDurableConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.session = p
-	seq, err := a.runStreamInternal(t.Context(), history, p)
+	seq, err := a.runStreamInternal(t.Context(), history, p, runConfig{})
 	if err != nil {
 		p.release()
 		t.Fatal(err)

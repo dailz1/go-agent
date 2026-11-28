@@ -733,9 +733,9 @@ func TestAgentRun_DefaultMaxIter(t *testing.T) {
 		result: tool.NewTextResult("step done"),
 	})
 
-	// 9 tool calls then a final text response on the 10th
+	// 24 tool calls then a final text response on the 25th.
 	var responses []mockResponse
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 24; i++ {
 		responses = append(responses, MsgResponse(
 			llm.AssistantToolCallMessage(
 				&llm.ToolUseBlock{Type: "tool_use", ID: fmt.Sprintf("c%d", i), Name: "step", Input: json.RawMessage(`{}`)},
@@ -754,10 +754,10 @@ func TestAgentRun_DefaultMaxIter(t *testing.T) {
 	}
 
 	if result.Truncated {
-		t.Error("Truncated = true, want false (default MaxIter=10 should allow 10 iterations)")
+		t.Error("Truncated = true, want false (default MaxIter=25 should allow 25 iterations)")
 	}
-	if result.ToolCalls != 9 {
-		t.Errorf("ToolCalls = %d, want 9", result.ToolCalls)
+	if result.ToolCalls != 24 {
+		t.Errorf("ToolCalls = %d, want 24", result.ToolCalls)
 	}
 	if msgText := messageText(&result.Message); msgText != "final answer" {
 		t.Errorf("Message text = %q, want %q", msgText, "final answer")
